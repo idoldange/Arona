@@ -243,6 +243,8 @@ docker/workdir/
 
 # Temporary files ending with %
 %*% 
+%cd%/
+.vscode/
 # Temporary files starting with ~
 ~$*  
 
