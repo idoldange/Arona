@@ -1,0 +1,445 @@
+"""
+arona/voicechanger.py
+─────────────────────
+Bridges Gemini Live audio output → Applio RVC (via WebSocket) → Discord voice.
+
+Requires Applio running with: app.py --client
+Applio WS endpoint: ws://<host>:<port>/api/ws-audio
+
+Flow:
+    Gemini int16 24kHz → float32 → resample → Applio WS → float32 converted
+    → resample 48kHz → int16 stereo → Discord audio_queue
+"""
+
+import asyncio
+import json
+from math import gcd
+from queue import Empty, Queue
+from typing import TYPE_CHECKING, Optional
+
+import numpy as np
+import discord
+from console import console
+
+try:
+    import websockets as _websockets
+except ImportError:
+    _websockets = None
+
+if TYPE_CHECKING:
+    from arona.voice_engine.src.gemini import GeminiWebSocket
+
+
+GEMINI_SR  = 24_000
+DISCORD_SR = 48_000
+PREBUFFER_FRAMES = 3  # buffer N frames before starting playback (~60ms)
+
+
+def _schedule(coro) -> None:
+    """Schedule a coroutine from a synchronous context.
+
+    Tries to attach to the running event loop; silently drops if none exists
+    (shouldn't happen inside a Discord.py process, but prevents crashes).
+    """
+    try:
+        asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        pass
+
+
+class RawPCMAudio(discord.AudioSource):
+    """Pre-converted int16 stereo 48kHz PCM — no resampling needed by Discord."""
+
+    FRAME_SIZE = 3840  # 960 samples x 2 channels x 2 bytes
+
+    def __init__(self) -> None:
+        self._sync_q: Queue[Optional[bytes]] = Queue()
+        self._buffer  = bytearray()
+        self._silence = b"\x00" * self.FRAME_SIZE
+        self._ended   = False
+        self._ready   = False  # True once prebuffer is filled
+
+    def push(self, data: bytes) -> None:
+        self._sync_q.put(data)
+
+    def end(self) -> None:
+        self._sync_q.put(None)
+
+    def read(self) -> bytes:
+        # Drain the sync queue into the local buffer
+        while True:
+            try:
+                chunk = self._sync_q.get_nowait()
+                if chunk is None:
+                    self._ended = True
+                    break
+                self._buffer.extend(chunk)
+                if not self._ready and len(self._buffer) >= self.FRAME_SIZE * PREBUFFER_FRAMES:
+                    self._ready = True
+            except Empty:
+                break
+
+        if not self._ready:
+            return self._silence
+
+        if len(self._buffer) >= self.FRAME_SIZE:
+            frame = bytes(self._buffer[: self.FRAME_SIZE])
+            del self._buffer[: self.FRAME_SIZE]
+            return frame
+
+        if self._ended and not self._buffer:
+            return b""
+
+        return self._silence
+
+    def cleanup(self) -> None:
+        self._ended = True
+
+
+class VoiceChangerBridge:
+    """Bridge between GeminiWebSocket audio output and the Applio RVC server."""
+
+    def __init__(self) -> None:
+        self._ws              = None
+        self._buffer          = np.array([], dtype=np.float32)
+        self._recv_task: Optional[asyncio.Task] = None
+        self._infer_params    = {}
+        self._block_frame     = 4 * 128
+        self._applio_sr       = DISCORD_SR
+        self._enabled         = False
+        self._gemini_ws: Optional["GeminiWebSocket"] = None
+        self._audio_source: Optional[RawPCMAudio] = None
+
+        self._ws_url       = "ws://127.0.0.1:6969/api/ws-audio"
+        self._init_params  = {}
+
+    # -- Lifecycle --------------------------------------------------------------
+
+    def start(self) -> None:
+        """Read config and mark as enabled. Actual WS connects on attach()."""
+        try:
+            from config import (
+                RVC_ENABLED, RVC_MODEL_PATH, RVC_F0_UP_KEY, RVC_F0_METHOD,
+                RVC_INDEX_PATH, RVC_INDEX_RATE, RVC_PROTECT, RVC_CHUNK_SIZE,
+                RVC_EMBEDDER_MODEL, RVC_APPLIO_HOST, RVC_APPLIO_PORT, RVC_APPLIO_SR,
+            )
+            try:
+                from config import RVC_POST_PROCESS, RVC_PITCH_SHIFT
+            except ImportError:
+                RVC_POST_PROCESS = False
+                RVC_PITCH_SHIFT  = 0.0
+        except ImportError as e:
+            console.log(f"[VCBridge] config.py missing RVC keys: {e}", "WARN")
+            return
+
+        if not RVC_ENABLED:
+            console.log("[VCBridge] RVC_ENABLED=False -- skipping.", "INFO")
+            return
+
+        if not RVC_MODEL_PATH:
+            console.log("[VCBridge] RVC_MODEL_PATH not set -- skipping.", "WARN")
+            return
+
+        self._ws_url      = f"ws://{RVC_APPLIO_HOST}:{RVC_APPLIO_PORT}/api/ws-audio"
+        self._applio_sr   = RVC_APPLIO_SR
+        self._block_frame = RVC_CHUNK_SIZE * 128
+
+        self._init_params = {
+            "chunk_size":              RVC_CHUNK_SIZE,
+            "cross_fade_overlap_size": 0.1,
+            "extra_convert_size":      0.1,
+            "model_path":              RVC_MODEL_PATH,
+            "index_path":              RVC_INDEX_PATH,
+            "f0_method":               RVC_F0_METHOD,
+            "embedder_model":          RVC_EMBEDDER_MODEL,
+            "embedder_model_custom":   None,
+            "silent_threshold":        -90,
+            "vad_enabled":             False,
+            "vad_sensitivity":         3,
+            "vad_frame_ms":            30,
+            "sid":                     0,
+            "clean_audio":             False,
+            "clean_strength":          0.5,
+            "post_process":            RVC_POST_PROCESS,
+            "kwargs": (
+                {
+                    "pitch_shift":           RVC_POST_PROCESS and RVC_PITCH_SHIFT != 0.0,
+                    "pitch_shift_semitones": RVC_PITCH_SHIFT,
+                }
+                if RVC_POST_PROCESS else {}
+            ),
+        }
+
+        self._infer_params = {
+            "input_audio_gain":          100,
+            "f0_up_key":                 RVC_F0_UP_KEY,
+            "index_rate":                RVC_INDEX_RATE,
+            "protect":                   RVC_PROTECT,
+            "volume_envelope":           1.25,
+            "autotune":                  False,
+            "autotune_strength":         1.0,
+            "proposed_pitch":            False,
+            "proposed_pitch_threshold":  0.85,
+        }
+
+        self._enabled = True
+        console.log(
+            f"[VCBridge] Ready -- {self._ws_url} | "
+            f"model={RVC_MODEL_PATH} | f0={RVC_F0_METHOD} | pitch={RVC_F0_UP_KEY}",
+            "INFO",
+        )
+
+    def stop(self) -> None:
+        self._enabled = False
+        _schedule(self._close_ws())
+        self._buffer = np.array([], dtype=np.float32)
+        console.log("[VCBridge] Stopped.", "INFO")
+
+    # -- Attach / detach --------------------------------------------------------
+
+    def attach(self, gemini_ws: "GeminiWebSocket") -> None:
+        if not self._enabled:
+            console.log("[VCBridge] Not ready -- attach() skipped.", "WARN")
+            return
+
+        self._gemini_ws = gemini_ws
+        gemini_ws._voice_bridge = self
+        gemini_ws._orig_play_audio = gemini_ws.play_audio
+
+        bridge = self
+
+        async def _patched(audio_data: bytes) -> None:
+            await bridge._process_and_enqueue(audio_data, gemini_ws)
+
+        gemini_ws.play_audio = _patched
+
+        _schedule(self._connect())
+        console.log("[VCBridge] Attached.", "INFO")
+
+    def detach(self, gemini_ws: "GeminiWebSocket") -> None:
+        orig = getattr(gemini_ws, "_orig_play_audio", None)
+        if orig:
+            gemini_ws.play_audio = orig
+            del gemini_ws._orig_play_audio
+
+        if hasattr(gemini_ws, "_voice_bridge"):
+            del gemini_ws._voice_bridge
+
+        self._gemini_ws    = None
+        self._buffer       = np.array([], dtype=np.float32)
+        self._audio_source = None
+        _schedule(self._close_ws())
+        console.log("[VCBridge] Detached.", "INFO")
+
+    # -- WebSocket management --------------------------------------------------
+
+    async def _connect(self) -> bool:
+        """Open a new WS connection to Applio and start the receive loop.
+
+        Returns True on success, False on failure.
+        """
+        if _websockets is None:
+            console.log("[VCBridge] 'websockets' package not installed.", "ERROR")
+            return False
+        try:
+            self._ws = await _websockets.connect(self._ws_url, ping_interval=None)
+            await self._ws.send(json.dumps({**self._init_params, **self._infer_params}))
+
+            if self._recv_task and not self._recv_task.done():
+                self._recv_task.cancel()
+            self._recv_task = asyncio.create_task(self._recv_loop())
+            console.log("[VCBridge] Connected to Applio WS.", "INFO")
+            return True
+        except Exception as e:
+            console.log(f"[VCBridge] Failed to connect to Applio: {e}", "WARN")
+            self._ws = None
+            return False
+
+    async def _close_ws(self) -> None:
+        if self._recv_task:
+            self._recv_task.cancel()
+            self._recv_task = None
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+    async def _recv_loop(self) -> None:
+        """Receive converted audio from Applio, reconnect automatically on disconnect."""
+        while self._enabled and self._gemini_ws:
+            if self._ws is None:
+                console.log("[VCBridge] WS is None in recv loop -- aborting.", "WARN")
+                return
+
+            try:
+                msg = await self._ws.recv()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                console.log(f"[VCBridge] WS closed ({e}) -- reconnecting in 2s...", "WARN")
+                self._ws = None
+                self._buffer = np.array([], dtype=np.float32)
+                await asyncio.sleep(2)
+                if not self._enabled or not self._gemini_ws:
+                    return
+                # _connect() starts a fresh _recv_loop task; this one exits cleanly
+                if not await self._connect():
+                    return
+                return
+
+            if isinstance(msg, str):
+                try:
+                    data = json.loads(msg)
+                    console.log(
+                        f"[VCBridge] latency={data.get('value')}ms vol={data.get('volume', 0.0):.2f}",
+                        "DEBUG",
+                    )
+                except Exception:
+                    pass
+            elif isinstance(msg, bytes) and self._gemini_ws:
+                await self._on_converted_audio(msg)
+
+    async def _on_converted_audio(self, raw: bytes) -> None:
+        """float32 mono from Applio -> RawPCMAudio -> Discord."""
+        gws = self._gemini_ws
+        if not gws or not gws.voice_client or not gws.voice_client.is_connected():
+            return
+
+        out = self._to_discord_pcm(raw)
+        if out is None:
+            return
+
+        if self._audio_source is None or self._audio_source._ended:
+            self._audio_source = RawPCMAudio()
+
+        for i in range(0, len(out), RawPCMAudio.FRAME_SIZE):
+            frame = out[i : i + RawPCMAudio.FRAME_SIZE]
+            if len(frame) < RawPCMAudio.FRAME_SIZE:
+                frame = frame + b"\x00" * (RawPCMAudio.FRAME_SIZE - len(frame))
+            self._audio_source.push(frame)
+
+        vc = gws.voice_client
+        if vc and vc.is_connected() and not vc.is_playing():
+            src = self._audio_source
+
+            def _after(e, bridge=self):
+                if e:
+                    console.log(f"[VCBridge] Playback error: {e}", "DEBUG")
+                if bridge._audio_source:
+                    bridge._audio_source._ended = True
+
+            vc.play(src, after=_after)
+
+    # -- Core audio processing -------------------------------------------------
+
+    async def _process_and_enqueue(
+        self,
+        int16_bytes: bytes,
+        gemini_ws: "GeminiWebSocket",
+    ) -> None:
+        """Gemini int16 24kHz -> float32 -> resample -> Applio WS."""
+        if not self._ws:
+            orig = getattr(gemini_ws, "_orig_play_audio", None)
+            if orig:
+                await orig(int16_bytes)
+            return
+
+        loop = asyncio.get_running_loop()
+
+        arr = np.frombuffer(int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+
+        if GEMINI_SR != self._applio_sr:
+            arr = await loop.run_in_executor(
+                None, self._resample, arr, GEMINI_SR, self._applio_sr
+            )
+
+        self._buffer = np.concatenate([self._buffer, arr])
+
+        while len(self._buffer) >= self._block_frame:
+            chunk = self._buffer[: self._block_frame].copy()
+            self._buffer = self._buffer[self._block_frame :]
+            try:
+                await self._ws.send(chunk.tobytes())
+            except Exception as e:
+                console.log(f"[VCBridge] WS send error: {e}", "WARN")
+                self._ws = None
+                break
+
+    # -- PCM conversion --------------------------------------------------------
+
+    def _to_discord_pcm(self, raw: bytes) -> Optional[bytes]:
+        """float32 mono at Applio SR -> int16 stereo at 48kHz."""
+        try:
+            arr = np.frombuffer(raw, dtype=np.float32).copy()
+            if self._applio_sr != DISCORD_SR:
+                arr = self._resample(arr, self._applio_sr, DISCORD_SR)
+            # Soft limiter: tanh to avoid hard clipping on loud peaks
+            peak = np.max(np.abs(arr))
+            if peak > 0.95:
+                arr = np.tanh(arr / peak * 2.5) * 0.95
+            i16 = (arr * 32767).astype(np.int16)
+            return np.column_stack([i16, i16]).tobytes()
+        except Exception as e:
+            console.log(f"[VCBridge] PCM convert error: {e}", "WARN")
+            return None
+
+    @staticmethod
+    def _resample(arr: np.ndarray, from_sr: int, to_sr: int) -> np.ndarray:
+        if from_sr == to_sr:
+            return arr
+        try:
+            from scipy.signal import resample_poly
+            g = gcd(from_sr, to_sr)
+            return resample_poly(arr, up=to_sr // g, down=from_sr // g).astype(np.float32)
+        except ImportError:
+            n_out = int(len(arr) * to_sr / from_sr)
+            return np.interp(
+                np.linspace(0, len(arr) - 1, n_out),
+                np.arange(len(arr)),
+                arr,
+            ).astype(np.float32)
+
+    # -- Flush -----------------------------------------------------------------
+
+    async def flush(self, gemini_ws: "GeminiWebSocket") -> None:
+        """Send any remaining audio in the buffer to Applio at turn end."""
+        if not self._ws or len(self._buffer) == 0:
+            return
+        remainder = len(self._buffer) % self._block_frame
+        pad_size  = (self._block_frame - remainder) if remainder else self._block_frame
+        padded = np.concatenate([
+            self._buffer,
+            np.zeros(pad_size, dtype=np.float32),
+        ])
+        self._buffer = np.array([], dtype=np.float32)
+        try:
+            await self._ws.send(padded[: self._block_frame].tobytes())
+        except Exception as e:
+            console.log(f"[VCBridge] flush error: {e}", "WARN")
+
+    # -- Runtime config tweaks -------------------------------------------------
+
+    async def _send_config(self, key: str, value, if_kwargs: bool = False) -> None:
+        """Send a live config update to Applio via the /change-config endpoint."""
+        if not self._enabled or _websockets is None:
+            return
+        try:
+            uri = self._ws_url.replace("/ws-audio", "/change-config")
+            async with _websockets.connect(uri, ping_interval=None) as ws:
+                await ws.send(json.dumps({"key": key, "value": value, "if_kwargs": if_kwargs}))
+        except Exception as e:
+            console.log(f"[VCBridge] change-config error: {e}", "WARN")
+
+    def set_pitch(self, semitones: int) -> None:
+        self._infer_params["f0_up_key"] = semitones
+        _schedule(self._send_config("f0_up_key", semitones))
+
+    def set_index_rate(self, rate: float) -> None:
+        self._infer_params["index_rate"] = rate
+        _schedule(self._send_config("index_rate", rate))
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled

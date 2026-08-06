@@ -1,0 +1,983 @@
+import asyncio
+import aiohttp
+import re
+import time
+from typing import Optional, Dict, List, Any
+from datetime import datetime, timezone
+from difflib import SequenceMatcher
+from database.students import miku, shittim_os, railgun
+
+BASE_URL = "https://api.ennead.cc/buruaka"
+DEFAULT_REGION = "global"  # Can be 'global' or 'japan'
+
+# Use central SessionManager for SchaleDB requests
+from utils.http_session import session_manager
+
+async def _get_shared_session():
+    """Return a session from the central SessionManager."""
+    return await session_manager.get_session()
+
+SCHALE_JP_URL = "https://schaledb.com/data/jp/students.json"
+SCHALE_EN_URL = "https://schaledb.com/data/en/students.json"
+UPDATE_INTERVAL = 86400
+
+_REGION_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+_LAST_UPDATED: Dict[str, float] = {}
+_LOCK = asyncio.Lock()
+_CACHE = {}
+
+SCHALE_BASE = "https://schaledb.com/data"
+ENDPOINTS = {
+    "students": "students.json",
+    "items": "items.json",
+    "equipment": "equipment.json",
+    "stages": "stages.json",
+    "localization": "localization.json",
+    "enemies": "enemies.json"
+}
+
+def clean_tags(text: str) -> str:
+    if not text: return ""
+    return re.sub(r'<[^>]+>', '', text)
+
+def parse_desc(desc: str, params: List[List[str]]) -> str:
+    if not desc: return ""
+    
+    # Map các tag đặc biệt của SchaleDB sang tên thuộc tính tiếng Anh
+    stat_map = {
+        "CriticalPoint": "Crit Rate",
+        "AttackSpeed": "ATK Speed",
+        "AttackPower": "ATK",
+        "DefensePower": "DEF",
+        "MaxHP": "Max HP",
+        "AccuracyPoint": "Accuracy",
+        "DodgePoint": "Evasion",
+        "HealPower": "Healing",
+        "OppressionPower": "CC Power",
+        "OppressionResist": "CC Res"
+    }
+
+    def replace_params(match):
+        try:
+            idx = int(match.group(1)) - 1
+            if params and 0 <= idx < len(params):
+                return str(params[idx][-1])
+            return match.group(0)
+        except: return match.group(0)
+
+    def replace_stats(match):
+        stat_name = match.group(1)
+        return stat_map.get(stat_name, stat_name)
+
+    # 1. Thay thế chỉ số <?1>, [?1]
+    desc = re.sub(r'[<\[][/?](\d+)[>\]]', replace_params, desc)
+    # 2. Thay thế tên thuộc tính <%1>, [!1] thường bị trống
+    desc = re.sub(r'[<\[][%\!]([^>\]]+)[>\]]', replace_stats, desc)
+    
+    return clean_tags(desc)
+
+async def _load_data(region: str):
+    global _REGION_CACHE, _LAST_UPDATED
+    reg_key = "en" if region.lower() == "global" else "jp"
+    target_url = SCHALE_EN_URL if reg_key == "en" else SCHALE_JP_URL
+    
+    curr_time = time.time()
+    if reg_key in _REGION_CACHE and (curr_time - _LAST_UPDATED.get(reg_key, 0) < UPDATE_INTERVAL):
+        return
+
+    async with _LOCK:
+        if reg_key in _REGION_CACHE and (time.time() - _LAST_UPDATED.get(reg_key, 0) < UPDATE_INTERVAL):
+            return
+        session = await _get_shared_session()
+        try:
+            async with session.get(target_url, timeout=20) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    student_list = list(data.values()) if isinstance(data, dict) else data
+                    
+                    if not any(s.get("Id") == 10017 for s in student_list):
+                        student_list.append(miku.MIKU_MOCK_DATA)
+                    if not any(s.get("Id") == "arona-v6.12-container" for s in student_list):
+                        student_list.append(shittim_os.ARONA_MOCK_DATA)
+                    if not any(s.get("Id") == "plana-v6.12-container" for s in student_list):
+                        student_list.append(shittim_os.PLANA_MOCK_DATA)
+                    if not any(s.get("Id") == 10030 for s in student_list):
+                        student_list.append(railgun.MISAKA_MIKOTO_MOCK_DATA)
+                    if not any(s.get("Id") == 10031 for s in student_list):
+                        student_list.append(railgun.SHOKUHOU_MISAKI_MOCK_DATA)
+                    if not any(s.get("Id") == 10032 for s in student_list):
+                        student_list.append(railgun.SATEN_RUIKO_MOCK_DATA)
+                        
+                    _REGION_CACHE[reg_key] = student_list
+                    _LAST_UPDATED[reg_key] = time.time()
+        except Exception:
+            if reg_key not in _REGION_CACHE:
+                _REGION_CACHE[reg_key] = [
+                    miku.MIKU_MOCK_DATA,
+                    shittim_os.ARONA_MOCK_DATA,
+                    shittim_os.PLANA_MOCK_DATA,
+                    railgun.MISAKA_MIKOTO_MOCK_DATA,
+                    railgun.SHOKUHOU_MISAKI_MOCK_DATA,
+                    railgun.SATEN_RUIKO_MOCK_DATA,
+                ]
+
+def format_timestamp(timestamp_ms: int) -> str:
+    """
+    Convert Unix timestamp in milliseconds to readable datetime string.
+    
+    Args:
+        timestamp_ms: Unix timestamp in milliseconds (13 digits)
+    
+    Returns:
+        Formatted datetime string
+    """
+    try:
+        if not timestamp_ms:
+            return "Unknown"
+        
+        # Convert milliseconds to seconds (UTC)
+        dt = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+        
+        # Format: "Jan 12, 2026 18:59 UTC"
+        return dt.strftime("%b %d, %Y %H:%M UTC")
+    except Exception:
+        return str(timestamp_ms)
+
+def format_gacha_type(gacha_type: str) -> str:
+    """
+    Format gacha type names to be more readable.
+    
+    Args:
+        gacha_type: Raw gacha type string (e.g., "PickupGacha", "LimitedGacha")
+    
+    Returns:
+        Formatted string (e.g., "Pickup", "Limited")
+    """
+    if not gacha_type:
+        return "Unknown"
+    
+    # Common patterns
+    replacements = {
+        "PickupGacha": "Pickup",
+        "LimitedGacha": "Limited",
+        "FesGacha": "Fes",
+        "EventGacha": "Event",
+        "NormalGacha": "Normal",
+        "Gacha": ""  # Remove trailing "Gacha" if nothing else matched
+    }
+    
+    formatted = gacha_type
+    for old, new in replacements.items():
+        formatted = formatted.replace(old, new)
+    
+    # If it's still camelCase, add spaces before capitals
+    # e.g., "SpecialPickup" -> "Special Pickup"
+    if formatted and formatted[0].isupper():
+        result = []
+        for i, char in enumerate(formatted):
+            if i > 0 and char.isupper() and formatted[i-1].islower():
+                result.append(' ')
+            result.append(char)
+        formatted = ''.join(result)
+    
+    return formatted.strip() or "Banner"
+
+def similarity_ratio(a: str, b: str) -> float:
+    """Calculate similarity ratio between two strings (0.0 to 1.0)"""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+def find_best_match(query: str, candidates: List[str], threshold: float = 0.6) -> Optional[str]:
+    """
+    Find the best matching string from candidates using fuzzy matching.
+    Returns None if no match above threshold is found.
+    """
+    if not query or not candidates:
+        return None
+    
+    best_match = None
+    best_ratio = 0.0
+    
+    for candidate in candidates:
+        ratio = similarity_ratio(query, candidate)
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = candidate
+    
+    return best_match if best_ratio >= threshold else None
+
+async def _fetch_schale_data(category: str, region: str = "global") -> Any:
+    """Fetcher with multi-endpoint support and caching"""
+    global _CACHE, _LAST_UPDATED
+    reg_key = "en" if region.lower() == "global" else "jp"
+    cache_id = f"{reg_key}_{category}"
+    
+    current_time = time.time()
+    if cache_id in _CACHE and (current_time - _LAST_UPDATED.get(cache_id, 0) < UPDATE_INTERVAL):
+        return _CACHE[cache_id]
+
+    async with _LOCK:
+        url = f"{SCHALE_BASE}/{reg_key}/{ENDPOINTS.get(category, 'students.json')}"
+        session = await _get_shared_session()
+        try:
+            async with session.get(url, timeout=20) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # Convert dict to list for easier searching
+                    if category in ["students", "items", "equipment", "enemies"] and isinstance(data, dict):
+                        _CACHE[cache_id] = list(data.values())
+                    else:
+                        _CACHE[cache_id] = data
+                    _LAST_UPDATED[cache_id] = time.time()
+                    return _CACHE[cache_id]
+        except Exception as e:
+            print(f"[SchaleDB] Error fetching {category}: {e}")
+    return _CACHE.get(cache_id)
+
+# --- NEW FUNCTIONS ---
+
+async def search_items(query: str, region: str = "global", limit: int = 5) -> List[Dict]:
+    """Search for items like materials, gifts, or eligma"""
+    data = await _fetch_schale_data("items", region)
+    if not data: return []
+    results = []
+    for item in data:
+        score = SequenceMatcher(None, query.lower(), item.get("Name", "").lower()).ratio()
+        if score > 0.5:
+            results.append({"name": item.get("Name"), "rarity": item.get("Rarity"), "type": "Item", "score": score})
+    return sorted(results, key=lambda x: x['score'], reverse=True)[:limit]
+
+async def get_equipment(query: str, region: str = "global") -> Optional[Dict]:
+    """Search for equipment data and stats"""
+    data = await _fetch_schale_data("equipment", region)
+    if not data: return None
+    best_match = None
+    highest_score = 0.0
+    for eq in data:
+        score = SequenceMatcher(None, query.lower(), eq.get("Name", "").lower()).ratio()
+        if score > highest_score:
+            highest_score = score
+            best_match = eq
+    if best_match and highest_score > 0.5:
+        return {
+            "name": best_match.get("Name"),
+            "type": best_match.get("Category"),
+            "stats": best_match.get("Stats", {})
+        }
+    return None
+
+async def find_item_drops(query: str, region: str = "global") -> str:
+    """Find which stages drop a specific item"""
+    items = await _fetch_schale_data("items", region)
+    target_id = next((i.get("Id") for i in items if query.lower() in i.get("Name", "").lower()), None)
+    if not target_id: return f"Could not find item ID for '{query}'"
+
+    stages = await _fetch_schale_data("stages", region)
+    if not stages: return "No stage data."
+    
+    found_stages = []
+    for stage in stages.get("MainQuest", []):
+        if any(r == target_id for r in stage.get("Rewards", [])):
+            prefix = "Hard " if stage.get("Difficulty") == 1 else ""
+            found_stages.append(f"{prefix}{stage.get('Stage')}")
+                
+    if not found_stages: return "Not found in any stages."
+    return "Drops in: " + ", ".join(found_stages[:5])
+
+# Add get_localization_text for mapping internal keys to readable names
+async def get_localized(category: str, key: str, region: str = "global") -> str:
+    loc = await _fetch_schale_data("localization", region)
+    if not loc: return key
+    return loc.get(category, {}).get(key, key)
+
+async def _fetch_json(session: aiohttp.ClientSession, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+    """Helper function to fetch JSON data from API"""
+    try:
+        url = f"{BASE_URL}/{endpoint}"
+        async with session.get(url, params=params, timeout=10) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return None
+    except Exception as e:
+        print(f"[SchaleDB] Error fetching {endpoint}: {e}")
+        return None
+
+async def get_banners(region: str = DEFAULT_REGION) -> Optional[Dict[str, Any]]:
+    """
+    Get current, upcoming, and recent past banners.
+    
+    Returns:
+        Dict with 'current', 'upcoming', and 'recent_ended' (last 2 ended banners)
+    """
+    session = await _get_shared_session()
+    data = await _fetch_json(session, "banner", {"region": region})
+    
+    if not data:
+        return None
+    
+    # Get last 2 ended banners
+    ended = data.get("ended", [])
+    recent_ended = ended[:2] if len(ended) >= 2 else ended
+    
+    return {
+        "current": data.get("current", []),
+        "upcoming": data.get("upcoming", []),
+        "recent_ended": recent_ended
+    }
+
+async def get_raids(region: str = DEFAULT_REGION) -> Optional[Dict[str, Any]]:
+    """
+    Get current, upcoming, and ended raids.
+    
+    Returns:
+        Dict with 'current', 'upcoming', and 'ended' raids
+    """
+    session = await _get_shared_session()
+    data = await _fetch_json(session, "raid", {"region": region})
+    return data
+
+async def get_all_students(region: str = DEFAULT_REGION) -> Optional[List[Dict[str, Any]]]:
+    """
+    Get list of all students with basic info.
+    
+    Returns:
+        List of student objects with basic information
+    """
+    session = await _get_shared_session()
+    data = await _fetch_json(session, "character", {"region": region})
+    
+    if not data:
+        return None
+    if isinstance(data, list):
+        return data
+    
+    return data.get("data", [])
+
+async def get_student_info(name: str, region: str = "global", use_id: bool = False) -> Optional[Dict[str, Any]]:
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+    if not data:
+        return None
+
+    if use_id:
+        return next((s for s in data if str(s.get("Id")) == str(name)), None)
+
+
+    # Ưu tiên khớp tuyệt đối, bao gồm các mock student đặc biệt
+    for s in data:
+        names = [s.get("Name"), s.get("PathName"), s.get("DevName"),
+                 f"{s.get('FamilyName', '')} {s.get('PersonalName', '')}".strip()]
+        # Thêm kiểm tra Id cho các trường hợp đặc biệt
+        if any(n and name.lower() == n.lower() for n in names) or str(s.get("Id")).lower() == name.lower():
+            return s
+
+    # Nếu không có khớp tuyệt đối, dùng fuzzy matching như cũ
+    best, high_score = None, 0.0
+    for s in data:
+        names = [s.get("Name"), s.get("PathName"), s.get("DevName"),
+                 f"{s.get('FamilyName', '')} {s.get('PersonalName', '')}".strip()]
+        score = max(SequenceMatcher(None, name.lower(), n.lower()).ratio() for n in names if n)
+        if score > high_score:
+            high_score, best = score, s
+    return best if high_score >= 0.4 else None
+
+async def format_student_info(student: Dict[str, Any]) -> str:
+    if not student: return "Student not found."
+    m = {0: "D", 1: "C", 2: "B", 3: "A", 4: "S", 5: "SS"}
+    
+    lines = [
+        f"=== {student.get('Name')} ({student.get('StarGrade')}★) ===",
+        f"Full Name: {student.get('FamilyName')} {student.get('PersonalName')} | School: {student.get('School')} | Club: {student.get('Club')}",
+        f"Role: {student.get('TacticRole')} | Type: {student.get('SquadType')} | Pos: {student.get('Position')} | Year: {student.get('SchoolYear')}",
+        f"Availability: {student.get('Availability', 'Gacha')} | Limited: {student.get('IsLimited', False)} | Equipment: {', '.join(student.get('Equipment', []))}",
+        f"Atk: {student.get('BulletType')} | Def: {student.get('ArmorType')} | Weapon: {student.get('WeaponType')}",
+        f"Terrain: Urban {m.get(student.get('StreetBattleAdaptation'))}, Outdoor {m.get(student.get('OutdoorBattleAdaptation'))}, Indoor {m.get(student.get('IndoorBattleAdaptation'))}",
+        f"Profile: Age {student.get('CharacterAge')}, Birthday {student.get('Birthday')}, Height {student.get('CharHeightMetric') or student.get('CharacterHeight')}, CV {student.get('CharacterVoice')}",
+        f"Hobby: {student.get('Hobby')}",
+        "",
+        "--- BATTLE STATS (Max) ---",
+        f"HP: {student.get('MaxHP100')} | ATK: {student.get('AttackPower100')} | DEF: {student.get('DefensePower100')} | HEAL: {student.get('HealPower100')}",
+        f"Accuracy: {student.get('AccuracyPoint')} | Evasion: {student.get('DodgePoint')} | Stability: {student.get('StabilityPoint')}",
+        f"Crit: Rate {student.get('CriticalPoint')}, DMG {int(student.get('CriticalDamageRate', 0))/100}% | Range: {student.get('Range')}",
+        ""
+    ]
+
+    favor_stats = student.get('FavorStatType', [])
+    favor_values = student.get('FavorStatValue', [])
+    if favor_stats and favor_values:
+        f_lines = []
+        for i, stat in enumerate(favor_stats):
+            val = favor_values[-1][i] # Lấy mốc cao nhất
+            f_lines.append(f"{stat}: +{val}")
+        lines.append(f"--- FAVOR BONUS (Max Rank) ---\n{', '.join(f_lines)}\n")
+
+    weapon = student.get('Weapon', {})
+    if weapon:
+        lines.append(f"--- WEAPON: {weapon.get('Name')} ---")
+        lines.append(f"Bonus: HP +{weapon.get('MaxHP100')}, ATK +{weapon.get('AttackPower100')}, HEAL +{weapon.get('HealPower100')}")
+        desc_w = clean_tags(weapon.get('Desc', ''))
+        if desc_w: lines.append(f"> {desc_w}\n")
+
+    lines.append("--- SKILLS (Max Level) ---")
+    skills = student.get('Skills', {})
+    skill_slots = [("Ex", "EX"), ("Public", "Normal"), ("Passive", "Passive"), ("WeaponPassive", "Passive+"), ("ExtraPassive", "Sub")]
+    for key, label in skill_slots:
+        if key in skills:
+            sk = skills[key]
+            cost = f" [Cost: {sk.get('Cost')[-1]}]" if 'Cost' in sk else ""
+            desc = parse_desc(sk.get('Desc', ''), sk.get('Parameters', []))
+            lines.append(f"[{label}]{cost} {sk.get('Name')}\n> {desc}\n")
+
+    intro = student.get('ProfileIntroduction', '')
+    if intro: lines.append(f"--- INTRODUCTION ---\n{clean_tags(intro)}")
+    
+    lines.append("\n\nFor more information, use web_search().")
+    return "\n".join(lines).strip()
+
+async def search_students(query: str, region: str = DEFAULT_REGION, limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Search for students by name with fuzzy matching.
+    Returns top matching students sorted by similarity.
+    
+    Args:
+        query: Search query
+        region: 'global' or 'japan'
+        limit: Maximum number of results to return
+    
+    Returns:
+        List of matching students with similarity scores
+    """
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    all_students = _REGION_CACHE.get(reg_key, [])
+    
+    if not all_students:
+        return []
+
+    query = query.lower().strip()
+
+    matches = []
+    for student in all_students:
+        names = [
+            student.get("Name"), 
+            student.get("PathName"), 
+            student.get("DevName"),
+            f"{student.get('FamilyName', '')} {student.get('PersonalName', '')}".strip()
+        ]
+        
+        is_exact = any(n and query == n.lower() for n in names) or str(student.get("Id")) == query
+        is_partial = any(n and query in n.lower() for n in names)  # "Thắng" in "Vũ Đình Trọng Thắng"
+        
+        if is_exact:
+            matches.append({"student": student, "similarity": 2.0})  # cái đầu tiên https://open.spotify.com/album/5jDZKqgoVRbob6A3omYTG5
+        elif is_partial:
+            matches.append({"student": student, "similarity": 1.5})  # cái thứ hai-waiting for streaming platform
+        else:
+            score = max(similarity_ratio(query, n) for n in names if n)
+            if score >= 0.4:
+                matches.append({"student": student, "similarity": score})
+
+    matches.sort(key=lambda x: x["similarity"], reverse=True)
+    return [m["student"] for m in matches[:limit]]
+
+async def format_banner_info(banners: Dict[str, Any]) -> str:
+    """
+    Format banner information into readable text for Gemini.
+    
+    Args:
+        banners: Banner data from get_banners()
+    
+    Returns:
+        Formatted string with banner information
+    """
+    if not banners:
+        return "No banner information available."
+    
+    lines = ["=== Blue Archive Gacha Banners ===\n"]
+    
+    # Current banners
+    current = banners.get("current", [])
+    if current:
+        lines.append("CURRENT BANNERS:")
+        for banner in current:
+            rateups = ", ".join(banner.get("rateups", []))
+            end_time = banner.get("endedAt", "Unknown")
+            # Try to parse as timestamp if it's a number
+            if isinstance(end_time, (int, float)):
+                end_time = format_timestamp(int(end_time))
+            
+            gacha_type = format_gacha_type(banner.get("gachaType", "Unknown"))
+            lines.append(f"{gacha_type} Banner: {rateups}")
+            lines.append(f"  Ends: {end_time}")
+        lines.append("")
+    
+    # Upcoming banners
+    upcoming = banners.get("upcoming", [])
+    if upcoming:
+        lines.append("UPCOMING BANNERS:")
+        for banner in upcoming:
+            rateups = ", ".join(banner.get("rateups", []))
+            start_time = banner.get("startedAt", "Unknown")
+            if isinstance(start_time, (int, float)):
+                start_time = format_timestamp(int(start_time))
+            
+            gacha_type = format_gacha_type(banner.get("gachaType", "Unknown"))
+            lines.append(f"{gacha_type} Banner: {rateups}")
+            lines.append(f"  Starts: {start_time}")
+        lines.append("")
+    
+    # Recent ended banners
+    recent_ended = banners.get("recent_ended", [])
+    if recent_ended:
+        lines.append("RECENTLY ENDED BANNERS:")
+        for banner in recent_ended:
+            rateups = ", ".join(banner.get("rateups", []))
+            end_time = banner.get("endedAt", "Unknown")
+            if isinstance(end_time, (int, float)):
+                end_time = format_timestamp(int(end_time))
+            
+            gacha_type = format_gacha_type(banner.get("gachaType", "Unknown"))
+            lines.append(f"{gacha_type} Banner: {rateups}")
+            lines.append(f"  Ended: {end_time}")
+    
+    return "\n".join(lines)
+
+async def get_events(region: str = DEFAULT_REGION) -> Optional[Dict[str, Any]]:
+    """
+    Get current, upcoming, and ended events.
+    
+    Returns:
+        Dict with 'current', 'upcoming', and 'ended' events
+    """
+    session = await _get_shared_session()
+    data = await _fetch_json(session, "events", {"region": region})
+    return data
+
+async def get_items(region: str = DEFAULT_REGION) -> Optional[List[Dict[str, Any]]]:
+    """
+    Get list of all items in the game.
+    
+    Returns:
+        List of item objects
+    """
+    session = await _get_shared_session()
+    data = await _fetch_json(session, "items", {"region": region})
+    if isinstance(data, list):
+        return data
+    return data.get("data", []) if data else None
+
+async def get_furniture(region: str = DEFAULT_REGION) -> Optional[List[Dict[str, Any]]]:
+    """
+    Get list of all furniture items.
+    
+    Returns:
+        List of furniture objects
+    """
+    session = await _get_shared_session()
+    data = await _fetch_json(session, "furniture", {"region": region})
+    return data.get("data", []) if data else None
+
+#async def get_equipment(name: str = None, region: str = DEFAULT_REGION) -> Optional[Dict[str, Any]]:
+#    """
+#    Get equipment information. If name is provided, returns specific equipment.
+#    Otherwise returns all equipment.
+#    
+#    Args:
+#        name: Equipment name (optional)
+#        region: 'global' or 'japan'
+#    
+#    Returns:
+#        Equipment data
+#    """
+#    session = await _get_shared_session()
+#    endpoint = f"equipment/{name}" if name else "equipment"
+#    data = await _fetch_json(session, endpoint, {"region": region})
+#    return data
+
+async def format_raid_info(raids: Dict[str, Any]) -> str:
+    """
+    Format raid information into readable text for Gemini.
+    
+    Args:
+        raids: Raid data from get_raids()
+    
+    Returns:
+        Formatted string with raid information
+    """
+    if not raids:
+        return "No raid information available."
+    
+    lines = ["=== Blue Archive Raids ===\n"]
+    
+    # Current raids
+    current = raids.get("current", [])
+    if current:
+        lines.append("CURRENT RAIDS:")
+        for raid in current:
+            end_time = raid.get("endAt", "Unknown")
+            if isinstance(end_time, (int, float)):
+                end_time = format_timestamp(int(end_time))
+            lines.append(f"{raid.get('bossName', 'Unknown')} (Season {raid.get('seasonId', '?')})")
+            lines.append(f"  Ends: {end_time}")
+        lines.append("")
+    
+    # Upcoming raids
+    upcoming = raids.get("upcoming", [])
+    if upcoming:
+        lines.append("UPCOMING RAIDS:")
+        for raid in upcoming[:3]:  # Show next 3
+            start_time = raid.get("startAt", "Unknown")
+            if isinstance(start_time, (int, float)):
+                start_time = format_timestamp(int(start_time))
+            lines.append(f"{raid.get('bossName', 'Unknown')} (Season {raid.get('seasonId', '?')})")
+            lines.append(f"  Starts: {start_time}")
+        lines.append("")
+    
+    return "\n".join(lines)
+
+async def format_event_info(events: Dict[str, Any]) -> str:
+    """
+    Format event information into readable text for Gemini.
+    
+    Args:
+        events: Event data from get_events()
+    
+    Returns:
+        Formatted string with event information
+    """
+    if not events:
+        return "No event information available."
+    
+    lines = ["=== Blue Archive Events ===\n"]
+    
+    # Current events
+    current = events.get("current", [])
+    if current:
+        lines.append("CURRENT EVENTS:")
+        for event in current:
+            end_time = event.get("endAt", "Unknown")
+            if isinstance(end_time, (int, float)):
+                end_time = format_timestamp(int(end_time))
+            lines.append(f"{event.get('name', 'Unknown')} ({event.get('type', 'Event')})")
+            lines.append(f"  Ends: {end_time}")
+        lines.append("")
+    
+    # Upcoming events
+    upcoming = events.get("upcoming", [])
+    if upcoming:
+        lines.append("UPCOMING EVENTS:")
+        for event in upcoming[:3]:  # Show next 3
+            start_time = event.get("startAt", "Unknown")
+            if isinstance(start_time, (int, float)):
+                start_time = format_timestamp(int(start_time))
+            lines.append(f"{event.get('name', 'Unknown')} ({event.get('type', 'Event')})")
+            lines.append(f"  Starts: {start_time}")
+        lines.append("")
+    
+    return "\n".join(lines)
+
+
+async def get_students_by_role(role: str, region: str = DEFAULT_REGION) -> List[Dict]:
+    """Filter students by TacticRole (e.g. 'Healer', 'Tank', 'Supporter', 'DamageDealer')"""
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+    return [s for s in data if role.lower() in (s.get("TacticRole") or "").lower()]
+
+async def get_students_by_school(school: str, region: str = DEFAULT_REGION) -> List[Dict]:
+    """Filter students by School (e.g. 'Trinity', 'Gehenna', 'Millennium', 'Abydos')"""
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+    return [s for s in data if school.lower() in (s.get("School") or "").lower()]
+
+async def get_students_by_attack_type(bullet_type: str, region: str = DEFAULT_REGION) -> List[Dict]:
+    """Filter students by BulletType (Explosion, Mystic, Pierce, Sonic)"""
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+    return [s for s in data if bullet_type.lower() in (s.get("BulletType") or "").lower()]
+
+async def get_students_by_armor(armor_type: str, region: str = DEFAULT_REGION) -> List[Dict]:
+    """Filter students by ArmorType (LightArmor, HeavyArmor, Unarmed, ElasticArmor)"""
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+    return [s for s in data if armor_type.lower() in (s.get("ArmorType") or "").lower()]
+
+# Boss name → armor type weakness mapping
+_RAID_WEAKNESS: Dict[str, str] = {
+    "Binah": "HeavyArmor",
+    "Kaiten": "LightArmor",
+    "Hieronymus": "LightArmor",
+    "Hod": "HeavyArmor",
+    "HOD": "HeavyArmor",
+    "Chesed": "HeavyArmor",
+    "Shirokuro": "ElasticArmor",
+    "ShiroKuro": "ElasticArmor",
+    "Gregorius": "Unarmed",
+    "Perorozilla": "ElasticArmor",
+    "Goz": "Unarmed",
+    "EN-0": "LightArmor",
+    "Kurokage": "HeavyArmor",
+}
+
+async def get_raid_teams(boss_name: str, region: str = DEFAULT_REGION, limit: int = 10) -> Dict[str, Any]:
+    """
+    Suggest students for a raid boss based on armor weakness.
+    Returns dict with 'boss', 'weakness', 'recommended' list.
+    """
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+
+    # Find weakness via mapping or fuzzy match key
+    weakness = None
+    for key, armor in _RAID_WEAKNESS.items():
+        if boss_name.lower() in key.lower() or key.lower() in boss_name.lower():
+            weakness = armor
+            break
+
+    if not weakness:
+        return {"boss": boss_name, "weakness": "Unknown", "recommended": []}
+
+    candidates = [s for s in data if (s.get("BulletType") or "") != "None" and s.get("AttackPower100", 0) > 0]
+    
+    # Score: effective = bullet hits weakness + high ATK
+    bullet_effective = {
+        "LightArmor": ["Explosion", "Mystic"],
+        "HeavyArmor": ["Pierce"],
+        "Unarmed": ["Mystic", "Sonic"],
+        "ElasticArmor": ["Explosion", "Sonic"],
+    }
+    good_bullets = bullet_effective.get(weakness, [])
+
+    scored = []
+    for s in candidates:
+        bullet = s.get("BulletType", "")
+        atk = s.get("AttackPower100", 0)
+        bonus = 1.5 if bullet in good_bullets else 1.0
+        scored.append({"student": s, "score": atk * bonus})
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    recommended = [
+        {
+            "name": x["student"].get("Name"),
+            "role": x["student"].get("TacticRole"),
+            "bullet": x["student"].get("BulletType"),
+            "atk": x["student"].get("AttackPower100"),
+        }
+        for x in scored[:limit]
+    ]
+
+    return {"boss": boss_name, "weakness": weakness, "recommended": recommended}
+
+async def get_student_gear(name: str, region: str = DEFAULT_REGION) -> Optional[Dict]:
+    """Get unique gear info for a specific student"""
+    student = await get_student_info(name, region)
+    if not student:
+        return None
+    gear = student.get("Gear")
+    if not gear:
+        return {"name": name, "gear": None, "note": "No unique gear"}
+    return {
+        "name": student.get("Name"),
+        "gear_name": gear.get("Name"),
+        "tier": gear.get("Tier"),
+        "stats": gear.get("StatType", []),
+        "stat_values": gear.get("StatValue", []),
+        "desc": clean_tags(gear.get("Desc", "")),
+    }
+
+async def format_student_comparison(name1: str, name2: str, region: str = DEFAULT_REGION) -> str:
+    """Compare two students side by side into a formatted string for Gemini context"""
+    s1 = await get_student_info(name1, region)
+    s2 = await get_student_info(name2, region)
+    if not s1 and not s2:
+        return "Both students not found."
+    if not s1:
+        return f"{name1} not found."
+    if not s2:
+        return f"{name2} not found."
+
+    def row(label, k):
+        return f"{label:<18} {str(s1.get(k, 'N/A')):<20} {str(s2.get(k, 'N/A'))}"
+
+    lines = [
+        f"{'':18} {s1.get('Name', ''):<20} {s2.get('Name', '')}",
+        "-" * 58,
+        row("Stars", "StarGrade"),
+        row("School", "School"),
+        row("Role", "TacticRole"),
+        row("Squad", "SquadType"),
+        row("Bullet", "BulletType"),
+        row("Armor", "ArmorType"),
+        row("Position", "Position"),
+        row("ATK (max)", "AttackPower100"),
+        row("HP (max)", "MaxHP100"),
+        row("DEF (max)", "DefensePower100"),
+        row("HEAL (max)", "HealPower100"),
+        row("Crit Rate", "CriticalPoint"),
+        row("Evasion", "DodgePoint"),
+        row("Range", "Range"),
+        row("Urban", "StreetBattleAdaptation"),
+        row("Outdoor", "OutdoorBattleAdaptation"),
+        row("Indoor", "IndoorBattleAdaptation"),
+    ]
+    return "\n".join(lines)
+
+async def get_students_summary(region: str = DEFAULT_REGION, limit: int = 0) -> str:
+    """
+    Return a compact roster dump: Name | Role | School | BulletType
+    Useful for giving Gemini a full picture of available students.
+    limit=0 means all students.
+    """
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+    if not data:
+        return "No student data available."
+
+    pool = data if not limit else data[:limit]
+    lines = [f"{'Name':<22} {'Role':<16} {'School':<14} {'Bullet'}"]
+    lines.append("-" * 62)
+    for s in pool:
+        name = (s.get("Name") or "")[:21]
+        role = (s.get("TacticRole") or "")[:15]
+        school = (s.get("School") or "")[:13]
+        bullet = s.get("BulletType") or ""
+        lines.append(f"{name:<22} {role:<16} {school:<14} {bullet}")
+    lines.append(f"\nTotal: {len(pool)} students")
+    return "\n".join(lines)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Birthday helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_MONTH_NAMES = {
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "jun": 6, "jul": 7, "aug": 8,
+    "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+def _parse_birthday(birthday_str: str) -> Optional[tuple]:
+    """
+    Parse birthday string → (month: int, day: int).
+    Handles: "March 28", "28 March", "3/28", "03-28", "28.3", "3月28日"
+    Returns None if unparseable.
+    """
+    if not birthday_str:
+        return None
+    s = birthday_str.strip()
+
+    # Strip ordinal suffixes: "31st" → "31", "25th" → "25", "2nd" → "2"
+    s = re.sub(r'(\d+)(st|nd|rd|th)\b', r'\1', s)
+
+    # "Month DD" or "DD Month"
+    parts = re.split(r"[\s/\-\.]", s)
+    if len(parts) == 2:
+        a, b = parts
+        a_key = a.lower().rstrip(".")
+        b_key = b.lower().rstrip(".")
+        if a_key in _MONTH_NAMES:
+            try:
+                return (_MONTH_NAMES[a_key], int(b))
+            except ValueError:
+                pass
+        if b_key in _MONTH_NAMES:
+            try:
+                return (_MONTH_NAMES[b_key], int(a))
+            except ValueError:
+                pass
+        # "MM/DD" numeric
+        try:
+            m, d = int(a), int(b)
+            if 1 <= m <= 12 and 1 <= d <= 31:
+                return (m, d)
+        except ValueError:
+            pass
+
+    # Japanese: "3月28日"
+    jp = re.match(r"(\d{1,2})月(\d{1,2})日", s)
+    if jp:
+        return (int(jp.group(1)), int(jp.group(2)))
+
+    # stdlib strptime fallback
+    for fmt in ("%B %d", "%b %d", "%d %B", "%d %b", "%m/%d", "%m-%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return (dt.month, dt.day)
+        except ValueError:
+            continue
+
+    return None
+
+
+_BIRTHDAY_CACHE: tuple[tuple[int, int], list] | None = None  # ((month, day), students)
+
+async def get_today_birthdays(region: str = DEFAULT_REGION) -> list:
+    """Return all students whose birthday matches today's UTC date. Cached per day."""
+    global _BIRTHDAY_CACHE
+    today = datetime.now(timezone.utc)
+    today_key = (today.month, today.day)
+    if _BIRTHDAY_CACHE is not None and _BIRTHDAY_CACHE[0] == today_key:
+        return _BIRTHDAY_CACHE[1]
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+    result = [s for s in data if _parse_birthday(s.get("Birthday", "")) == today_key]
+    _BIRTHDAY_CACHE = (today_key, result)
+    return result
+
+
+async def get_birthdays_on_date(
+    month: int, day: int, region: str = DEFAULT_REGION
+) -> List[Dict]:
+    """Return all students born on the given (month, day)."""
+    await _load_data(region)
+    reg_key = "en" if region.lower() == "global" else "jp"
+    data = _REGION_CACHE.get(reg_key, [])
+    return [
+        s for s in data
+        if _parse_birthday(s.get("Birthday", "")) == (month, day)
+    ]
+
+
+async def find_student_birthday(
+    name: str, region: str = DEFAULT_REGION
+) -> Optional[Dict]:
+    """
+    Look up a student's birthday by name (fuzzy-matched).
+    Returns {"name", "birthday", "school"} or None if not found.
+    """
+    student = await get_student_info(name, region)
+    if not student:
+        return None
+    return {
+        "name": student.get("Name"),
+        "birthday": student.get("Birthday", "Unknown"),
+        "school": student.get("School"),
+    }
+
+
+def build_birthday_prompt_block(today_students: List[Dict]) -> str:
+    """
+    Returns a one-line prompt injection string for today's birthdays.
+    Returns "" if nobody has a birthday today (zero token cost).
+
+    Example: "[Today's Blue Archive Birthdays (UTC): Shiroko, Hoshino]"
+    """
+    if not today_students:
+        return ""
+    names = [s.get("Name", "Unknown") for s in today_students]
+    return f"[Today's Blue Archive Student Birthdays (UTC): {', '.join(names)}]"
+
+
+#test 
+async def main():
+  print(await format_student_info(await get_student_info("Shiroko")))
+#if __name__ == "__main__":
+#  asyncio.run(main())

@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Remote Panel</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow-x: hidden; /* chặn cuộn ngang toàn trang */
+    }
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(135deg,#0a0f24,#1a1035);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 15px;
+      background: rgba(0,0,0,0.3);
+      flex-shrink: 0;
+    }
+    .toggle-sidebar-btn {
+      width: 36px; height: 36px;
+      border-radius: 50%; background:transparent;
+      border:none; cursor:pointer; font-size:20px; color:#fff;
+      display:flex; align-items:center; justify-content:center;
+    }
+    .controls { 
+      display:flex; 
+      gap:10px; 
+    }
+    .controls button {
+      padding:6px 14px; border:none; border-radius:8px; cursor:pointer;
+      font-weight:bold; transition:0.3s;
+      min-width:70px;
+      text-align:center;
+        -webkit-appearance: none; /* fix iOS */
+      appearance: none;
+      border: none;
+      outline: none;
+      background-clip: padding-box;
+      color: #fff;
+    }
+
+    .start{background:#28a745;}
+    .stop{background:#dc3545;}
+    .restart{background:#007bff;}
+    .kill{background:#6f42c1;}
+    
+    .controls button:disabled { background:#555 !important; cursor:not-allowed; }
+    .start{background:#28a745;}
+    .stop{background:#dc3545;}
+    .restart{background:#007bff;}
+    .kill{background:#6f42c1;}
+    #terminal {
+      flex: 1;
+      overflow-y: auto;        /* chỉ cuộn dọc */
+      overflow-x: hidden;      /* tắt cuộn ngang */
+      background: rgba(0,0,0,0.5);
+      font-family: monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      padding: 10px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    #commandInput {
+      width:100%; 
+      padding:10px; 
+      border:none; 
+      outline:none;
+      font-size:14px; 
+      font-family:monospace; 
+      background: rgba(255,255,255,0.1);
+      color:#fff;
+      flex-shrink: 0;
+      box-sizing: border-box;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      position: fixed; top:0; left:0; width:250px; height:100%;
+      background: rgba(15,25,40,0.95); padding:20px 15px;
+      z-index:1001; transform:translateX(-100%); opacity:0; pointer-events:none;
+      transition: transform 0.3s ease, opacity 0.3s ease;
+      display:flex; flex-direction:column; gap:15px;
+    }
+    .sidebar.open { transform:translateX(0); opacity:1; pointer-events:auto; }
+
+    .overlay{
+      position:fixed; top:0; left:0; width:100%; height:100%;
+      background: rgba(0,0,0,0.6); opacity:0; pointer-events:none;
+      transition: opacity 0.3s ease; z-index:1000;
+    }
+    .overlay.show{opacity:1; pointer-events:auto;}
+
+    /* Log popup */
+    .log-popup{
+      position:fixed; top:0; left:50%;
+      transform:translate(-50%, -100%);
+      width:600px; max-height:70vh;
+      background: linear-gradient(135deg,#0a2540,#103560);
+      border-radius:16px; box-shadow:0 0 15px rgba(0,0,0,0.7);
+      display:flex; flex-direction:column; z-index:1100;
+      opacity:0; pointer-events:none;
+      transition: transform 0.5s ease, opacity 0.5s ease;
+    }
+    .log-popup.show{
+      top:50%;
+      transform:translate(-50%, -50%);
+      opacity:1;
+      pointer-events:auto;
+    }
+    .log-popup-header{display:flex; justify-content:flex-end; padding:8px;}
+    .close-btn{
+      width:28px; height:28px; border-radius:50%; border:none; background:#dc3545;
+      color:#fff; font-weight:bold; cursor:pointer;
+    }
+    .log-content{
+      padding:10px; 
+      overflow-y:auto; 
+      overflow-x:hidden;
+      font-family:monospace; 
+      white-space: pre-wrap; 
+      overflow-wrap:anywhere;
+      color:#bcd;
+      box-sizing: border-box;
+    }
+
+    /* Custom dropdown */
+    .custom-dropdown {
+      position: relative;
+      width: 100%;
+      user-select: none;
+    }
+    .custom-dropdown .selected {
+      padding: 8px 10px;
+      background: #1e2a45;
+      color: #fff;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .custom-dropdown .options {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background: #1e2a45;
+      border-radius: 8px;
+      max-height: 0;
+      overflow-y: auto;
+      transition: max-height 0.3s ease;
+      z-index: 100;
+    }
+    .custom-dropdown.open .options {
+      max-height: 200px;
+    }
+    .custom-dropdown .options li {
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .custom-dropdown .options li:hover {
+      background: #105080;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .controls button {
+        padding:6px 10px;
+        font-size:13px;
+      }
+      #terminal { font-size:12px; }
+      .log-popup { width:90%; }
+    }
+    @media (max-width: 480px) {
+      .controls {
+        gap:5px;
+      }
+      .controls button {
+        flex:1;
+        font-size:12px;
+        min-width:auto;
+      }
+      #commandInput { font-size:12px; padding:8px; }
+      .log-popup { width:95%; border-radius:10px; }
+    }
+    .sidebar button {
+    -webkit-appearance: none; /* bỏ style mặc định iOS */
+    appearance: none;
+    border: none;
+    outline: none;
+
+    width:100%; 
+    padding:10px; 
+    border-radius:10px; 
+    font-weight:bold;
+    cursor:pointer; 
+    background:#0d3b5e; 
+    color:#fff; 
+    transition:0.3s;
+    text-align: center;
+}
+
+.sidebar button:hover {
+  background:#105080; 
+  transform:scale(1.02);
+}
+  </style>
+</head>
+<body>
+  <header>
+    <button class="toggle-sidebar-btn" onclick="toggleSidebar()">☰</button>
+    <div class="controls">
+      <button id="startBtn" class="start">Start</button>
+      <button id="restartBtn" class="restart">Restart</button>
+      <button id="killBtn" class="kill">Kill</button>
+    </div>
+  </header>
+
+  <div id="terminal"></div>
+  <input type="text" id="commandInput" placeholder="Enter command...">
+
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <h3>Settings & Logs</h3>
+    <label><input type="checkbox" id="autoScroll" checked> Auto-Scroll</label>
+    <label><input type="checkbox" id="autoRestart"> Auto-Restart on Crash</label>
+    <h3>Logs</h3>
+    <div class="custom-dropdown" id="logDropdown">
+      <div class="selected">Select log</div>
+      <ul class="options"></ul>
+    </div>
+    <button onclick="loadLog()">Load Logs</button>
+  </div>
+
+  <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
+
+  <!-- Log Popup -->
+  <div class="log-popup" id="logPopup">
+    <div class="log-popup-header">
+      <button class="close-btn" onclick="closeLog()">X</button>
+    </div>
+    <div class="log-content" id="logContent"></div>
+  </div>
+
+  <script>
+    const socket = io();
+    const terminal = document.getElementById("terminal");
+    const commandInput = document.getElementById("commandInput");
+    const startBtn = document.getElementById("startBtn");
+    const restartBtn = document.getElementById("restartBtn");
+    const killBtn = document.getElementById("killBtn");
+    const sidebar = document.getElementById("sidebar");
+    const overlay = document.getElementById("overlay");
+    const autoScroll = document.getElementById("autoScroll");
+    const autoRestart = document.getElementById("autoRestart");
+    const logDropdown = document.getElementById("logDropdown");
+    const selected = logDropdown.querySelector('.selected');
+    const options = logDropdown.querySelector('.options');
+    const logPopup = document.getElementById("logPopup");
+    const logContent = document.getElementById("logContent");
+
+    function toggleSidebar(){
+      sidebar.classList.toggle("open");
+      overlay.classList.toggle("show");
+    }
+
+    function loadLog(){
+      const file = selected.dataset.value;
+      if(file) socket.emit("loadLogs", file);
+    }
+
+    function closeLog(){ logPopup.classList.remove("show"); }
+
+    commandInput.addEventListener("keydown", e=>{
+      if(e.key==="Enter"){ 
+        socket.emit("command", commandInput.value); 
+        commandInput.value=""; 
+      }
+    });
+
+    startBtn.addEventListener("click", ()=>{
+      if(startBtn.textContent==="Start") socket.emit("start");
+      else socket.emit("stop");
+    });
+    restartBtn.addEventListener("click", ()=> socket.emit("restart"));
+    killBtn.addEventListener("click", ()=> socket.emit("kill"));
+
+    autoRestart.addEventListener("change", ()=>{ socket.emit("toggleAutorestart", autoRestart.checked); });
+
+    // Custom dropdown toggle
+    selected.addEventListener('click', ()=>{ logDropdown.classList.toggle('open'); });
+
+    function populateLogs(files){
+      options.innerHTML = '';
+      files.forEach(f=>{
+        const li = document.createElement('li');
+        li.textContent = f;
+        li.dataset.value = f;
+        li.addEventListener('click', ()=>{
+          selected.textContent = f;
+          selected.dataset.value = f;
+          logDropdown.classList.remove('open');
+        });
+        options.appendChild(li);
+      });
+    }
+
+    socket.on("output", data=>{
+      const cleaned = data
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        .replace(/<(?!\/?(?:img|audio|span)[\s>])[^>]+>/gi, "");
+      terminal.innerHTML += cleaned + "<br>";
+      if(autoScroll.checked) terminal.scrollTop = terminal.scrollHeight;
+    });
+
+    socket.on("status", status=>{
+      if(status==="offline"){
+        startBtn.textContent="Start"; startBtn.className="start";
+        restartBtn.style.display="inline-block"; killBtn.style.display="inline-block";
+        startBtn.disabled=false; restartBtn.disabled=true; killBtn.disabled=true;
+      } else if(status==="starting" || status==="stopping"){
+        startBtn.disabled=true;
+        restartBtn.disabled=true;
+        killBtn.disabled=false;
+      } else if(status==="online"){
+        startBtn.textContent="Stop"; startBtn.className="stop";
+        startBtn.disabled=false; restartBtn.disabled=false; killBtn.disabled=false;
+      }
+    });
+
+    socket.on("logFiles", files=>{
+      files.sort((a,b)=>b.localeCompare(a));
+      populateLogs(files);
+    });
+
+    socket.on("logData", content=>{
+      logContent.innerHTML = content.replace(/\x1b\[[0-9;]*m/g,"<br>");
+      logPopup.classList.add("show");
+    });
+
+    // Close dropdown if click outside
+    document.addEventListener('click', e=>{
+      if(!logDropdown.contains(e.target)) logDropdown.classList.remove('open');
+    });
+  </script>
+</body>
+</html>

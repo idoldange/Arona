@@ -1,0 +1,124 @@
+version: '3.8'
+
+services:
+  # Container Warp: Xây dựng tunnel bảo mật qua cổng 443
+  warp:
+    image: caomingjun/warp:latest
+    container_name: arona_warp
+    privileged: true
+    restart: always
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+      - NET_RAW
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    volumes:
+      - ./warp-killswitch.sh:/usr/local/bin/warp-killswitch.sh:ro
+    command: >
+      sh -c "warp-cli --accept-tos registration new && 
+             warp-cli --accept-tos mode proxy && 
+             warp-cli --accept-tos dns set-protocol https && 
+             warp-cli --accept-tos tunnel endpoint set engage.cloudflareclient.com:443 &&
+             warp-cli --accept-tos connect &&
+             chmod +x /usr/local/bin/warp-killswitch.sh &&
+             /usr/local/bin/warp-killswitch.sh &&
+             sleep infinity"
+
+  # Container Proxy: Cho phép mọi Port
+  proxy:
+    image: vimagick/tinyproxy
+    container_name: arona_proxy
+    network_mode: "service:warp"
+    restart: always
+    healthcheck:
+      # nc -z check tinyproxy đang lắng nghe trước (luôn có trong alpine)
+      # fallback wget check route qua warp (nếu wget có)
+      test: ["CMD", "sh", "-c", "nc -z 127.0.0.1 8888 || wget -qO- --proxy=http://127.0.0.1:8888 http://example.com > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 15s
+      retries: 18       # 30s + 10s×18 = ~210s tổng window cho warp kịp connect
+      start_period: 30s
+    environment:
+      - PORT=8888
+    # Lệnh này sẽ xóa sạch config cũ và tạo mới hoàn toàn để tránh bị Refused
+    command: >
+      sh -c "echo 'User tinyproxy' > /etc/tinyproxy/tinyproxy.conf && 
+             echo 'Group tinyproxy' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'Port 8888' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'Timeout 600' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'DefaultErrorFile \"/usr/share/tinyproxy/default.html\"' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'StatFile \"/usr/share/tinyproxy/stats.html\"' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'LogLevel Info' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'MaxClients 100' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'Allow 127.0.0.1' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'Allow 172.16.0.0/12' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'Allow 10.0.0.0/8' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'ConnectPort 443' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'ConnectPort 80' >> /etc/tinyproxy/tinyproxy.conf && 
+             echo 'ConnectPort 0' >> /etc/tinyproxy/tinyproxy.conf && 
+             tinyproxy -d"
+    depends_on:
+      - warp
+
+  # Container Worker: Nơi Danteh chạy code liên tục
+  arona-executor:
+    build: .
+    container_name: arona_worker
+    network_mode: "service:warp"
+    # Run as unprivileged user (drop root at runtime via `user:`)
+    privileged: false
+    restart: always
+    depends_on:
+      warp:
+        condition: service_started
+      proxy:
+        condition: service_healthy
+    environment:
+      - HTTP_PROXY=http://127.0.0.1:8888
+      - HTTPS_PROXY=http://127.0.0.1:8888
+      - OUTPUT_DIR=/app/output
+      - TZ=UTC
+      - LANG=en_US.UTF-8
+      - LC_ALL=en_US.UTF-8
+    volumes:
+      - ./workdir:/app/workdir
+      - ./output:/app/output
+      - ./executor-entrypoint.sh:/usr/local/bin/executor-entrypoint.sh
+      - ./resolv.conf:/etc/resolv.conf:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/executor-entrypoint.sh"]
+    command: ["tail", "-f", "/dev/null"]
+    # PID 1 starts root only long enough to run executor-entrypoint.sh, which
+    # immediately su-exec's down to uid 1000. Per-execution root chown still
+    # works via `docker exec -u root` (CAP_CHOWN is container-level, not tied
+    # to PID 1's uid).
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev,size=512m
+      - /home/sandboxuser:mode=777,noexec,nosuid,nodev,size=512m
+    security_opt:
+      - no-new-privileges:true
+      # seccomp:unconfined REMOVED - default seccomp profile is enough now
+      # that this container no longer needs NET_ADMIN/NET_RAW.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN     # For per-execution workdir chown by docker.py.
+      - SETGID    # Required for dropping privileges via su-exec.
+      - SETUID    # Required for dropping privileges via su-exec.
+      # NET_ADMIN and NET_RAW REMOVED: the killswitch now lives entirely in
+      # the `warp` container, which already has NET_ADMIN natively. This
+      # container can no longer flush/modify those iptables rules even if
+      # code running inside it is compromised.
+    deploy:
+      resources:
+        limits:
+          cpus: '3.0'
+          memory: 8G
+        reservations:
+          cpus: '0.25'
+          memory: 256M

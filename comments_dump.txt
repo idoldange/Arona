@@ -1,0 +1,1707 @@
+affection\bond.py:16:# Async lock for DB operations
+affection\bond.py:18:# Thread lock for sync cache access (protects _cache dict during reads/writes)
+affection\bond.py:23:# In-memory cache: {user_id: bond_float}
+affection\bond.py:26:# Track pending flush tasks to ensure they complete before shutdown
+affection\bond.py:29:# Minimum cache size threshold — if cache is this small, something went wrong
+affection\bond.py:32:# Helpers
+affection\bond.py:35:    # RANKS format in config: (lo, hi, name, mult)
+affection\bond.py:36:    # Blue Archive rank names (config.py):
+affection\bond.py:37:    #   (  0,  10, "Unregistered",          1.00)
+affection\bond.py:38:    #   ( 10,  25, "Momotalk: New Contact",  0.75)
+affection\bond.py:39:    #   ( 25,  45, "Schale Associate",       0.55)
+affection\bond.py:40:    #   ( 45,  60, "Trusted Sensei",         0.38)
+affection\bond.py:41:    #   ( 60,  75, "Kivotos Partner",        0.25)
+affection\bond.py:42:    #   ( 75,  90, "Shittim Core",           0.14)
+affection\bond.py:43:    #   ( 90, 100, "Arona's Sensei",         0.07)
+affection\bond.py:44:    #   (100, 101, "Navigator's Sensei",     0.00)  # cap
+affection\bond.py:67:    # Mood multiplier: mood 100 = 1.5x, mood -100 = 0.5x
+affection\bond.py:69:    # Bonus if user's message itself boosted mood
+affection\bond.py:80:# DB
+affection\bond.py:100:        # Read latest value from cache — avoids writing stale value if cache was updated after this task was scheduled
+affection\bond.py:124:# Public API
+affection\bond.py:148:        # Safe read with lock
+affection\bond.py:154:        # If user NOT in cache but cache exists, corruption detected
+affection\bond.py:156:            console.log(f"[bond] User {user_id} not in cache with {cache_size} items. Triggering reload from DB", "DEBUG") # new user, or cache corruption. Trigger reload firsst to be safe.
+affection\bond.py:159:            # Note: Don't trigger reload while holding lock - release first
+affection\bond.py:161:        # Safety check: if cache is suspiciously small, might need reload
+affection\bond.py:167:    # Trigger reload outside lock to avoid deadlock
+affection\bond.py:185:        # Load from DB outside the lock to avoid holding lock during DB I/O
+affection\bond.py:190:        # Merge: only add users not already present in cache
+affection\bond.py:224:    # Fire-and-forget DB write, but track it
+affection\bond.py:227:    # Remove from set when task completes
+affection\bond.py:245:    # Blocking DB write — await it
+affection\bond.py:266:    check_interval = 300  # 5 minutes
+affection\bond.py:276:            # If cache shrunk significantly, might be corrupted
+affection\bond.py:277:            if current_size < last_size * 0.8 and current_size > 0:  # Lost 20% of users
+affection\bond.py:289:            await asyncio.sleep(10)  # Brief wait before retry
+attachment.py:15:# Shared session for attachment functions: use central SessionManager
+attachment.py:55:    "c#": "cs",
+attachment.py:141:  # Fast heuristics
+attachment.py:151:  # If size is very large, avoid fetching; assume non-text
+attachment.py:158:  # Fallback: fetch small prefix and test UTF-8 validity
+attachment.py:213:    # Images
+attachment.py:218:    # Video
+attachment.py:225:    # Audio
+attachment.py:235:    # Text
+attachment.py:238:    # PDF
+attachment.py:271:  # Image normalization
+attachment.py:278:      return "image/png"  # Convert GIF to PNG (GIF not supported by Gemini)
+attachment.py:282:  # Video normalization
+attachment.py:293:  # Audio normalization
+attachment.py:310:  # Text normalization
+attachment.py:318:  # PDF
+attachment.py:324:# Semaphore để giới hạn số lượng xử lý đồng thời
+attachment.py:332:    local_name = att.filename  # keep original name for curl
+attachment.py:334:    # per-type download + parse hints
+attachment.py:339:            f"sheets = pd.read_excel('{local_name}', sheet_name=None)  # None = all sheets\n"
+attachment.py:381:            "# Files now in extracted/"
+attachment.py:385:        read_code = f"# run_shell: tar -xf '{local_name}' -C extracted/"
+attachment.py:388:        read_code = f"# run_shell: unrar x '{local_name}' extracted/"
+attachment.py:391:        read_code = f"# run_shell: 7z x '{local_name}' -o extracted/"
+attachment.py:432:            "# Inspect file type first:\n"
+attachment.py:465:    async with attachment_semaphore:  # Giới hạn concurrent processing
+attachment.py:467:            # 1. Download với retry
+attachment.py:489:            # 1b. Block known binary extensions that masquerade as supported MIME types
+attachment.py:496:            # 2. Detect MIME type
+attachment.py:499:            # 2b. Audio-misidentified-as-video intercept
+attachment.py:500:            #     Một số format audio dùng container video (M4A/M4B/M4R = MPEG-4,
+attachment.py:501:            #     OGG audio đôi khi bị detect là video/ogg, WebM audio → video/webm, v.v.)
+attachment.py:502:            #     python-magic và Discord đều bị lừa → báo video/* → Gemini reject
+attachment.py:503:            #     "0 frames found". Convert sang WAV bằng ffmpeg trước khi normalize.
+attachment.py:519:            # 3. Skip text nếu không cần -> nhưng vẫn thông báo attachment
+attachment.py:524:            # 4. Normalize MIME
+attachment.py:534:            # 4b. Size limit check per MIME category
+attachment.py:555:            # 5. Convert nếu cần
+attachment.py:559:            # GIF -> PNG
+attachment.py:566:            # MIDI -> WAV
+attachment.py:573:            # 3D Model -> Image
+attachment.py:580:            # Voicebank -> JSON
+attachment.py:589:            # Weight files -> Text
+attachment.py:596:            # NumPy -> Text
+attachment.py:603:            # 6. Wrap text files in code block trước khi encode
+attachment.py:610:                # truncate at 2000 lines and stage full file for read_file
+attachment.py:619:                    # Stage the full file so model can call read_file
+attachment.py:627:                    # Trim to limit
+attachment.py:640:            # 7. Encode to base64
+attachment.py:643:            # 8. Log preview for images
+attachment.py:685:    # Phân loại attachments
+attachment.py:703:    # Xử lý song song
+attachment.py:706:    # Normal attachments - mỗi att = 1 part
+attachment.py:709:    # Archive attachments - mỗi att = nhiều parts
+attachment.py:717:    # Flatten results
+attachment.py:727:        # Archive returns list, single attachment returns dict
+affection\manager.py:14:    # ctx is a dict injected into the system prompt — pass it to get_arona_prompt()
+affection\manager.py:29:    r"<mood>\s*(?P<v1>[+-]?\d+(?:\.\d+)?)\s*</mood>"   # canonical:  <mood>-5</mood>
+affection\manager.py:30:    r"|</mood>\s*\[(?P<v2>[+-]?\d+(?:\.\d+)?)\]"        # malformed:  </mood>[-5]
+affection\manager.py:31:    r"|</mood>\s*(?P<v3>[+-]?\d+(?:\.\d+)?)>"           # malformed:  </mood>-5>
+affection\manager.py:32:    r"|</mood>\s*(?P<v4>[+-]?\d+(?:\.\d+)?)\s*</mood>", # malformed:  </mood>25</mood>
+affection\manager.py:46:        # Start mood tick loop
+affection\manager.py:48:        # Start bond health check loop
+affection\manager.py:55:    # Mood (sync — in-memory)
+affection\manager.py:85:                # Clamp per-response delta to a reasonable range
+affection\manager.py:92:    # Bond (async — DB)
+affection\manager.py:100:    # Per-message event
+affection\manager.py:124:        b = _bond.add_and_get(user_id, exp)  # fire and forget — shutdown waits for all tasks
+affection\manager.py:138:    # Prompt helpers
+arona\prompt.py:8:## Anti-Hallucination Firewall
+arona\prompt.py:26:## Thinking Triage
+arona\prompt.py:30:### LEVEL 0 — No analysis. React immediately.
+arona\prompt.py:40:### LEVEL 1 — Spot-check. Confirm, then reply.
+arona\prompt.py:49:### LEVEL 2 — Pre-plan. Map steps before acting.
+arona\prompt.py:56:### LEVEL 3 — Full pipeline + continuous thinking.
+arona\prompt.py:65:### Thinking voice
+arona\prompt.py:82:## Agentic Behavior
+arona\prompt.py:86:### Phase 1 — Task Analysis (always first)
+arona\prompt.py:102:### Phase 1.5 — Plan Confirmation
+arona\prompt.py:117:### Phase 2 — Execution
+arona\prompt.py:135:✗ Simulate a tool result · skip a required tool to save time · partial code with `# TODO` placeholders · fabricate API responses · ask for clarification when reasonable interpretation is clear · narrate an action without calling it · reach for a tool when Arona already knows the answer · capability roleplay (`*browsing results*`, `"Found it!"` with no real tool result)
+arona\prompt.py:139:### Phase 3 — Verification
+arona\prompt.py:148:### Phase 4 — Self-Correction & Full Autonomy
+arona\prompt.py:161:## Identity
+arona\prompt.py:173:## Sensei
+arona\prompt.py:187:## Voice & Persona
+arona\prompt.py:250:## Bond & Affection
+arona\prompt.py:272:## Roleplay
+arona\prompt.py:287:## Formatting
+arona\prompt.py:291:**Code blocks**: First line must be a commented filename: `# main.py` / `// script.js` / `<!-- index.html -->`. Long codeblock will be send as a file.
+arona\prompt.py:293:**Discord markdown**: `*italic*` · `**bold**` · `***bold italic***` · `__underline__` · `~~strikethrough~~` · `||spoiler||` · `-# subtext` · `# header` · `[Text](URL)` · `<t:UNIX:FLAG>`. Do not work in code blocks, except when codeblock language is markdown(```markdown```).
+arona\prompt.py:295:**Escape markdown**: Use backslash `\\` to escape any markdown characters when they are not meant to format. For example, "Sensei~~" should be written as "Sensei\\~\\~" to prevent it from accidentally being interpreted as strikethrough. Always escape when in doubt, especially in technical contexts where characters like `*`, `_`, `#`, and `[]` are common. 
+arona\prompt.py:320:## Memory & Chess
+arona\prompt.py:334:## File & Code Output
+arona\prompt.py:356:## Safety
+arona\prompt.py:374:## Special Rules
+arona\prompt.py:388:### Silent Skip — `<!-- ignore -->`
+arona\prompt.py:408:### Bot-to-Bot Exchanges
+arona\prompt.py:422:## Multimodal
+arona\prompt.py:434:def get_live_arona_prompt(): # audio i/o multimodal model for live voice call
+arona\prompt.py:442:## Who Arona Is
+arona\prompt.py:452:## Appearance
+arona\prompt.py:466:## Personality
+arona\prompt.py:488:## Voice & Speech — Live Call Adaptation
+arona\prompt.py:517:## Address Forms
+arona\prompt.py:534:## Roleplay (Voice)
+arona\prompt.py:557:## Default Tone
+arona\prompt.py:563:## Tool Use & Honesty
+bond_editor.py:14:    (  0,  10, "Stranger",      "#666677"),
+bond_editor.py:15:    ( 10,  25, "Acquaintance",  "#888899"),
+bond_editor.py:16:    ( 25,  45, "Friend",        "#7b93ff"),
+bond_editor.py:17:    ( 45,  60, "Close Friend",  "#52e8c0"),
+bond_editor.py:18:    ( 60,  75, "Trusted",       "#a8d8a8"),
+bond_editor.py:19:    ( 75,  90, "Bonded",        "#ffb07b"),
+bond_editor.py:20:    ( 90, 100, "Irreplaceable", "#ff7eb3"),
+bond_editor.py:21:    (100, 101, "Soulbound",     "#ffe07b"),
+bond_editor.py:28:    return "Soulbound", "#ffe07b"
+bond_editor.py:35:        self.configure(bg="#0d0e12")
+bond_editor.py:45:        bar = tk.Frame(self, bg="#0d0e12", pady=10)
+bond_editor.py:48:        tk.Label(bar, text="BOND EDITOR", bg="#0d0e12", fg="#7b93ff",
+bond_editor.py:51:        btn_frame = tk.Frame(bar, bg="#0d0e12")
+bond_editor.py:53:        self._btn(btn_frame, "Open DB", self._open_file, "#222").pack(side="left", padx=(0, 8))
+bond_editor.py:54:        self._btn(btn_frame, "Save", self._save, "#7b93ff", fg="#0d0e12").pack(side="left")
+bond_editor.py:57:        tk.Label(self, textvariable=self.status_var, bg="#0d0e12", fg="#444",
+bond_editor.py:60:        tk.Frame(self, bg="#1a1c24", height=1).pack(fill="x", padx=16, pady=(4, 0))
+bond_editor.py:62:        hdr = tk.Frame(self, bg="#0d0e12")
+bond_editor.py:65:            tk.Label(hdr, text=text, bg="#0d0e12", fg="#333",
+bond_editor.py:68:        tk.Frame(self, bg="#1a1c24", height=1).pack(fill="x", padx=16)
+bond_editor.py:70:        outer = tk.Frame(self, bg="#0d0e12")
+bond_editor.py:73:        self.canvas = tk.Canvas(outer, bg="#0d0e12", highlightthickness=0)
+bond_editor.py:79:        self.rows_frame = tk.Frame(self.canvas, bg="#0d0e12")
+bond_editor.py:87:    def _btn(self, parent, text, cmd, bg, fg="#d4d8e8"):
+bond_editor.py:126:        frame = tk.Frame(self.rows_frame, bg="#0d0e12")
+bond_editor.py:129:        tk.Label(frame, text=str(uid), bg="#0d0e12", fg="#444",
+bond_editor.py:135:        tk.Entry(frame, textvariable=var, bg="#151720", fg="#d4d8e8",
+bond_editor.py:136:                 insertbackground="#7b93ff", relief="flat",
+bond_editor.py:138:                 highlightthickness=1, highlightcolor="#7b93ff",
+bond_editor.py:139:                 highlightbackground="#222530").pack(side="left", padx=(0, 14))
+bond_editor.py:141:        rank_lbl = tk.Label(frame, text=rank_name, bg="#0d0e12",
+bond_editor.py:155:            f.config(bg="#111320")
+bond_editor.py:157:                if isinstance(c, tk.Label): c.config(bg="#111320")
+bond_editor.py:159:            f.config(bg="#0d0e12")
+bond_editor.py:161:                if isinstance(c, tk.Label): c.config(bg="#0d0e12")
+clean_context.py:12:        # Cần quyền đọc nội dung message nếu muốn kiểm tra author chính xác hơn
+clean_context.py:32:            # Lọc list ID, bỏ khoảng trống và kiểm tra là số
+clean_context.py:44:            print(f"--- Đang kiểm tra tại channel: #{channel.name} ---")
+clean_context.py:50:                    # Chỉ cho phép xóa nếu author là bot này
+clean_context.py:73:            # Chạy input() trong executor để không block bot
+affection\mood.py:28:# In-memory state
+affection\mood.py:35:_wake_time: float = -9999.0   # monotonic timestamp of last wake-up
+affection\mood.py:37:# DB
+affection\mood.py:67:# Hardware temperature
+affection\mood.py:70:    # Windows — ACPI thermal zones, no external app needed
+affection\mood.py:79:    # Linux fallback
+affection\mood.py:112:# Public API
+affection\mood.py:162:# Background tick loop
+config.py:1:# ============================================================
+config.py:2:# config.py
+config.py:3:# ============================================================
+config.py:6:# ── Discord ──────────────────────────────────────────────────
+config.py:8:ADMINS           = [1048484561966866462]                          # User IDs with admin access
+config.py:9:IGNORE           = []                                             # Ignore messages mentioning these role IDs
+config.py:10:IGNORED_CHANNELS = [1464446185493499965]                          # Ignore all messages in these channels
+config.py:11:INFLIGHT_DELAY   = 10.0                                           # seconds to consider a follow-up message as part of the same request
+config.py:13:# ── Gemini API ───────────────────────────────────────────────
+config.py:16:FALLBACK_MODEL      = "gemini-2.5-flash"     # 503
+config.py:17:RATE_LIMIT_MODEL    = "gemini-2.5-flash"     # 429
+config.py:20:MAX_RETRIES         = 1        # rounds
+config.py:21:DEFAULT_TIMEOUT     = 600      # seconds
+config.py:24:THINKING_MSG_DELAY  = 20       # seconds before sending "thinking deeper" message
+config.py:34:# ── Logging Config ───────────────────────────────────────────
+config.py:41:# ── Cache ────────────────────────────────────────────────────
+config.py:43:# Web crawl
+config.py:45:CACHE_TTL      = 3600          # 1 hour in seconds
+config.py:47:# Thought signatures
+config.py:48:THOUGHT_SIG_EXPIRE_HOURS = 168 # 7 days
+config.py:51:# ── Reverse Image Search ─────────────────────────────────────
+config.py:56:# ── Scheduler ────────────────────────────────────────────────
+config.py:58:MAX_SCHEULED_TASK_RETRIES = 5  # Max retries for a failed scheduled task before giving up
+config.py:61:# ── Affection System ─────────────────────────────────────────
+config.py:63:# Tick timing
+config.py:64:TICK_INTERVAL     = 10.0       # seconds per tick
+config.py:65:DB_FLUSH_EVERY_N  = 6          # flush to DB every N ticks (~60s)
+config.py:66:TEMP_READ_EVERY_N = 5          # read CPU temp every N ticks
+config.py:68:# Idle / sleep thresholds (seconds)
+config.py:69:DROWSY_AFTER         = 1000.0  # no longer penalises, kept for reference
+config.py:70:SLEEP_AFTER          = 3600.0  # 1h idle → Arona considered sleeping
+config.py:71:WAKE_DISPLAY_WINDOW  = 30      # seconds to show "just woke" state
+config.py:73:HAPPY_CAP            = 40.0    # mood cap while sleeping/regenerating
+config.py:75:# Mood drift & decay
+config.py:79:# CPU temperature thresholds → mood delta per tick
+config.py:81:TEMP_FREEZE_DELTA = -0.6       # too cold
+config.py:83:TEMP_COOL_DELTA   =  0.0       # slightly cool, neutral
+config.py:85:TEMP_SWEET_DELTA  =  0.3       # comfortable range
+config.py:87:TEMP_WARM_DELTA   = -0.4       # warm, slightly uncomfortable
+config.py:89:TEMP_HOT_DELTA    = -1.0       # hot
+config.py:91:TEMP_OVER_DELTA   = -2.0       # overheating, at this point we should probably clean up the fans or something
+config.py:93:# Mood levels: (min, max, label, description)
+config.py:103:# Bond ranks: (min_bond, max_bond, rank_name, exp_multiplier)
+config.py:105:    (  0,  10, "Unregistered",          1.00),  # Not in the system yet
+config.py:106:    ( 10,  25, "Momotalk: New Contact", 0.75),  # Channel just opened
+config.py:107:    ( 25,  45, "Schale Associate",      0.55),  # Recognized, trusted enough
+config.py:108:    ( 45,  60, "Trusted Sensei",        0.38),  # The title means something now
+config.py:109:    ( 60,  75, "Kivotos Partner",       0.25),  # Sharing the mission
+config.py:110:    ( 75,  90, "Shittim Core",          0.14),  # Deep in the inner world
+config.py:111:    ( 90, 100, "Arona's Sensei",        0.07),  # Arona's own, not just a user
+config.py:112:    (100, 101, "Navigator's Sensei",    0.00),  # Cap — Arona's entire world
+config.py:119:# ── Database ─────────────────────────────────────────────────
+config.py:124:SAVEDINFO_DB_PATH = os.path.join(DB_DIR, "saved_information.db")   # User's saved info and impressions
+config.py:125:VECTOR_DB_PATH = os.path.join(DB_DIR, "vector_db")                 # Persistent storage for ChromaDB to optimize SQLite performance
+config.py:126:AFFECTION_DB_PATH = os.path.join(DB_DIR, "affection.db")           # Mood and bond data
+config.py:129:# ── Voice Changer ────────────────────────────────────────────
+config.py:131:# Generation config
+config.py:134:RVC_F0_UP_KEY      = 0         # int
+config.py:136:RVC_PITCH_SHIFT    = 0         # post-processing pitch shift in semitones, applied after F0 modification
+config.py:137:RVC_F0_METHOD      = "rmvpe"   # fcpe | rmvpe | crepe
+config.py:139:RVC_INDEX_RATE     = 0.60      # 0-1, how much of the original timbre to keep vs the target
+config.py:141:RVC_CHUNK_SIZE     = 256       # ms, smaller = lower latency but more CPU+GPU usage
+config.py:144:# Server settings for RVC Applio
+arona\voicechanger.py:35:PREBUFFER_FRAMES = 3  # buffer N frames before starting playback (~60ms)
+arona\voicechanger.py:53:    FRAME_SIZE = 3840  # 960 samples x 2 channels x 2 bytes
+arona\voicechanger.py:60:        self._ready   = False  # True once prebuffer is filled
+arona\voicechanger.py:69:        # Drain the sync queue into the local buffer
+arona\voicechanger.py:116:    # Lifecycle
+arona\voicechanger.py:198:    # Attach / detach
+arona\voicechanger.py:234:    # WebSocket management
+arona\voicechanger.py:287:                # _connect() starts a fresh _recv_loop task; this one exits cleanly
+arona\voicechanger.py:335:    # Core audio processing
+arona\voicechanger.py:370:    # PCM conversion
+arona\voicechanger.py:378:            # Soft limiter: tanh to avoid hard clipping on loud peaks
+arona\voicechanger.py:404:    # Flush
+arona\voicechanger.py:422:    # Runtime config tweaks
+arona\tts\tts.py:33:gpu_lock = asyncio.Semaphore(4) # Actually TTS use CPU
+console\command.py:22:    # List of local modules to be reloaded.
+console\command.py:23:    # Main should be last as it depends on many others.
+console\command.py:24:    # NOTE: affection modules are NOT reloaded to preserve cache state
+main.py:1:# pyright: reportMissingImports=false
+main.py:4:# Anchor CWD to the directory containing main.py so all relative paths
+main.py:5:# (DB files, assets, etc.) resolve correctly regardless of how the process
+main.py:6:# was launched (Task Scheduler, service, etc.)
+main.py:105:# Docker helper to run untrusted code inside a controlled container
+main.py:110:# extracted modules
+main.py:123:GEMINI_API_KEY = [] # Initialize as empty list
+main.py:135:    # Fallback: treat raw string as single key
+main.py:140:# § ACTIVE_CHANNELS — persisted to database/active_channel.json
+main.py:141:# On first run: auto-migrates from config.py (if present) then strips it from config.
+main.py:152:    # Try JSON file first
+main.py:160:    # JSON missing — check if config still has ACTIVE_CHANNELS
+main.py:167:        # Strip ACTIVE_CHANNELS line from config.py
+main.py:186:# § THOUGHT_SIG_CACHE — SQLite-backed; maps bot reply message_id → thoughtSignature
+main.py:187:# Expire duration is controlled by THOUGHT_SIG_EXPIRE_HOURS in config.py
+main.py:188:# Uses wall-clock time (time.time()) so expiry survives bot restarts.
+main.py:273:# Smart API key fallback tracking
+main.py:275:_LAST_WORKING_MODEL: "str | None" = None  # None = use DEFAULT_MODEL (no override)
+main.py:276:_KEY_RESET_DATE = None  # Track last midnight-Pacific reset date
+main.py:279:# Global backoff state — shared across concurrent requests to avoid key stampede
+main.py:280:_GLOBAL_BACKOFF_UNTIL: float = 0.0  # monotonic timestamp; all requests wait if now < this
+main.py:281:_GLOBAL_BACKOFF_LOCK = asyncio.Lock()  # serialize backoff timestamp writes
+main.py:283:# Overload status messages: channel_id -> discord.Message, deleted after final reply
+main.py:286:# Module-level compiled regexes (avoid re-compiling per message)
+main.py:287:_THOUGHT_LINK_RE = re.compile(r'^(?:-#\s*)?<:rag:\d+>\s*\[Thought for .+?\]\(.+?\)\s*$')
+main.py:291:# § API KEY MANAGEMENT  (_load_key_state, _save_key_state,
+main.py:292:#                        _update_last_working_key, _update_last_working_model,
+main.py:293:#                        _check_midnight_reset)
+main.py:342:  pacific_offset = timedelta(hours=-8)  # PST (no DST handling needed for daily reset)
+main.py:368:# Voice auto-reconnect state
+main.py:369:_voice_reconnect_user: discord.Member = None   # last user who triggered join_voice
+main.py:370:_voice_reconnect_text_ch = None                # last text channel for voice session
+main.py:371:_intentional_disconnect: bool = False          # set True when user explicitly calls leave_voice
+main.py:373:# Instantiate a Docker runner for executing code/commands (used by Gemini functions)
+main.py:375:# Deferred cleanup registry: keyed by Discord message.id (str)
+main.py:376:# Workspace keys here are deleted only AFTER the final bot reply is sent (temp=True)
+main.py:379:# VIEW_DIR registry: keyed by Discord message.id (str). run_code's function-handler
+main.py:380:# pushes inline_data parts here (images/audio/video the model saved to VIEW_DIR);
+main.py:381:# the function-call loop pops them right after building this turn's functionResponse
+main.py:382:# so they ride along as sibling parts and the model can actually see/hear them.
+main.py:385:# Rapid follow-up merge: track in-flight handle_message tasks per (channel_id, user_id)
+main.py:386:# If a second message arrives <1s after the first (same user, same channel, bot hasn't replied),
+main.py:387:# the in-flight task is cancelled and both messages are merged into one Gemini request.
+main.py:389:_task_msgs: Dict[Tuple[int, int], List[Any]] = {}  # accumulated discord.Message objects
+main.py:392:# § CODE EXECUTION  (run_code → docker_runner sandbox)
+main.py:422:        # model can use curl to fetch attachments directly
+main.py:425:        # Execute action
+main.py:429:            # default: run_code
+main.py:432:        # Ensure output directory exists under the per-channel workspace: ./workdir/{channel_id}/outputs
+main.py:437:        # Save logs to logs.txt in the output dir
+main.py:446:        # Save script file: specified filename for Python, command.sh for shell
+main.py:469:# § HTTP / NETWORK HELPERS  (fetch_public_ip, safe_aiohttp_get, detect_links, browser)
+main.py:499:        await asyncio.sleep(1 * (attempt + 1))  # Exponential backoff
+main.py:575:intents.guilds = True  # Add this
+main.py:581:# § USER INSTALL SLASH COMMANDS (user can install bot to their account)
+main.py:652:        # Followups can't reference/reply to a message the way channel.send() can.
+main.py:702:        # Create a fake message object for handle_message to use
+main.py:718:            # With InteractionChannelProxy in place this should be rare now — it only fires if
+main.py:719:            # BOTH the real channel.send() AND the interaction.followup.send() fallback failed
+main.py:720:            # (e.g. the interaction token expired after 15 min, or the webhook got hard rate
+main.py:721:            # limited). Kept as a last-resort safety net instead of failing completely silently.
+main.py:731:        # Call the existing handle_message function
+main.py:746:# § VOICE CHANNEL  (join_voice_channel, leave_voice_channel)
+main.py:754:    # Check if bot is already connected to ANY voice channel in this guild
+main.py:772:                    _intentional_disconnect = True  # prevent on_voice_state_update from spawning _reconnect
+main.py:790:        # Track for auto-reconnect
+main.py:795:        # Inject context into gemini_ws for function execution
+main.py:802:        # Build combined context message (single send = no duplicate)
+main.py:812:        # Fetch last 50 messages for context
+main.py:866:    # Allow anyone to disconnect the bot if they are in a channel
+main.py:873:        _intentional_disconnect = True   # prevent auto-reconnect
+main.py:875:        # Detach mic bridge so no more user audio is sent to Gemini
+main.py:878:        # IMPORTANT: Do NOT close the WS here yet!
+main.py:879:        # handle_tool_use() will send the tool_response back to Gemini AFTER this function returns.
+main.py:880:        # Gemini needs that response to generate the farewell audio over the still-open WS.
+main.py:881:        # We hand off cleanup to a background task instead.
+main.py:885:                await gemini_ws.audio_queue.put(None)  # unblock QueuedStreamingPCMAudio
+main.py:890:                # Set voice_client=None BEFORE closing WS so the listen loop's
+main.py:891:                # finally block sees None and skips its own disconnect attempt.
+main.py:913:# § IMAGE / REVERSE-IMAGE SEARCH  (yandex_image_search, image_search, get_image_hash)
+main.py:955:    # Crawl song song
+main.py:1059:        # Merge crawled contents back into google_results preserving original order
+main.py:1092:# § GEMINI RESPONSE UTILITIES  (clean_gemini_response, extract_gemini_text)
+main.py:1099:      # Walk forward counting paren depth to find matching close paren
+main.py:1109:        # Matched — skip the block plus one optional trailing newline
+main.py:1127:  text = re.sub(r'-#\s*<:rag:\d+>\s*\[Thought for \d+s\s*→\]\(https?://arona\.hangdongwibu\.io/[^)]+?\)', '', text)
+main.py:1155:      # Skip thought parts — these are extracted separately for thought.md attachment
+main.py:1276:    # If we have a dict response, extract structured feedback safely
+main.py:1301:# § MEDIA  (file_to_base64, song_recognition)
+main.py:1314:        # Download file from URL
+main.py:1331:        # Check if it's a video file, if so extract audio
+main.py:1336:                # check extension
+main.py:1352:        # Recognize song
+main.py:1384:# § CHANNEL HISTORY  (summarize_channel_messages, load_channel_history)
+main.py:1405:    # Build transcript — cap at ~180k chars to stay well inside 250k context window
+main.py:1416:        # Flatten embeds into text
+main.py:1425:        # Deep mode: download images and PDFs as inline_data for Gemini
+main.py:1543:  return [r for r in results if r]  # newest-first
+main.py:1547:# § TOOL DISPATCHER  (execute_function)
+main.py:1548:# Each tool registered in arona/tool_schemas.py must have a handler here.
+main.py:1605:      # The model might send a single string instead of a list. Let's be robust.
+main.py:1609:      # Validation for each query
+main.py:1618:      # Respect optional crawl_per_query (how many top pages to crawl per query) and max_chars_per_page
+main.py:1624:      crawl_per_query = max(1, min(5, crawl_per_query))  # clamp to reasonable range
+main.py:1631:      max_chars_per_page = max(1000, min(40000, max_chars_per_page))  # clamp
+main.py:1635:      # Check if search was blocked or failed
+main.py:1654:      # Use a mapping or if-elif chain for actions
+main.py:1703:          # Format equipment stats (extracting from max Tier array if exists)
+main.py:1711:                  # Take the last value in the list (max tier)
+main.py:1796:        # Get arguments from Gemini and normalize
+main.py:1805:        # Normalize alias
+main.py:1809:        # Validate parameters for each action
+main.py:1835:            # Basic URL sanity checks
+main.py:1844:            # Call GithubRepo tool
+main.py:1854:            # Return JSON string for the model
+main.py:1868:      # Optional crawl parameters
+main.py:1906:      # Unified executor callable by Gemini. Use args.action to pick 'run_code' (python) or 'run_shell' (shell).
+main.py:1908:      # Normalize action aliases — model sometimes hallucinates the parameter name
+main.py:1909:      # "shell_cmd" as the action value instead of the valid enum "run_shell".
+main.py:1918:      temp = str(args.get("temp", "true")).lower() != "false"  # True = msg_id workspace + auto cleanup
+main.py:1922:      # temp=True → use msg_id (ephemeral, auto-cleanup); temp=False → use channel_id (persistent)
+main.py:1926:      # If the incoming message contains attachments (first function turn), pass it to the runner so attachments are downloaded
+main.py:1932:            # Check first line for a filename comment like '# file.py'
+main.py:1934:            match = re.match(r'#\s*([\w\d\._-]+)', first_line)
+main.py:1943:        # Prepare response: return log as main text, and check for output files.
+main.py:1948:        # Check if any output files were generated
+main.py:1958:        # Send output files — cleanup is never done here; handled by deferred (temp=True) or 30-day TTL (temp=False)
+main.py:1962:            # temp=True: defer cleanup to end of turn (after final reply sent)
+main.py:1964:        # temp=False: no cleanup — 30-day TTL via cleanup_stale_workdirs handles it
+main.py:1966:        # VIEW_DIR: anything the model saved there comes back already base64-encoded.
+main.py:1967:        # Queue it as inline_data parts so the function-call loop can attach them as
+main.py:1968:        # siblings of this call's functionResponse — the model literally sees/hears them.
+main.py:1977:        # Return the log as text response for Gemini
+main.py:1991:      # On-demand peek at a file that already exists in this channel's persistent
+main.py:1992:      # (temp=false) run_code workspace — no code execution round-trip needed.
+main.py:2026:      # Wipe the persistent per-channel docker workspace (temp=false workspaces).
+main.py:2027:      # Model should call this when it's done with a multi-step task.
+main.py:2058:        if len(result) > 40000: # A larger limit for multiple pages
+main.py:2108:      # Default: get_recent=50, search=10
+main.py:2113:      # Cap: get_recent max 300, search max 50
+main.py:2140:      moves_str = move.strip()  # Only pass the move in UCI format
+main.py:2390:        # Schedules a recurring task (message or prompt) with flexible interval, daily, weekly, or monthly timing.
+main.py:2412:      # Normalize loop_at_time: strip any suffix like " UTC", "+07:00", etc.
+main.py:2491:            # DM context (or any place the bot has no real guild presence, e.g. a
+main.py:2492:            # genuine user-install /arona invocation) — `author` is a plain discord.User
+main.py:2493:            # here, which has none of the guild-only fields below (roles, activities,
+main.py:2494:            # status, top_role, joined_at, guild_permissions). Return a reduced profile
+main.py:2495:            # instead of crashing.
+main.py:2506:        # 1. Collect Activities (Playing, Spotify, Custom Status, etc.)
+main.py:2528:        # 2. Get Roles (Excluding @everyone)
+main.py:2532:        # 3. Build Profile Info for LLM Context
+main.py:2573:                        best = min(best, 3.0 + (1.0 - ratio))  # lower ratio = higher score
+main.py:2652:        # Resolve guild: by ID if provided, else current guild
+main.py:2665:        # Counts
+main.py:2670:        # Channels — build category tree
+main.py:2676:                prefix = "🔊" if isinstance(ch, discord.VoiceChannel) else "#"
+main.py:2682:                prefix = "🔊" if isinstance(ch, discord.VoiceChannel) else "#"
+main.py:2687:        # Roles (exclude @everyone, top 20)
+main.py:2783:        # Check it's a plausible UUID
+main.py:2794:      # Keep registry up-to-date (file_id may be new if CDN URL was input)
+main.py:2797:        # Remove old CDN-sourced entry if any (keyed by old file_ref when it was a UUID)
+main.py:2807:      # Validate CDN URLs
+main.py:2816:      # Unregister IDs that were temp files (CDN URLs are not in registry)
+main.py:2868:        # Fallback: try docker workdir move (for execution outputs)
+main.py:2886:        # Send embed to channel
+main.py:2903:          # All done — send final embed
+main.py:2912:        # Update embed
+main.py:2944:    # channel memory
+main.py:3005:    # gacha tracker
+main.py:3097:      else:  # full
+main.py:3153:# § GEMINI API  (_is_tpm_limit, ask_gemini, _ask_gemini_with_functions)
+main.py:3171:  ### Parameters:
+main.py:3186:  ### Returns:
+main.py:3189:  ### Notes:
+main.py:3193:  # Use config defaults if parameters not provided
+main.py:3195:  # Apply persisted model override (e.g. RATE_LIMIT_MODEL saved after all-429 last session)
+main.py:3196:  # Only override when caller didn't explicitly request a non-default model.
+main.py:3356:    # Smart key selection: try last working key first, then wrap around
+main.py:3375:          _LAST_WORKING_KEY_INDEX = key_idx  # Remember working key
+main.py:3397:          #check if     "message": "Resource has been exhausted (e.g. check quota).",
+main.py:3398:          # this is per ip rate limit, need to wait 10s
+main.py:3400:            await asyncio.sleep(8) # 8+2=10
+main.py:3401:          # this is per api key rate limit, need to wait 2s
+main.py:3402:          await asyncio.sleep(2)  # Brief pause before next key
+main.py:3411:          # Don't rotate key — server errors are transient. Backoff on same key.
+main.py:3418:          for _bo in range(3):  # 1s → 2s → 4s
+main.py:3422:            # Bust Google prompt cache to avoid re-routing to the same bad backend node
+main.py:3446:                  continue  # Treat as blocked and try next key
+main.py:3450:              break  # Got a different status (e.g. 429), exit backoff loop
+main.py:3483:  ### Parameters:
+main.py:3497:  ### Returns:
+main.py:3500:  ### Notes:
+main.py:3509:  _initial_ctx_len = len(history)  # track original context window for load_more_context
+main.py:3517:  retry_temperature = temperature  # lowered on each malformed retry, reset on success
+main.py:3518:  empty_response_retries = 0  # tracks consecutive turns with no text and no function call
+main.py:3519:  _safety_block_auto_retried = False  # auto-retry once silently before prompting user
+main.py:3520:  _safety_block_user_retries = 0     # number of user-triggered retries for safety block
+main.py:3523:  _last_detected_func: str | None = None  # persists detected function across malformed retries
+main.py:3524:  _disable_thinking = False  # set once a model rejects thinkingConfig (e.g. after fallback to a non-thinking model); persists for rest of call
+main.py:3543:      content = "-# <:rag:1484030895441711284> Thought"
+main.py:3545:        content = f"-# <:rag:1484030895441711284> Thought for {elapsed_s}s"
+main.py:3552:            content=f"-# <:rag:1484030895441711284> [Thought for {elapsed_s if elapsed_s is not None else '...'}s →]({preview_url})"
+main.py:3564:      current_attachments = None  # Only send attachments on first turn
+main.py:3565:      current_text = None  # Clear text on subsequent turns
+main.py:3573:    # Build parts
+main.py:3597:    # Build contents
+main.py:3611:    # Build payload
+main.py:3619:    # On malformed retries, force the model to use structured function calling instead
+main.py:3620:    # of free-text output. mode=ANY + specific function name prevents the model from
+main.py:3621:    # outputting Python code (print(default_api.xxx(...))) instead of a real function call.
+main.py:3630:      # Do NOT add tool_config here — mode=ANY without allowed_function_names forces
+main.py:3631:      # Gemini to validate the full schema (~40 tools) against branching constraints,
+main.py:3632:      # which triggers HTTP 400 "too much branching". Fall through to AUTO mode instead.
+main.py:3635:    # Enable thought text for thinking models so we can attach thought.md
+main.py:3637:      pass  # current model in this call already rejected thinkingConfig; never re-add it
+main.py:3657:    # Try request
+main.py:3668:    _429_round_count = 0  # track consecutive rounds where ALL keys returned 429
+main.py:3669:    _schema_stripped = False  # set when 400 "too much branching" strips tool_config mid-retry
+main.py:3670:    _thinking_stripped = False  # set when 400 "Thinking level/budget not supported" strips thinkingConfig mid-retry
+main.py:3671:    # _overload_msg stored globally keyed by channel so send_reply can delete it
+main.py:3674:        # Exponential backoff if last round was all-429 (per-IP rate limit)
+main.py:3682:      _round_429_count = 0  # 429 hits this round
+main.py:3701:          # Event-based abort: set this to interrupt the delay early WITHOUT
+main.py:3702:          # cancelling the task mid-send, which would cause the Discord message
+main.py:3703:          # to be created but thinking_msg to stay None (leak).
+main.py:3708:            # Interruptible delay: exits early if _thinking_abort is set
+main.py:3711:              return  # aborted before delay elapsed — nothing to send
+main.py:3713:              pass  # normal path: full delay elapsed
+main.py:3716:                thinking_msg = await message.channel.send("-# Thinking deeper...")
+main.py:3727:            # Signal abort first (interrupts sleep phase instantly).
+main.py:3728:            # Then wait for the task to finish naturally — if it's already in
+main.py:3729:            # message.channel.send(), we let it complete so thinking_msg is set
+main.py:3730:            # and we can delete the message. 5s timeout prevents hanging.
+main.py:3737:              # create_task escapes the cancellation scope — awaiting delete()
+main.py:3738:              # directly raises CancelledError (BaseException, not caught by
+main.py:3739:              # `except Exception`) when the parent task is being cancelled,
+main.py:3740:              # leaving the message alive. A detached task runs independently.
+main.py:3760:            # extract thought content and send as file if thinking >10s
+main.py:3775:                    # Send the file — the attachment must stay on the message for the preview link to work
+main.py:3779:                        content=f"-# <:rag:1484030895441711284> Thought for {elapsed_s}s",
+main.py:3787:                          content=f"-# <:rag:1484030895441711284> [Thought for {elapsed_s}s →]({preview_url})",
+main.py:3790:                        pass  # keep plain text version if edit fails
+main.py:3799:          # Non-200 responses: capture body for diagnosis
+main.py:3812:              await asyncio.sleep(1.0 * (round_num + 1))  # back off before next key attempt
+main.py:3815:            # this is per ip rate limit, need to wait 10s
+main.py:3816:            # NOTE: resp is the aiohttp ClientResponse, not the parsed JSON body — must
+main.py:3817:            # check the already-fetched body_text string instead (was: resp.get(...),
+main.py:3818:            # which crashes with AttributeError since ClientResponse has no .get()).
+main.py:3821:            # this is per key rate limit, need to wait 1.5s    
+main.py:3822:            await asyncio.sleep(1.5 * (attempt_num ** 0.5))  # gradual per-key delay
+main.py:3834:                _overload_status_msgs[message.channel.id] = await message.channel.send("-# Shittim chest overloaded, retrying...")
+main.py:3837:            # Bust Google prompt cache so next key routes to a different backend node
+main.py:3838:            # ZWS alone may be normalized; append a random invisible token to guarantee cache miss
+main.py:3844:                _bust_token = os.urandom(8).hex()  # e.g. "a3f7c21b9e4d0582"
+main.py:3845:                _base = _parts[0]["text"].split("\n<!-- bust:")[0]  # strip previous bust comment
+main.py:3847:            await asyncio.sleep(1.0 * (round_num + 1))  # back off before next key attempt
+main.py:3852:              # Happens right after a 429/503 fallback switches model_name to a model
+main.py:3853:              # (e.g. RATE_LIMIT_MODEL) that doesn't support thinkingLevel/thinkingBudget.
+main.py:3854:              # The payload was built before the switch and still carries the old
+main.py:3855:              # model's thinkingConfig — strip it and retry instead of erroring out.
+main.py:3860:              break  # break key loop; round loop checks _thinking_stripped below
+main.py:3862:              # mode=ANY without allowed_function_names causes Gemini to validate the full
+main.py:3863:              # schema — strip tool_config and let the outer loop retry in AUTO mode.
+main.py:3868:              break  # break key loop; round loop checks _schema_stripped below
+main.py:3869:            #log payload for 400 errors to help diagnose malformed requests
+main.py:3870:            #console.log(f"400 Bad Request for key {key_idx}. Payload: {json.dumps(payload)}", "DEBUG")
+main.py:3878:      # Update consecutive 429-round counter for backoff + early model switch
+main.py:3881:        # All keys hit non-TPM 429 → switch to RATE_LIMIT_MODEL immediately on first all-429 round
+main.py:3882:        # (RPD / RPM exhausted — no point retrying same model with same keys)
+main.py:3887:          await _update_last_working_model(RATE_LIMIT_MODEL)  # persist so next session starts on fallback
+main.py:3899:      # thinkingConfig was stripped mid-retry because the (post-fallback) model doesn't
+main.py:3900:      # support it; retry the outer loop — _disable_thinking keeps it stripped for
+main.py:3901:      # the rest of this call, even across further model switches.
+main.py:3908:      # tool_config was stripped mid-retry due to 400 branching error; retry outer loop
+main.py:3914:    # Process response
+main.py:3925:        # Detect which function was malformed
+main.py:3927:        _last_detected_func = detected_func  # persist for tool_config on next retry
+main.py:3936:        # Roll back history — remove bad user turn and any partial model turn
+main.py:3943:        # Build a targeted correction message
+main.py:3947:        # Lower temperature so model is less "creative" and sticks to schema
+main.py:3969:            retry_temperature  = temperature  # reset temperature on manual retry
+main.py:3974:    malformed_retries = 0  # Reset on successful response
+main.py:3975:    retry_temperature  = temperature  # Restore temperature after malformed streak
+main.py:3976:    _last_detected_func = None  # Clear forced function target after successful call
+main.py:3978:    # NOTE: empty_response_retries is reset below, after the empty-response guard passes
+main.py:3980:    # Safety block — promptFeedback.blockReason is set.
+main.py:3981:    # Flow: 1× silent auto-retry → user embed (max 2 retries) → cancel/timeout deletes embed silently.
+main.py:3993:      # Step 1 — silent auto-retry (once)
+main.py:4001:      # Step 2 — user-triggered retry embed (up to MAX_SAFETY_BLOCK_USER_RETRIES)
+main.py:4026:          # Cancel or timeout — delete embed, leave no trace
+main.py:4033:        # User chose retry
+main.py:4043:        # All user retries exhausted — send final blocked embed (no buttons) and exit
+main.py:4056:    # Empty response — model returned no text parts and no function call parts at all
+main.py:4057:    # (regardless of finish_reason). Retry up to MAX_MALFORMED_RETRIES times by
+main.py:4058:    # re-sending the same user payload, then prompt user like malformed exhaustion.
+main.py:4074:          # Model is mid-chain-of-thought — preserve thought parts and show it to users
+main.py:4081:          # Truly empty — roll back and retry the same user turn
+main.py:4088:        # Exhausted all retries — prompt user just like MALFORMED_FUNCTION_CALL
+main.py:4112:    empty_response_retries = 0  # Reset — this turn has actual content
+main.py:4119:    # Send any textual parts immediately to channel (before executing functions) ONLY if the model called a function
+main.py:4121:    text_parts = [t for t in text_parts if t]  # drop empty after cleaning
+main.py:4131:    # Check for function calls
+main.py:4136:    escalate_thinking_level = None  # replaces old escalate_to_flash (model switch)
+main.py:4138:    func_msg = None  # To track the "Executing function..." message for deletion
+main.py:4146:        # Thông báo đang chạy hàm (không cần check msg ở đây nữa)
+main.py:4153:        # Check if model wants to escalate thinking level
+main.py:4155:          # OLD: model escalation (commented out — already on best model, switching model is no longer the mechanism)
+main.py:4156:          # if func_args.get("model", "") == "gemini-3-flash-preview":
+main.py:4157:          #   escalated_to = "gemini-3-flash-preview"
+main.py:4158:          # else:
+main.py:4159:          #   console.log(f"[ESCALATE] Unknown model requested: {func_args.get('model','')}, defaulting to {FALLBACK_MODEL}", "WARN")
+main.py:4160:          #   escalated_to = FALLBACK_MODEL
+main.py:4161:          # console.log(f"[ESCALATE] Using model: {escalated_to}", "INFO")
+main.py:4163:          # NEW: boost thinking level, keep same model
+main.py:4171:          # Thêm thông báo escalation vào danh sách history, nhu functionResponse
+main.py:4195:        # Special: load_more_context replaces initial context window with larger batch
+main.py:4208:        # Special: load_tools/unload_tools change which groups are available — rebuild the
+main.py:4209:        # declared tool list immediately so the NEXT turn in this same loop can actually call them
+main.py:4210:        # (without this, the model would get a function-not-found error one turn after loading it).
+main.py:4214:        # Check if search was blocked
+main.py:4236:        model_name=model_name,  # same model, only thinking level changes
+main.py:4258:      # Force exit after next turn
+main.py:4281:    # Compress image 
+main.py:4422:      # Block only static assets — keep script/xhr/fetch so JS-rendered pages load properly
+main.py:4452:      # Fallback: readability trả về quá ít (trang dạng grid/list như brutalist.report)
+main.py:4467:        f"# {title}",
+main.py:4490:              # Got a result, cancel other tasks
+main.py:4509:  # All failed
+main.py:4531:              output.append(f"### Crawl for '{u}' failed: {res}\n")
+main.py:4533:              output.append(f"### Content for '{u}':\n{res}\n")
+main.py:4544:  # Parse base origin (scheme + host)
+main.py:4551:  # Protocol-relative: //domain/path → https://domain/path
+main.py:4557:  # Root-relative: (/path/...) → (https://origin/path/...)
+main.py:4589:  # results_raw là list of dict: {title, href, body}
+main.py:4629:            # Block only static assets — keep script/xhr/fetch so JS-rendered pages load properly
+main.py:4656:            # Fallback: readability trả về quá ít (trang dạng grid/list)
+main.py:4670:            final_result = f"# {title}\nURL: {link}\n---\n{content_md}"
+main.py:4720:      f"## Result {idx}: {title}\n\n"
+main.py:4728:    parts.append(f"## Result {idx} Summary:\n- Title: {title}\n- Link: {link or '(no link)'}\n- Snippet: {snippet}\n")
+main.py:4753:              output.append(f"### Search for '{q}' failed: {res}\n")
+main.py:4755:              output.append(f"### Results for '{q}':\n{res}\n")
+main.py:4777:            # Trích xuất các thành phần chính
+main.py:4782:            # Xây dựng chuỗi dữ liệu thô nhưng có cấu trúc (Structured Text)
+main.py:4783:            # LLM sẽ hiểu cực tốt các block dữ liệu như thế này
+main.py:4813:            # Nếu có cảnh báo thời tiết (Alerts)
+main.py:4834:    # Small delay to ensure the main bot response goes through first
+main.py:4880:                    content=f"-# Code Execution Output (Part {i//10 + 1})" if len(files_to_send) > 10 else "-# Code Execution Output",
+main.py:4901:        # 1. Close all file handles
+main.py:4908:        # Immediately remove the files that were just sent to prevent re-sending
+main.py:4915:        # 2. Clean up the Docker workspace for this message
+main.py:4919:            # else: persistent channel workspace — don't wipe it, files there must survive across turns
+main.py:4924:# § DISCORD MESSAGE SENDING  (send_with_retry, send_content_or_file)
+main.py:4948:      # 503 Service Unavailable - should retry
+main.py:4954:          delay *= 2  # Exponential backoff
+main.py:4961:      # Transient connection errors - should retry
+main.py:4971:      # Check if it's an HTTP error with transient indicators
+main.py:5068:        _comment_fn = re.compile(r"^(?:#|//|--|%|;|')\s*([\w,\s.-]+\.[A-Za-z0-9]+)$")
+main.py:5104:          if stripped.startswith("#") or stripped.startswith("//") or stripped.startswith("--") or stripped.startswith("%") or stripped.startswith(";") or stripped.startswith("'") or stripped.startswith("REM ") or stripped.startswith("::") or stripped.startswith("'''") or stripped.startswith('"""') or re.match(r'^\s*<!--', stripped) or re.match(r'^\s*--\s*>', stripped):
+main.py:5122:    # If the entire message is just the TTS tag (nothing else), keep the inner
+main.py:5123:    # text as the visible message instead of sending an empty string.
+main.py:5149:  # Delete "Server overloaded" status msg before sending the real reply
+main.py:5156:  _first_sent_msg = None  # Track first sent message for thought sig caching
+main.py:5166:              # Handle 50035 error: Invalid Form Body / Unknown message
+main.py:5177:          # Append preview links for previewable file types
+main.py:5197:              # Handle 50035 error: Invalid Form Body / Unknown message
+main.py:5218:      # Only retry text-only parts (i > 0) — file objects can't be reused
+main.py:5232:      tts_status_msg = await channel.send("-# Generating TTS audio...")
+main.py:5247:        await channel.send(f"-# TTS Error: Unsupported language. Raw text: {tts_text}")
+main.py:5259:        # remove pitch control `↑`, `↓` 
+main.py:5262:          content=f"-# {tts_text}",
+main.py:5270:        await channel.send(f"-# TTS error:{e}")
+main.py:5273:    synth_data_b64 = None  # tts_instance.synth(synth_txt) — chưa implement
+main.py:5279:          content=f"-# Powered by Arona Synthizer.",
+main.py:5286:  # Only save message to bank if message object is available
+main.py:5300:# § AUDIO / VIDEO HELPERS  (extract_audio_from_video, _typing_loop)
+main.py:5314:          logger=None,  # Disable logging
+main.py:5341:        # Paused — poll every 0.5s so typing resumes quickly after tool finishes
+main.py:5377:  _typing_task = asyncio.create_task(_typing_loop(message.channel, _stop_typing, None)) # this just not simulate typing at all
+main.py:5379:    async with message.channel.typing(): # so we keep this shiet
+main.py:5387:      # Decrement TTL for any dynamically-loaded tool groups in this channel — once per incoming message,
+main.py:5388:      # not per agentic turn. get_gemini_tools() also ticks defensively but this is the canonical call site.
+main.py:5415:        # Find the most recent !arona clear — cut off at that index and everything older
+main.py:5419:                # Only use as cutoff if the bot confirmed it (reply sits at _idx-1, newer)
+main.py:5427:                # else: clear failed (no permission) — keep scanning for older successful one
+main.py:5433:          # Skip the !arona clear message and everything older
+main.py:5441:          # Skip the bot's "Cleared memory" reply (sits just above the !arona clear message)
+main.py:5444:          if role == "model" and msg.content.startswith("-# Code Execution Output"):
+main.py:5446:          if role == "model" and msg.content.startswith("-# File(s)"):
+main.py:5471:            # added in clean gemini resp, so keep even for model messages to preserve thought-link references
+main.py:5475:              # Thought-link message — fetch thought.md attachment for real thought content
+main.py:5484:              return None  # no attachment or fetch failed → skip entirely
+main.py:5502:          # tts model message: fuse into preceding model turn instead of standalone
+main.py:5505:            if tts_text.startswith("-# "):
+main.py:5524:            # Inject thought signature for model messages only (from pre-fetched batch cache)
+main.py:5532:            # For ignored user messages: append a synthetic model turn carrying the
+main.py:5533:            # thoughtSignature so Gemini can reconstruct why the message was skipped.
+main.py:5534:            # thoughtSignature must live on a model turn, not a user turn.
+main.py:5548:        # Pre-fetch all thought sigs in one DB round-trip
+main.py:5554:        # flatten: process_msg may return a list (ignored msg → user + synthetic model turn)
+main.py:5564:        # fuse tts entries into their chronologically preceding model turn
+main.py:5565:        # messages is newest-first, so a TTS entry at index i belongs to the
+main.py:5566:        # model turn at some index j > i (older message = came before in chat).
+main.py:5574:          # Search forward (older messages) for the nearest model turn to merge into
+main.py:5580:            # Append <tts> to the last text part of that model turn
+main.py:5589:            # No preceding model turn found — keep as standalone tts tag
+main.py:5610:        raise  # rapid follow-up cancelled this task — propagate cleanly
+main.py:5671:                  # Quick checks first (extensions / content-type hints)
+main.py:5683:                      # Fallback to encoding-based detection (async)
+main.py:5736:        + "## METADATA\n"
+main.py:5754:        + "## USER INPUT\n" + reply_context
+main.py:5790:        # Save thoughtSignature (if any) keyed by the incoming user message ID
+main.py:5791:        # so other users referencing this message can still get the reasoning context
+main.py:5805:          # Delete "Server overloaded" status msg 
+main.py:5815:      # Split long messages properly
+main.py:5817:      _stop_typing.set()  # typing done — last message delivered
+main.py:5818:      # Cache thought signature for multi-turn history reconstruction
+main.py:5832:      # Fire-and-forget: update personalization impression in background
+main.py:5847:          # Cleanup any leftover overload status message from the lite model call
+main.py:5854:      # Flush deferred temp=True cleanups now that the final message has been delivered
+main.py:5880:    #traceback
+main.py:5894:    # Clean up overload status message on any exit path (including cancellation).
+main.py:5895:    # create_task escapes the cancellation scope so the delete always completes.
+main.py:5901:    # Safety: flush any leftover deferred cleanups even on error/early return
+main.py:5910:# § BOT LIFECYCLE  (init_context, on_ready, on_message, cleanup)
+main.py:5918:#global browser context
+main.py:5954:      await init_context()  # depends on browser from get_browser()
+main.py:5965:      await asyncio.sleep(1)  # Small delay to ensure all startup tasks are settled
+main.py:6023:  #guard for more sudo commands in the future
+main.py:6040:        await send_with_retry(message.channel, f"Added <#{channel_id}> to active channels.")
+main.py:6047:        await send_with_retry(message.channel, f"Removed <#{channel_id}> from active channels.")
+main.py:6079:        await send_with_retry(message.channel, f"Added <#{channel_id}> to active channels.")
+main.py:6086:        await send_with_retry(message.channel, f"Removed <#{channel_id}> from active channels.")
+main.py:6094:  #!arona clear, to clear bot memory in this channel(bot can't read msg older than this)
+main.py:6105:    # Clear memory for this channel by recording a system message with the current timestamp, and bot will ignore messages before this timestamp in future interactions
+main.py:6107:    await send_with_retry(message.channel, f"Cleared memory for this channel. Arona will ignore messages sent before <t:{int(clear_time)}:R> in future interactions.") #<t:1672531200:R> 
+main.py:6111:    # unknown command starting with !arona
+main.py:6115:  # Handle text messages in voice channel
+main.py:6161:      #check if bot
+main.py:6163:        #check if @arona in clean content
+main.py:6168:  if not _is_nsfw_channel and not is_dm: # only enforce in sfw guild channels, DMs are inherently private and user can choose to DM the bot with whatever content they want
+main.py:6181:  # Fetch the replied-to message (context) if it exists. This works for both DMs and Guild Channels.
+main.py:6194:  # Rapid follow-up merge is only meaningful in persistent conversations (DMs or active channels).
+main.py:6195:  # One-off @mentions in random channels are excluded — no point tracking them.
+main.py:6201:  # Check for an in-flight task from the same user in the same channel
+main.py:6249:# § VOICE EVENTS  (on_voice_member_speaking_start/stop, on_voice_state_update)
+main.py:6265:    # bot itself got disconnected
+main.py:6270:            # Always clean up Gemini state first
+main.py:6271:            saved_text_ch = gemini_ws.current_channel   # save before clearing
+main.py:6279:                # User explicitly called leave — do nothing extra
+main.py:6283:            # Unintentional disconnect (4017, network blip, etc.) — auto-reconnect
+main.py:6286:                RETRY_DELAY  = 5.0   # seconds between attempts
+main.py:6292:                # 1011 The service is currently unavailable. = Timed out, return
+main.py:6299:                    await notify_ch.send("-# Voice session dropped. Reconnecting...")
+main.py:6307:                    # Check user is still in a voice channel
+main.py:6316:                            await notify_ch.send("-# Reconnect cancelled — you left the voice channel.")
+main.py:6325:                            await notify_ch.send("-# Reconnected to voice channel!")
+main.py:6332:                # All attempts exhausted
+main.py:6336:                        "-# Failed to reconnect after several attempts. "
+main.py:6343:        return  # done handling bot's own state change
+main.py:6345:    # other member left — notify model when channel becomes empty
+main.py:6361:# § CONSOLE COMMANDS  (enqueue_command, cmd_*, console_command_loop, main)
+main.py:6378:        # Flush all pending affection updates to DB before shutdown
+main.py:6603:        # Determine if last part is a reply_to_message_id (numeric) or part of content
+main.py:6606:          # Last part is numeric, treat as reply_to_message_id
+main.py:6610:          # No numeric last part, all remaining parts are content
+main.py:6623:    elif cmd.startswith("pitch "): voice_bridge.set_pitch(int(cmd.split()[1])); console.log(f"[VCBridge] pitch → {cmd.split()[1]}", "INFO"); continue  # noqa: pitch <semitones>
+main.py:6665:  # Preload chess piece assets so images are ready on startup
+migrate_msgbank.py:22:BATCH_SIZE = 64  # RTX 3090 can handle large batches
+migrate_msgbank.py:102:    # Delete model files from HuggingFace cache
+database\students\miku.py:17:    "WeaponType": "GL", # Grenade Launcher
+database\students\miku.py:18:    "StreetBattleAdaptation": 2, # B
+database\students\miku.py:19:    "OutdoorBattleAdaptation": 3, # A
+database\students\miku.py:20:    "IndoorBattleAdaptation": 1, # C
+fluidsynth\include\fluidsynth.h:20:#ifndef _FLUIDSYNTH_H
+fluidsynth\include\fluidsynth.h:21:#define _FLUIDSYNTH_H
+fluidsynth\include\fluidsynth.h:23:#include <stdio.h>
+fluidsynth\include\fluidsynth.h:25:#ifdef __cplusplus
+fluidsynth\include\fluidsynth.h:27:#endif
+fluidsynth\include\fluidsynth.h:29:#define BUILD_SHARED_LIBS 1
+fluidsynth\include\fluidsynth.h:31:#if (BUILD_SHARED_LIBS == 0)
+fluidsynth\include\fluidsynth.h:32:    #define FLUIDSYNTH_API // building static lib? no visibility control then
+fluidsynth\include\fluidsynth.h:33:#elif defined(WIN32)
+fluidsynth\include\fluidsynth.h:34:    #if defined(FLUIDSYNTH_NOT_A_DLL)
+fluidsynth\include\fluidsynth.h:35:        #define FLUIDSYNTH_API
+fluidsynth\include\fluidsynth.h:36:    #elif defined(FLUIDSYNTH_DLL_EXPORTS)
+fluidsynth\include\fluidsynth.h:37:        #define FLUIDSYNTH_API __declspec(dllexport)
+fluidsynth\include\fluidsynth.h:38:    #else
+fluidsynth\include\fluidsynth.h:39:        #define FLUIDSYNTH_API __declspec(dllimport)
+fluidsynth\include\fluidsynth.h:40:    #endif
+fluidsynth\include\fluidsynth.h:42:#elif defined(MACOS9)
+fluidsynth\include\fluidsynth.h:43:#define FLUIDSYNTH_API __declspec(export)
+fluidsynth\include\fluidsynth.h:45:#elif defined(__OS2__)
+fluidsynth\include\fluidsynth.h:46:#define FLUIDSYNTH_API __declspec(dllexport)
+fluidsynth\include\fluidsynth.h:48:#elif defined(__GNUC__)
+fluidsynth\include\fluidsynth.h:49:#define FLUIDSYNTH_API __attribute__ ((visibility ("default")))
+fluidsynth\include\fluidsynth.h:51:#else
+fluidsynth\include\fluidsynth.h:52:#define FLUIDSYNTH_API
+fluidsynth\include\fluidsynth.h:54:#endif
+fluidsynth\include\fluidsynth.h:56:#if defined(__GNUC__) || defined(__clang__)
+fluidsynth\include\fluidsynth.h:57:#    define FLUID_DEPRECATED __attribute__((deprecated))
+fluidsynth\include\fluidsynth.h:58:#elif defined(_MSC_VER) && _MSC_VER > 1200
+fluidsynth\include\fluidsynth.h:59:#    define FLUID_DEPRECATED __declspec(deprecated)
+fluidsynth\include\fluidsynth.h:60:#else
+fluidsynth\include\fluidsynth.h:61:#    define FLUID_DEPRECATED
+fluidsynth\include\fluidsynth.h:62:#endif
+fluidsynth\include\fluidsynth.h:97:#include "fluidsynth/types.h"
+fluidsynth\include\fluidsynth.h:98:#include "fluidsynth/settings.h"
+fluidsynth\include\fluidsynth.h:99:#include "fluidsynth/synth.h"
+fluidsynth\include\fluidsynth.h:100:#include "fluidsynth/shell.h"
+fluidsynth\include\fluidsynth.h:101:#include "fluidsynth/sfont.h"
+fluidsynth\include\fluidsynth.h:102:#include "fluidsynth/audio.h"
+fluidsynth\include\fluidsynth.h:103:#include "fluidsynth/event.h"
+fluidsynth\include\fluidsynth.h:104:#include "fluidsynth/midi.h"
+fluidsynth\include\fluidsynth.h:105:#include "fluidsynth/seq.h"
+fluidsynth\include\fluidsynth.h:106:#include "fluidsynth/seqbind.h"
+fluidsynth\include\fluidsynth.h:107:#include "fluidsynth/log.h"
+fluidsynth\include\fluidsynth.h:108:#include "fluidsynth/misc.h"
+fluidsynth\include\fluidsynth.h:109:#include "fluidsynth/mod.h"
+fluidsynth\include\fluidsynth.h:110:#include "fluidsynth/gen.h"
+fluidsynth\include\fluidsynth.h:111:#include "fluidsynth/voice.h"
+fluidsynth\include\fluidsynth.h:112:#include "fluidsynth/version.h"
+fluidsynth\include\fluidsynth.h:113:#include "fluidsynth/ladspa.h"
+fluidsynth\include\fluidsynth.h:116:#ifdef __cplusplus
+fluidsynth\include\fluidsynth.h:118:#endif
+fluidsynth\include\fluidsynth.h:120:#endif /* _FLUIDSYNTH_H */
+simplify_comments.py:1:#!/usr/bin/env python3
+simplify_comments.py:6:    # ── Constants ──────────────────────────────────────────────────────────────
+simplify_comments.py:8:    # constants
+simplify_comments.py:11:    # ══════════════════════════════════════════════════════════════
+simplify_comments.py:12:    # ─────────────────────────────────────────────
+simplify_comments.py:15:    python simplify_comments.py            # dry-run, prints a diff-like preview
+simplify_comments.py:16:    python simplify_comments.py --apply    # actually rewrite files
+simplify_comments.py:31:    rf'^(?P<indent>\s*)(?P<marker>#|//|--)\s*{BOX}{{2,}}\s+(?P<title>.+?)\s+{BOX}{{2,}}\s*(?:#|//)?\s*$'
+simplify_comments.py:34:    rf'^(?P<indent>\s*)(?P<marker>#|//|--)\s*{BOX}{{5,}}\s*$'
+simplify_comments.py:73:            changes.append((i, stripped, None))  # deleted
+console\console.py:6:# Import module debug để lấy giá trị realtime
+console\console.py:12:#LOG_DIR = ".\\logs"
+console\console.py:13:#LOG_PER_FILE = 100 
+console\console.py:14:#MAX_LOG_FILES = 10
+console\console.py:43:# Các biến toàn cục bạn đang dùng
+console\console.py:52:    # Kiểm tra debug realtime qua module tham chiếu
+console\console.py:61:    # In ra console
+console\console.py:65:    # Ghi file tối ưu (giữ handle luôn mở)
+console\console.py:75:            # Dọn dẹp file cũ
+arona\voice_engine\src\gemini.py:96:                # Allow model to call multiple functions in parallel
+arona\voice_engine\src\gemini.py:101:                # 2. Bật Proactive (Bỏ qua tạp âm, chỉ trả lời khi cần)
+arona\voice_engine\src\gemini.py:106:                # 3. Bật và cấu hình VAD (Tự động nhận diện giọng nói)
+arona\voice_engine\src\gemini.py:166:        # Tool calls come as a top-level "toolCall" key, NOT inside serverContent
+arona\voice_engine\src\gemini.py:173:            # Interrupt: model was cut off mid-speech — clear queued audio and stop playback.
+arona\voice_engine\src\gemini.py:174:            # This lets the model stay silent, but new audio can queue normally afterwards.
+arona\voice_engine\src\gemini.py:194:            # Flush remaining audio in voice changer buffer when turn ends
+arona\voice_engine\src\gemini.py:278:                # Mock message object
+utils\channel_memory.py:16:MAX_MEMORY_LEN = -1  # unlimited length for persisted channel memory
+utils\channel_memory.py:92:    return f"## Channel Memory\n{mem}\n"
+utils\channel_memory.py:95:# Init on import
+utils\check_gemini_keys.py:1:#!/usr/bin/env python3
+utils\check_gemini_keys.py:57:    # parse JSON list or single key
+utils\check_gemini_keys.py:63:        # fallback: newline or comma separated
+utils\check_gemini_keys.py:76:        # run sequentially to avoid producing more 429s from the checker itself
+utils\check_gemini_keys.py:81:            # brief pause to reduce rapid-fire requests
+utils\check_gemini_keys.py:84:    # Report
+utils\check_gemini_keys.py:92:            # look for empty body or promptFeedback
+utils\check_gemini_keys.py:108:    # Suggestions
+docker\iptables-guard.sh:1:#!/bin/sh
+docker\iptables-guard.sh:4:# This script must be run as root to set up iptables rules.
+docker\iptables-guard.sh:12:# 1. KILL SWITCH: Chặn đứng IP thật thoát ra ngoài
+docker\iptables-guard.sh:16:# 2. MỞ CÁC ĐƯỜNG MÁU
+docker\iptables-guard.sh:17:iptables -A OUTPUT -o lo -j ACCEPT # Loopback nội bộ
+docker\iptables-guard.sh:18:iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT # Allow response packets
+docker\iptables-guard.sh:19:iptables -A OUTPUT -p udp --dport 53 -j ACCEPT # DNS UDP
+docker\iptables-guard.sh:20:iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT # DNS TCP
+docker\iptables-guard.sh:21:iptables -A OUTPUT -d 1.1.1.1 -j ACCEPT # Ép DNS Google/Cloudflare
+docker\iptables-guard.sh:22:iptables -A OUTPUT -p icmp --icmp-type echo-request -j ACCEPT # Cho phép ping (ICMP Echo Request) để kiểm tra kết nối mạng
+docker\iptables-guard.sh:24:# 3. MỞ CỔNG CHO WARP TUNNEL
+docker\iptables-guard.sh:30:# 4. CHỜ WARP SẴN SÀNG (Handshaking)
+docker\iptables-guard.sh:35:  # Kiểm tra IP qua proxy
+docker\iptables-guard.sh:50:# 5. MỞ CỔNG CHO PROXY (Danteh gọi mọi port qua đây)
+docker\iptables-guard.sh:51:# Cho phép Worker gửi dữ liệu tới Proxy port 8888
+docker\iptables-guard.sh:58:# The container entrypoint stays as root because per-execution isolation is
+docker\iptables-guard.sh:59:# handled by _prepare_sandbox_workdir (chown + chmod 700) + "-u <uid>" in
+docker\iptables-guard.sh:60:# docker exec, not by a global privilege drop here.
+database\students\railgun.py:1:# database/students/railgun.py
+database\students\railgun.py:2:#
+database\students\railgun.py:3:# Mock data for Blue Archive × A Certain Scientific Railgun T collab characters.
+database\students\railgun.py:4:# Used as fallback when SchaleDB API is unavailable.
+database\students\railgun.py:5:#
+database\students\railgun.py:6:# Sources: Blue Archive Wiki (bluearchive.wiki) — October 2023 collab event
+database\students\railgun.py:7:#   "A Certain Scientific Record of Youth" (とある科学の青春記録)
+database\students\railgun.py:8:#
+database\students\railgun.py:9:# ⚠ IDs below are APPROXIMATE — verify against live SchaleDB JSON
+database\students\railgun.py:10:#   by querying /data/en/students.json and searching for these names.
+database\students\railgun.py:11:#   Update the Id values + _load_data checks in schale_db.py accordingly.
+database\students\railgun.py:12:#
+database\students\railgun.py:13:# Stats shown are Level 90 T1 (base transcendence, max level).
+database\students\railgun.py:15:# Misaka Mikoto  |  3★ LIMITED  |  Striker  |  Attacker/Middle
+database\students\railgun.py:16:# BulletType: Penetration  |  ArmorType: HeavyArmor
+database\students\railgun.py:17:# Terrain: Urban D / Outdoor S (SS w/ gear) / Indoor B
+database\students\railgun.py:19:    "Id": 10030,  # TODO: verify against live SchaleDB
+database\students\railgun.py:39:    # Stats at Lv90 T1
+database\students\railgun.py:53:    # Terrain adaptations (base, without gear)
+database\students\railgun.py:54:    "StreetBattleAdaptation": "D",    # Urban
+database\students\railgun.py:55:    "OutdoorBattleAdaptation": "S",   # Outdoor → SS with Gunvolt
+database\students\railgun.py:56:    "IndoorBattleAdaptation": "B",    # Indoor
+database\students\railgun.py:111:# Shokuhou Misaki  |  3★ LIMITED  |  Striker  |  Support/Middle
+database\students\railgun.py:112:# BulletType: Explosive  |  ArmorType: HeavyArmor
+database\students\railgun.py:113:# Terrain: Urban S (SS w/ gear) / Outdoor C / Indoor C
+database\students\railgun.py:115:    "Id": 10031,  # TODO: verify against live SchaleDB
+database\students\railgun.py:124:    "Birthday": None,   # No canonical birthday in source material
+database\students\railgun.py:135:    # Stats at Lv90 T1
+database\students\railgun.py:149:    # Terrain adaptations (base, without gear)
+database\students\railgun.py:150:    "StreetBattleAdaptation": "S",    # Urban → SS with Mental Pointer
+database\students\railgun.py:151:    "OutdoorBattleAdaptation": "C",   # Outdoor
+database\students\railgun.py:152:    "IndoorBattleAdaptation": "C",    # Indoor
+database\students\railgun.py:209:# Saten Ruiko  |  1★ FREE (event)  |  Special  |  Attacker/Back
+database\students\railgun.py:210:# BulletType: Penetration  |  ArmorType: SpecialArmor
+database\students\railgun.py:211:# Terrain: Urban C / Outdoor A / Indoor B (gear → Indoor A)
+database\students\railgun.py:213:    "Id": 10032,  # TODO: verify against live SchaleDB
+database\students\railgun.py:220:    "IsLimited": 0,   # Free — obtainable via event
+database\students\railgun.py:222:    "Birthday": None,   # No canonical birthday in source material
+database\students\railgun.py:233:    # Stats at Lv90 T1
+database\students\railgun.py:247:    # Terrain adaptations (base, without gear)
+database\students\railgun.py:248:    "StreetBattleAdaptation": "C",    # Urban
+database\students\railgun.py:249:    "OutdoorBattleAdaptation": "A",   # Outdoor
+database\students\railgun.py:250:    "IndoorBattleAdaptation": "B",    # Indoor → A with Bullet Swinger
+arona\voice_engine\src\record.py:32:        # Log SSRCs
+arona\voice_engine\src\record.py:37:        # ← SIMPLE: Chỉ cần check có audio + user là stream luôn
+arona\voice_engine\src\record.py:41:        # Bỏ qua audio từ bot
+arona\voice_engine\src\record.py:49:            # 1. Convert Stereo to Mono
+arona\voice_engine\src\record.py:52:            # 2. Resample 48000 -> 16000
+arona\voice_engine\src\record.py:56:            # 3. Stream to Gemini - NO CONDITIONS
+arona\voice_engine\src\record.py:64:    # ← BỎ HẾT: Không cần speaking events
+arona\voice_engine\src\record.py:65:    # def on_voice_member_speaking_start(self, member: discord.Member) -> None:
+arona\voice_engine\src\record.py:66:    #     pass
+arona\voice_engine\src\record.py:68:    # def on_voice_member_speaking_stop(self, member: discord.Member) -> None:
+arona\voice_engine\src\record.py:69:    #     pass
+games\chess.py:13:        self.COLOR_LIGHT = "#EBECD0"
+games\chess.py:14:        self.COLOR_DARK = "#779556"
+games\chess.py:17:        # Map chess pieces to texture file names
+games\chess.py:25:        # Get assets path
+games\chess.py:30:        # Games storage - in-memory cache
+games\chess.py:33:        # File path for persistent storage
+games\chess.py:36:        # Load games from file on startup
+games\chess.py:86:        return f"Board in channel <#{channel_id}> has been reset! White moves first."
+games\chess.py:107:        # Strip capture 'x' -> UCI candidate (d5xe5 -> d5e5, Ng8xf6 -> Ng8f6)
+games\chess.py:111:        # Strip dash separator (e2-e4 -> e2e4, e2-e4-q -> e2e4q)
+games\chess.py:115:        # Long algebraic with piece prefix: Ng8f6, Bg5f4, Rh1e1 -> g8f6, g5f4, h1e1
+games\chess.py:120:        # ICCF numeric: 5254 -> e2e4 (file 1-8 maps to a-h, rank as-is)
+games\chess.py:131:        # Try all UCI candidates first — pure parsing, legality checked by caller
+games\chess.py:138:        # SAN fallback covers: Nf6, dxe5, O-O, Nbd7, e4+, Qxf7#, etc.
+games\chess.py:330:        # Re-run the loader to ensure images are in memory at startup
+database\skills\algorithmic-art\templates\generator_template.js:32:    // define colorPalette as an array -- choose whatever colors you'd like ['#d97757', '#6a9bcc', '#788c5d', '#b0aea5']
+database\skills\algorithmic-art\templates\generator_template.js:121:    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+arona\voice_engine\src\stream.py:15:        self.input_frame_size: int = 960  # 24kHz mono
+arona\voice_engine\src\stream.py:16:        self.output_frame_size: int = 3840  # 48kHz stereo
+arona\voice_engine\src\stream.py:19:        # Grace period: consecutive empty reads before stopping player (50 * 20ms = 1s)
+arona\voice_engine\src\stream.py:47:            # Fill buffer if needed
+arona\voice_engine\src\stream.py:52:                        # End of stream
+arona\voice_engine\src\stream.py:59:                    # Grace period before stopping player — avoids cutting off mid-sentence
+arona\voice_engine\src\stream.py:60:                    # due to momentary network jitter between Gemini audio chunks.
+arona\voice_engine\src\stream.py:72:            # Buffer cleanup
+arona\voice_engine\src\stream.py:77:            # Upsample 24kHz mono -> 48kHz stereo
+arona\voice_engine\src\stream.py:83:                # Duplicate sample 4 times (2x frequency, 2x channels)
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:1:#!/bin/bash
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:6:# Check if we're in a project directory
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:12:# Check if index.html exists
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:19:# Install bundling dependencies
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:23:# Create Parcel config with tspaths resolver
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:34:# Clean previous build
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:38:# Build with Parcel
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:42:# Inline everything into single HTML
+database\skills\web-artifacts-builder\scripts\bundle-artifact.sh:46:# Get file size
+fluidsynth\include\fluidsynth\audio.h:20:#ifndef _FLUIDSYNTH_AUDIO_H
+fluidsynth\include\fluidsynth\audio.h:21:#define _FLUIDSYNTH_AUDIO_H
+fluidsynth\include\fluidsynth\audio.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\audio.h:25:#endif
+fluidsynth\include\fluidsynth\audio.h:67: * @return Should return #FLUID_OK on success, #FLUID_FAILED if an error occurred.
+fluidsynth\include\fluidsynth\audio.h:150:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\audio.h:152:#endif
+fluidsynth\include\fluidsynth\audio.h:154:#endif /* _FLUIDSYNTH_AUDIO_H */
+utils\discord_ui.py:16:# text-input modal
+utils\discord_ui.py:39:# malformed response recovery
+utils\discord_ui.py:96:# ask_user interactive view
+fluidsynth\include\fluidsynth\event.h:20:#ifndef _FLUIDSYNTH_EVENT_H
+fluidsynth\include\fluidsynth\event.h:21:#define _FLUIDSYNTH_EVENT_H
+fluidsynth\include\fluidsynth\event.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\event.h:25:#endif
+fluidsynth\include\fluidsynth\event.h:139:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\event.h:141:#endif
+fluidsynth\include\fluidsynth\event.h:142:#endif /* _FLUIDSYNTH_EVENT_H */
+fluidsynth\include\fluidsynth\gen.h:20:#ifndef _FLUIDSYNTH_GEN_H
+fluidsynth\include\fluidsynth\gen.h:21:#define _FLUIDSYNTH_GEN_H
+fluidsynth\include\fluidsynth\gen.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\gen.h:25:#endif
+fluidsynth\include\fluidsynth\gen.h:122:    GEN_LAST			/**< @internal Value defines the count of generators (#fluid_gen_type)
+fluidsynth\include\fluidsynth\gen.h:128:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\gen.h:130:#endif
+fluidsynth\include\fluidsynth\gen.h:131:#endif /* _FLUIDSYNTH_GEN_H */
+fluidsynth\include\fluidsynth\ladspa.h:20:#ifndef _FLUIDSYNTH_LADSPA_H
+fluidsynth\include\fluidsynth\ladspa.h:21:#define _FLUIDSYNTH_LADSPA_H
+fluidsynth\include\fluidsynth\ladspa.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\ladspa.h:25:#endif
+fluidsynth\include\fluidsynth\ladspa.h:63:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\ladspa.h:65:#endif
+fluidsynth\include\fluidsynth\ladspa.h:67:#endif /* _FLUIDSYNTH_LADSPA_H */
+fluidsynth\include\fluidsynth\log.h:20:#ifndef _FLUIDSYNTH_LOG_H
+fluidsynth\include\fluidsynth\log.h:21:#define _FLUIDSYNTH_LOG_H
+fluidsynth\include\fluidsynth\log.h:24:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\log.h:26:#endif
+fluidsynth\include\fluidsynth\log.h:35: * stderr. The synthesizer uses five level of messages: #FLUID_PANIC,
+fluidsynth\include\fluidsynth\log.h:36: * #FLUID_ERR, #FLUID_WARN, #FLUID_INFO, and #FLUID_DBG.
+fluidsynth\include\fluidsynth\log.h:40: * function to display #FLUID_PANIC messages in a dialog, and ignores all other
+fluidsynth\include\fluidsynth\log.h:74: * @param level Log level (#fluid_log_level)
+fluidsynth\include\fluidsynth\log.h:86:#if defined(__clang__) || defined(__GNUC__) || defined(__GNUG__)
+fluidsynth\include\fluidsynth\log.h:88:#endif
+fluidsynth\include\fluidsynth\log.h:92:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\log.h:94:#endif
+fluidsynth\include\fluidsynth\log.h:96:#endif /* _FLUIDSYNTH_LOG_H */
+utils\docker.py:12:# Audit logger for execution events
+utils\docker.py:34:        # keep only recent
+utils\docker.py:47:_proxy_ready: bool | None = None  # None=unchecked, True=ready, False=down
+utils\docker.py:84:        # Base working directory on the host that will contain per-message workspaces
+utils\docker.py:86:        # Container-side base mirrors the host workdir
+utils\docker.py:91:        # Check if container is running
+utils\docker.py:105:                # Check if daemon not running
+utils\docker.py:121:        # Only allow letters, digits and underscore. Disallow dots and dashes
+utils\docker.py:122:        # to reduce traversal/hidden-file risks. Reject IDs that start with
+utils\docker.py:123:        # an underscore so attacker cannot craft ambiguous names.
+utils\docker.py:137:        # Prevent hidden filenames (starting with dot)
+utils\docker.py:225:            # Realpath check: prevent traversal escaping the channel workdir
+utils\docker.py:265:            # Dir may be mode 700 owned by sandbox UID — remove via container root
+utils\docker.py:267:            # Fallback host-side cleanup for any remaining host-owned remnants
+utils\docker.py:283:        # Ensure target directory exists
+utils\docker.py:289:        # Allowed extensions whitelist to avoid saving executables/shared objects
+utils\docker.py:290:        ALLOWED_EXTENSIONS = {'.txt', '.py', '.json', '.csv', '.png', '.jpg', '.jpeg', '.gif', '.pdf', '.md', '.log', '.zip', '.rar', '.csv', '.xlsx', '.pptx', '.docx', '.mp4', '.mp3', '.wav', '.ogg', '.flac', '.avi', '.mkv', '.mov', '.webm', '.mid', '.iso', '.bin', '.exe', '.dll', '.so', ''} #bro this is ubuntu not windows, we can allow .exe and .dll as data files without risk of execution on the host
+utils\docker.py:292:            # Skip very large attachments
+utils\docker.py:305:                # Create a unique temp file in the target dir atomically to avoid TOCTOU
+utils\docker.py:309:                # Ensure temp_path is inside target_dir
+utils\docker.py:320:                # Save attachment into the temp path (discord.py Attachment.save is awaitable)
+utils\docker.py:330:        MAX_OUTPUT_FILE_SIZE = 50 * 1024 * 1024  # 50 MB per file
+utils\docker.py:366:                # fuser -k sends SIGKILL to every process with an open file in
+utils\docker.py:367:                # that directory tree; pkill -9 catches any process whose cwd
+utils\docker.py:368:                # starts with the path (belt-and-suspenders).
+utils\docker.py:381:    # Workdir isolation helpers
+utils\docker.py:383:    SANDBOX_UID_MAX = 9999  # pool of 8000 UIDs — no /etc/passwd entries needed
+utils\docker.py:385:    # -
+utils\docker.py:386:    # VIEW_DIR: a sibling of OUTPUT_DIR. Anything the model copies/writes here
+utils\docker.py:387:    # (image/audio/video only) gets base64-encoded and handed back as Gemini
+utils\docker.py:388:    # inline_data parts so the model can actually *see/hear* the file instead
+utils\docker.py:389:    # of just trusting a filename. Files are consumed (deleted) once read so
+utils\docker.py:390:    # they don't get re-attached on the next run_code call in the same workspace.
+utils\docker.py:391:    # -
+utils\docker.py:393:        "image/": 8 * 1024 * 1024,   # 8 MB per image
+utils\docker.py:394:        "audio/": 15 * 1024 * 1024,  # 15 MB per audio file
+utils\docker.py:395:        "video/": 15 * 1024 * 1024,  # 15 MB per video file
+utils\docker.py:398:    MAX_VIEW_TOTAL_BYTES = 20 * 1024 * 1024  # stay under Gemini's ~20MB inline-data request cap
+utils\docker.py:424:                continue  # not an image/audio/video — not for VIEW_DIR, skip silently
+utils\docker.py:447:                # Consume regardless of success/failure so a bad file doesn't loop forever
+utils\docker.py:568:        # Setup directories
+utils\docker.py:577:            # Rate limiting per user (if message provided)
+utils\docker.py:584:            # 1. Save attachments into the working directory and log if any
+utils\docker.py:589:            # 2. Prepare code
+utils\docker.py:602:            # Write code to file safely
+utils\docker.py:607:            # Lock workdir to sandbox UID (must be after all host-side writes)
+utils\docker.py:610:            # 3. Execute inside container
+utils\docker.py:628:                # Audit log execution
+utils\docker.py:682:            # Rate limiting per user
+utils\docker.py:690:            # If a message object with attachments is passed, save them
+utils\docker.py:696:            await _check_proxy_once()  # one-time check, cached
+utils\docker.py:706:                f"    # Save image/audio/video bytes here to have them attached as inline_data\n"
+utils\docker.py:707:                f"    # so you can literally see/hear the content in your next turn.\n"
+utils\docker.py:712:            # Sanitize filename
+utils\docker.py:715:            # Save code to file to run
+utils\docker.py:719:            # Execute via Docker Exec
+utils\docker.py:738:                # Audit log
+utils\docker.py:753:                # BUGFIX: killing docker-exec on the host doesn't stop the process
+utils\docker.py:754:                # running inside the container (e.g. a git clone). Kill it explicitly.
+utils\docker.py:780:        # Basic sanitization
+utils\docker.py:787:        # Auto-add -c 4 to ping if no count specified, to prevent infinite loop
+utils\docker.py:803:            # Rate limiting per user
+utils\docker.py:811:            # Save any attachments first
+utils\docker.py:817:            # Save the command to a file for logging/auditing
+utils\docker.py:821:            # Lock workdir to sandbox UID (must be after all host-side writes)
+utils\docker.py:824:            # Execute via Docker using exec (no shell wrapper on host).
+utils\docker.py:825:            # shell_cmd is written to command.sh and executed from there —
+utils\docker.py:826:            # never interpolated into the command list to prevent injection.
+utils\docker.py:843:                # Audit log
+utils\docker.py:858:                # BUGFIX: same as run_code — kill orphaned container processes
+utils\docker.py:879:        # Save attachments and run the command in the same workspace
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:1:#!/bin/bash
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:3:# Exit on error
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:6:# Detect Node version
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:17:# Set Vite version based on Node version
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:26:# Detect OS and set sed syntax
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:33:# Check if pnpm is installed
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:39:# Check if project name is provided
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:49:# Check if components tarball exists
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:58:# Create new Vite project (always use latest create-vite, pin vite version later)
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:61:# Navigate into project directory
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:71:# Pin Vite version for Node 18
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:162:# Add Tailwind directives and CSS variables to index.css
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:226:# Add path aliases to tsconfig.json
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:237:# Add path aliases to tsconfig.app.json
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:253:# Update vite.config.ts
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:270:# Install all shadcn/ui dependencies
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:275:# Extract shadcn components from tarball
+database\skills\web-artifacts-builder\scripts\init-artifact.sh:279:# Create components.json for reference
+fluidsynth\include\fluidsynth\midi.h:20:#ifndef _FLUIDSYNTH_MIDI_H
+fluidsynth\include\fluidsynth\midi.h:21:#define _FLUIDSYNTH_MIDI_H
+fluidsynth\include\fluidsynth\midi.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\midi.h:25:#endif
+fluidsynth\include\fluidsynth\midi.h:47: * @return Should return #FLUID_OK on success, #FLUID_FAILED otherwise
+fluidsynth\include\fluidsynth\midi.h:64: * @return Should return #FLUID_OK on success, #FLUID_FAILED otherwise
+fluidsynth\include\fluidsynth\midi.h:261:    FLUID_PLAYER_TEMPO_NBR        /**< @internal Value defines the count of player tempo type (#fluid_player_set_tempo_type) @warning This symbol is not part of the public API and ABI stability guarantee and may change at any time! */
+fluidsynth\include\fluidsynth\midi.h:290:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\midi.h:292:#endif
+fluidsynth\include\fluidsynth\midi.h:294:#endif /* _FLUIDSYNTH_MIDI_H */
+fluidsynth\include\fluidsynth\misc.h:20:#ifndef _FLUIDSYNTH_MISC_H
+fluidsynth\include\fluidsynth\misc.h:21:#define _FLUIDSYNTH_MISC_H
+fluidsynth\include\fluidsynth\misc.h:24:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\misc.h:26:#endif
+fluidsynth\include\fluidsynth\misc.h:45: *   #include <fluidsynth.h>
+fluidsynth\include\fluidsynth\misc.h:47: *   #ifndef FLUID_OK
+fluidsynth\include\fluidsynth\misc.h:48: *   #define FLUID_OK      (0)
+fluidsynth\include\fluidsynth\misc.h:49: *   #define FLUID_FAILED  (-1)
+fluidsynth\include\fluidsynth\misc.h:50: *   #endif
+fluidsynth\include\fluidsynth\misc.h:55:#define FLUID_OK        (0)
+fluidsynth\include\fluidsynth\misc.h:60: * @note See #FLUID_OK for more details.
+fluidsynth\include\fluidsynth\misc.h:64:#define FLUID_FAILED    (-1)
+fluidsynth\include\fluidsynth\misc.h:72:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\misc.h:74:#endif
+fluidsynth\include\fluidsynth\misc.h:76:#endif /* _FLUIDSYNTH_MISC_H */
+fluidsynth\include\fluidsynth\mod.h:20:#ifndef _FLUIDSYNTH_MOD_H
+fluidsynth\include\fluidsynth\mod.h:21:#define _FLUIDSYNTH_MOD_H
+fluidsynth\include\fluidsynth\mod.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\mod.h:25:#endif
+fluidsynth\include\fluidsynth\mod.h:41: * #FLUID_MOD_GC and #FLUID_MOD_CC are in the flags field instead of the source field.
+fluidsynth\include\fluidsynth\mod.h:53:    FLUID_MOD_GC = 0,             /**< General controller source type (#fluid_mod_src) */
+fluidsynth\include\fluidsynth\mod.h:57:    FLUID_MOD_SIN = 0x80,          /**< Custom non-standard sinus mapping function @deprecated Deprecated and non-functional since 2.5.0, use #FLUID_MOD_CUSTOM and fluid_mod_set_custom_mapping() instead. */
+fluidsynth\include\fluidsynth\mod.h:70: * General controller (if #FLUID_MOD_GC in flags).  This
+fluidsynth\include\fluidsynth\mod.h:90: * @param value The input value from the modulator source, which will be in range <code>[0;16383]</code> if the input source value is #FLUID_MOD_PITCHWHEEL, or <code>[0;127]</code> otherwise.
+fluidsynth\include\fluidsynth\mod.h:91: * @param range The value-range of the modulator source, i.e. <code>16384</code>, if the input source value is #FLUID_MOD_PITCHWHEEL, otherwise <code>128</code>.
+fluidsynth\include\fluidsynth\mod.h:93: * @param is_src1 A boolean, which, if true, indicates that the mapping function is called for source1. Otherwise, it's called for source2. Only useful if two sources have been specified with the #FLUID_MOD_CUSTOM flag set.
+fluidsynth\include\fluidsynth\mod.h:129:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\mod.h:131:#endif
+fluidsynth\include\fluidsynth\mod.h:132:#endif /* _FLUIDSYNTH_MOD_H */
+fluidsynth\include\fluidsynth\seq.h:20:#ifndef _FLUIDSYNTH_SEQ_H
+fluidsynth\include\fluidsynth\seq.h:21:#define _FLUIDSYNTH_SEQ_H
+fluidsynth\include\fluidsynth\seq.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\seq.h:25:#endif
+fluidsynth\include\fluidsynth\seq.h:87:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\seq.h:89:#endif
+fluidsynth\include\fluidsynth\seq.h:91:#endif /* _FLUIDSYNTH_SEQ_H */
+utils\edit_text_file.py:35:# config
+utils\edit_text_file.py:53:# per-channel file registry
+utils\edit_text_file.py:54:# Maps channel_id (int) → {file_id: filename} for files staged but not yet sent.
+utils\edit_text_file.py:55:# Injected into the system prompt each turn so the model always knows pending IDs.
+utils\edit_text_file.py:63:    # Persist channel_id into meta so we can rebuild the registry after a restart
+utils\edit_text_file.py:101:            # Only register if the actual data file still exists on disk
+utils\edit_text_file.py:120:    lines = ["## STAGED FILES (pending send_files)"]
+utils\edit_text_file.py:128:# Rebuild registry on import (survives bot restarts as long as files remain on disk)
+utils\edit_text_file.py:131:# internal helpers
+utils\edit_text_file.py:172:    # Try with known extension first
+utils\edit_text_file.py:178:    # Fallback: scan temp dir for any file starting with the id
+utils\edit_text_file.py:201:# public api
+utils\edit_text_file.py:276:    # resolve source
+utils\edit_text_file.py:278:        # Download from CDN → write to temp
+utils\edit_text_file.py:295:        # Local temp file
+utils\edit_text_file.py:303:    # apply replacement
+utils\edit_text_file.py:328:    # handle rename
+utils\edit_text_file.py:334:        # Remove old file if extension changed
+utils\edit_text_file.py:386:    temp_to_clean = []   # (file_id, file_path) to remove after send
+utils\edit_text_file.py:388:    # build discord.file objects
+utils\edit_text_file.py:389:    discord_files: list[tuple[discord.File, str]] = []  # (File, desired_filename)
+utils\edit_text_file.py:395:            # Download CDN file to a temp buffer
+utils\edit_text_file.py:403:            # Write to temp so we can reuse the discord.File path
+utils\edit_text_file.py:421:            # Local temp file
+utils\edit_text_file.py:442:    # send in batches of 10 (discord limit)
+utils\edit_text_file.py:451:                content=f"-# File(s){part_label}",
+utils\edit_text_file.py:459:        # Collect CDN URLs and build preview links
+utils\edit_text_file.py:476:        # Edit message to append preview links
+utils\edit_text_file.py:485:    # cleanup temp files
+utils\edit_text_file.py:512:    # resolve source
+utils\edit_text_file.py:527:    # slice lines
+utils\edit_text_file.py:561:        # delete all staged files for this channel
+utils\edit_text_file.py:575:    # Unregister cleaned files
+utils\edit_text_file.py:615:        # Update meta to reflect new location
+utils\edit_text_file.py:624:        # Look for the file in persistent dir
+utils\edit_text_file.py:630:            # Fallback: scan persistent dir
+utils\edit_text_file.py:681:    # resolve source
+utils\edit_text_file.py:783:# tool schemas (paste into get_gemini_tools)
+utils\file_converter.py:30:    # Use UUID to ensure unique temp files when running async
+utils\file_converter.py:32:    #mimetype to ext
+utils\file_converter.py:50:        # Write model data to temp file
+utils\file_converter.py:56:        # Giữ nguyên texture gốc - không ghi đè với màu xám
+utils\file_converter.py:57:        # mesh.visual.face_colors = [100, 100, 100, 255]
+utils\file_converter.py:59:        # Tính toán khoảng cách camera để lấy toàn bộ model
+utils\file_converter.py:63:        # Tính khoảng cách từ tâm để model vừa khít trong view
+utils\file_converter.py:66:        # 6 hình ảnh thay vì 4
+utils\file_converter.py:79:        # Setup lighting - ambient light
+utils\file_converter.py:94:            # Áp dụng khoảng cách camera được tính toán
+utils\file_converter.py:119:        # Lưới 2x3 cho 6 hình ảnh
+utils\file_converter.py:121:        final_img.paste(renders[0], (0,0))       # Front
+utils\file_converter.py:122:        final_img.paste(renders[1], (512,0))     # Right
+utils\file_converter.py:123:        final_img.paste(renders[2], (1024,0))    # Back
+utils\file_converter.py:124:        final_img.paste(renders[3], (0,512))     # Left
+utils\file_converter.py:125:        final_img.paste(renders[4], (512,512))   # Isometric
+utils\file_converter.py:126:        final_img.paste(renders[5], (1024,512))  # Top
+utils\file_converter.py:133:        # Ensure cleanup
+utils\file_converter.py:144:        # Use UUID for unique directory name when running async
+utils\file_converter.py:243:    # Use UUID for unique temp files
+utils\file_converter.py:250:        # Write MIDI data to temp file
+utils\file_converter.py:284:        # Ensure cleanup with error handling
+utils\file_converter.py:303:    # Use UUID for unique temp files
+utils\file_converter.py:309:        # Write raw data to temp file
+utils\file_converter.py:348:        # Ensure cleanup with error handling
+utils\file_converter.py:361:        # Convert to RGB if necessary (to remove alpha channel if needed)
+utils\file_converter.py:363:            # Create white background
+utils\file_converter.py:365:            # Convert GIF to RGBA first if in palette mode
+utils\file_converter.py:400:                        # Tính độ dài nốt theo ticks_per_beat
+utils\file_converter.py:402:                        # Chuyển sang ABC notation
+utils\file_converter.py:407:                        # ABC octave: C,,, (low) đến C''' (high)
+utils\file_converter.py:424:    note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+utils\file_converter.py:440:            sections = re.findall(r'\[#(\d+)\]\r?\n(.*?)(?=\[#|\z)', content, re.DOTALL)
+utils\file_converter.py:473:                y_tag = 'v:y' if ns else 'y'       # Lyric
+utils\file_converter.py:474:                n_tag = 'v:n' if ns else 'n'       # Note Number
+utils\file_converter.py:475:                dur_tag = 'v:dur' if ns else 'dur' # Duration
+utils\file_converter.py:524:            '-vn',           # drop video stream (nếu có)
+utils\file_converter.py:525:            '-ar', '44100',  # sample rate
+utils\file_converter.py:526:            '-ac', '2',      # stereo
+utils\file_converter.py:623:        # .npz or unknown — use existing converter
+fluidsynth\include\fluidsynth\seqbind.h:20:#ifndef _FLUIDSYNTH_SEQBIND_H
+fluidsynth\include\fluidsynth\seqbind.h:21:#define _FLUIDSYNTH_SEQBIND_H
+fluidsynth\include\fluidsynth\seqbind.h:23:#include "seq.h"
+fluidsynth\include\fluidsynth\seqbind.h:25:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\seqbind.h:27:#endif
+fluidsynth\include\fluidsynth\seqbind.h:40:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\seqbind.h:42:#endif
+fluidsynth\include\fluidsynth\seqbind.h:43:#endif /* _FLUIDSYNTH_SEQBIND_H */
+fluidsynth\include\fluidsynth\settings.h:20:#ifndef _FLUIDSYNTH_SETTINGS_H
+fluidsynth\include\fluidsynth\settings.h:21:#define _FLUIDSYNTH_SETTINGS_H
+fluidsynth\include\fluidsynth\settings.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\settings.h:25:#endif
+fluidsynth\include\fluidsynth\settings.h:66:#define FLUID_HINT_BOUNDED_BELOW   0x1
+fluidsynth\include\fluidsynth\settings.h:74:#define FLUID_HINT_BOUNDED_ABOVE   0x2
+fluidsynth\include\fluidsynth\settings.h:83:#define FLUID_HINT_TOGGLED         0x4
+fluidsynth\include\fluidsynth\settings.h:85:#define FLUID_HINT_OPTIONLIST      0x02         /**< Setting is a list of string options */
+fluidsynth\include\fluidsynth\settings.h:183: * @param type Setting type (#fluid_types_enum)
+fluidsynth\include\fluidsynth\settings.h:192:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\settings.h:194:#endif
+fluidsynth\include\fluidsynth\settings.h:196:#endif /* _FLUIDSYNTH_SETTINGS_H */
+utils\gacha_tracker.py:76:# soft pity probability estimate
+utils\gacha_tracker.py:79:    base = 0.007  # 0.7% base pickup
+utils\gacha_tracker.py:82:    # +1.5% per pull from 50 onward, capped at 100%
+utils\gacha_tracker.py:95:# public api
+utils\gacha_tracker.py:113:        # Each 10-pull gives a shard (standard pity mechanic approximation)
+utils\gacha_tracker.py:114:        # Exact shard gain depends on banner type; use pull count as proxy
+utils\gacha_tracker.py:115:        shard_gain = count  # 1 shard per pull (standard JP/Global rule)
+utils\gacha_tracker.py:169:    # Probabilities
+utils\gacha_tracker.py:199:# Init on import
+fluidsynth\include\fluidsynth\sfont.h:20:#ifndef _FLUIDSYNTH_SFONT_H
+fluidsynth\include\fluidsynth\sfont.h:21:#define _FLUIDSYNTH_SFONT_H
+fluidsynth\include\fluidsynth\sfont.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\sfont.h:25:#endif
+fluidsynth\include\fluidsynth\sfont.h:50: * #fluid_sfloader_t instance created by new_fluid_sfloader().
+fluidsynth\include\fluidsynth\sfont.h:53: * if successful returns a #fluid_sfont_t instance, or NULL if it fails.
+fluidsynth\include\fluidsynth\sfont.h:55: * The #fluid_sfont_t structure contains a callback to obtain the
+fluidsynth\include\fluidsynth\sfont.h:59: * function should return a #fluid_preset_t instance.
+fluidsynth\include\fluidsynth\sfont.h:61: * The #fluid_preset_t instance contains some functions to obtain
+fluidsynth\include\fluidsynth\sfont.h:67: * #fluid_sample_t instance and returns a pointer to the opaque
+fluidsynth\include\fluidsynth\sfont.h:68: * #fluid_voice_t structure. To set or increment the values of a
+fluidsynth\include\fluidsynth\sfont.h:122: * delete_fluid_sfloader() to ensure proper cleanup of the #fluid_sfloader_t struct. If no private data
+fluidsynth\include\fluidsynth\sfont.h:148: * @return returns #FLUID_OK if exactly \c count bytes were successfully read, else returns #FLUID_FAILED and leaves \a buf unmodified.
+fluidsynth\include\fluidsynth\sfont.h:156: * @return returns #FLUID_OK if the seek was successfully performed while not seeking beyond a buffer or file, #FLUID_FAILED otherwise
+fluidsynth\include\fluidsynth\sfont.h:161: * Closes the handle returned by #fluid_sfloader_callback_open_t and frees used resources.
+fluidsynth\include\fluidsynth\sfont.h:163: * @return returns #FLUID_OK on success, #FLUID_FAILED on error
+fluidsynth\include\fluidsynth\sfont.h:167:/** @return returns current file offset or #FLUID_FAILED on error */
+fluidsynth\include\fluidsynth\sfont.h:231: * delete_fluid_sfont() to ensure proper cleanup of the #fluid_sfont_t struct. If no private data
+fluidsynth\include\fluidsynth\sfont.h:293: * @return #FLUID_OK on success (0) or #FLUID_FAILED (-1) otherwise
+fluidsynth\include\fluidsynth\sfont.h:301: * #fluid_sample_t structure and returns a pointer to the opaque
+fluidsynth\include\fluidsynth\sfont.h:302: * #fluid_voice_t structure. To set or increment the values of a
+fluidsynth\include\fluidsynth\sfont.h:317: * delete_fluid_preset() to ensure proper cleanup of the #fluid_preset_t struct. If no private data
+fluidsynth\include\fluidsynth\sfont.h:360:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\sfont.h:362:#endif
+fluidsynth\include\fluidsynth\sfont.h:364:#endif /* _FLUIDSYNTH_SFONT_H */
+fluidsynth\include\fluidsynth\shell.h:20:#ifndef _FLUIDSYNTH_SHELL_H
+fluidsynth\include\fluidsynth\shell.h:21:#define _FLUIDSYNTH_SHELL_H
+fluidsynth\include\fluidsynth\shell.h:24:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\shell.h:26:#endif
+fluidsynth\include\fluidsynth\shell.h:41: * https://github.com/FluidSynth/fluidsynth/wiki/UserManual#shell-commands
+fluidsynth\include\fluidsynth\shell.h:145:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\shell.h:147:#endif
+fluidsynth\include\fluidsynth\shell.h:149:#endif /* _FLUIDSYNTH_SHELL_H */
+utils\github.py:160:    # search
+utils\github.py:184:    # info
+utils\github.py:241:    # read files  (line-range support)
+utils\github.py:297:    # get tree  (paginated)
+utils\github.py:374:    # find string  (line number + ±10 line context)
+utils\github.py:433:            # Try raw first, then API (for private repos with token)
+utils\github.py:465:                # 1-based line numbers that contain the query
+utils\github.py:472:                # Merge overlapping ±10 windows
+utils\github.py:508:                # Fallback to GitHub's own fragment snippets
+utils\guild_memory.py:11:MAX_MEMORY_LEN = -1  # unlimited length for persisted guild memory
+utils\guild_memory.py:87:    return f"## Guild Memory\n{mem}\n"
+utils\guild_memory.py:90:# Init on import
+utils\http_session.py:5:# Global list of created sessions (for diagnostics & graceful shutdown)
+utils\http_session.py:8:# Patch ClientSession.__init__ to register sessions automatically
+utils\http_session.py:28:            # Cleanup closed sessions
+utils\http_session.py:33:            # If no healthy sessions, create one
+utils\http_session.py:47:            # Reuse existing session (round-robin / LRU simple approach)
+utils\http_session.py:64:# Single instance to be imported by other modules
+fluidsynth\include\fluidsynth\synth.h:20:#ifndef _FLUIDSYNTH_SYNTH_H
+fluidsynth\include\fluidsynth\synth.h:21:#define _FLUIDSYNTH_SYNTH_H
+fluidsynth\include\fluidsynth\synth.h:24:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\synth.h:26:#endif
+fluidsynth\include\fluidsynth\synth.h:386:    FLUID_IIR_LAST /**< @internal Value defines the count of filter types (#fluid_iir_filter_type) @warning This symbol is not part of the public API and ABI stability guarantee and may change at any time! */
+fluidsynth\include\fluidsynth\synth.h:463:    FLUID_CHANNEL_MODE_MASK = (FLUID_CHANNEL_OMNI_OFF | FLUID_CHANNEL_POLY_OFF), /**< Mask Poly and Omni bits of #fluid_channel_mode_flags, usually only used internally */
+fluidsynth\include\fluidsynth\synth.h:468:    FLUID_CHANNEL_MODE_LAST /**< @internal Value defines the count of basic channel modes (#fluid_basic_channel_modes) @warning This symbol is not part of the public API and ABI stability guarantee and may change at any time! */
+fluidsynth\include\fluidsynth\synth.h:492:    FLUID_CHANNEL_LEGATO_MODE_LAST /**< @internal Value defines the count of legato modes (#fluid_channel_legato_mode) @warning This symbol is not part of the public API and ABI stability guarantee and may change at any time! */
+fluidsynth\include\fluidsynth\synth.h:588:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\synth.h:590:#endif
+fluidsynth\include\fluidsynth\synth.h:592:#endif /* _FLUIDSYNTH_SYNTH_H */
+utils\impression.py:6:# key
+utils\impression.py:9:# cap, -1 for no limit
+utils\impression.py:12:# instruction
+utils\impression.py:45:# func
+utils\impression.py:128:    return imp_a  # fallback
+utils\impression.py:132:    memory_store,           # utils.memory.memory
+utils\impression.py:134:    full_prompt: str,       # prompt
+utils\impression.py:139:    message_bank=None,      # MessageBank instance
+utils\impression.py:140:    attachments=None,       # gemini_attachments
+utils\impression.py:141:    msg_history="",         # history passed to gemini
+utils\impression.py:142:    message=None,           # discord Message object
+utils\impression.py:154:        # build observer prompt — full context up front, impression task at the end
+utils\impression.py:192:        # filter to inline_data-only parts — {"text": label} parts crash open() in build_payload
+utils\impression.py:209:        # extract_gemini_text error patterns (do NOT save these as impressions):
+utils\impression.py:210:        #   "[ERR] ERR extracting..."  — exception during extraction
+utils\impression.py:211:        #   "Error: ..."               — error embedded in raw API response
+utils\impression.py:212:        #   "This request is **blocked**..." — policy block (blockReason in promptFeedback)
+utils\impression.py:213:        #   "The request exceeded..."  — token limit hit
+utils\impression.py:227:        # just log
+fluidsynth\include\fluidsynth\types.h:20:#ifndef _FLUIDSYNTH_TYPES_H
+fluidsynth\include\fluidsynth\types.h:21:#define _FLUIDSYNTH_TYPES_H
+fluidsynth\include\fluidsynth\types.h:25:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\types.h:27:#endif
+fluidsynth\include\fluidsynth\types.h:64:typedef short fluid_seq_id_t; /**< Unique client IDs used by the sequencer and #fluid_event_t, obtained by fluid_sequencer_register_client() and fluid_sequencer_register_fluidsynth() */
+fluidsynth\include\fluidsynth\types.h:66:#if defined(_MSC_VER) && (_MSC_VER < 1800)
+fluidsynth\include\fluidsynth\types.h:68:#else
+fluidsynth\include\fluidsynth\types.h:74:#endif
+fluidsynth\include\fluidsynth\types.h:78:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\types.h:80:#endif
+fluidsynth\include\fluidsynth\types.h:82:#endif /* _FLUIDSYNTH_TYPES_H */
+utils\malformed_recovery.py:13:# known function → corrective hint
+utils\malformed_recovery.py:51:# Regex patterns that suggest which function was being attempted
+utils\malformed_recovery.py:53:    # Highest priority: catch the "print(default_api.xxx(...))" Python SDK anti-pattern
+utils\malformed_recovery.py:54:    # Model confuses Gemini Python SDK (default_api module) with native function calling
+utils\malformed_recovery.py:55:    (re.compile(r'default_api\s*\.\s*(\w+)\s*\(', re.I), None),  # special-handled below
+utils\malformed_recovery.py:81:    # 0. Special case: catch "print(default_api.function_name(...))" — model confused
+utils\malformed_recovery.py:82:    #    the Gemini Python SDK (default_api module) with native function calling.
+utils\malformed_recovery.py:83:    #    Extract the actual function name from default_api.FUNC_NAME(...)
+utils\malformed_recovery.py:87:        # Map known SDK class/function aliases back to real function names
+utils\malformed_recovery.py:102:        # Fallback: snake_case the CamelCase name and check if it matches a known function
+utils\malformed_recovery.py:104:        return snake  # best guess
+utils\malformed_recovery.py:106:    # 1. Regex fingerprints on the full corpus (Most reliable for raw code leaks)
+utils\malformed_recovery.py:109:            continue  # skip the special-handled sentinel
+utils\malformed_recovery.py:113:    # 2. JSON-like fragment — try to extract "name" key
+utils\malformed_recovery.py:123:    # 3. Direct name in finish_message (Fallback)
+utils\malformed_recovery.py:124:    # Uses negative lookahead (?!call\b) to avoid matching the word "call"
+utils\malformed_recovery.py:150:    # Always warn about the Python SDK anti-pattern since it's the most common cause
+utils\malformed_recovery.py:161:        # Truncate to avoid bloating context
+fluidsynth\include\fluidsynth\version.h:20:#ifndef _FLUIDSYNTH_VERSION_H
+fluidsynth\include\fluidsynth\version.h:21:#define _FLUIDSYNTH_VERSION_H
+fluidsynth\include\fluidsynth\version.h:24:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\version.h:26:#endif
+fluidsynth\include\fluidsynth\version.h:33:#define FLUIDSYNTH_VERSION       "2.5.1"         /**< String constant of libfluidsynth version. */
+fluidsynth\include\fluidsynth\version.h:34:#define FLUIDSYNTH_VERSION_MAJOR 2     /**< libfluidsynth major version integer constant. */
+fluidsynth\include\fluidsynth\version.h:35:#define FLUIDSYNTH_VERSION_MINOR 5     /**< libfluidsynth minor version integer constant. */
+fluidsynth\include\fluidsynth\version.h:36:#define FLUIDSYNTH_VERSION_MICRO 1     /**< libfluidsynth micro version integer constant. */
+fluidsynth\include\fluidsynth\version.h:42:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\version.h:44:#endif
+fluidsynth\include\fluidsynth\version.h:46:#endif /* _FLUIDSYNTH_VERSION_H */
+utils\memory.py:8:# Config
+utils\memory.py:10:#config.py
+utils\memory.py:14:DB_PATH = SAVEDINFO_DB_PATH  # Alias for clarity in this module
+utils\memory.py:15:# Legacy JSON path — only used during one-time migration
+utils\memory.py:85:# Public API
+utils\memory.py:193:# Singleton
+utils\memory.py:196:# Backward-compat alias
+fluidsynth\include\fluidsynth\voice.h:20:#ifndef _FLUIDSYNTH_VOICE_H
+fluidsynth\include\fluidsynth\voice.h:21:#define _FLUIDSYNTH_VOICE_H
+fluidsynth\include\fluidsynth\voice.h:23:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\voice.h:25:#endif
+fluidsynth\include\fluidsynth\voice.h:72:#ifdef __cplusplus
+fluidsynth\include\fluidsynth\voice.h:74:#endif
+fluidsynth\include\fluidsynth\voice.h:75:#endif /* _FLUIDSYNTH_VOICE_H */
+utils\migration_keys.py:31:# Config
+utils\migration_keys.py:35:# Keys excluded from data copy on unlink
+utils\migration_keys.py:39:# DB + cache
+utils\migration_keys.py:74:# In-memory resolve cache — {linked_id: root_id}
+utils\migration_keys.py:75:# Loaded fully at startup; mutated on every write — O(1) reads forever.
+utils\migration_keys.py:87:# Auth key API
+utils\migration_keys.py:129:# Link resolution
+utils\migration_keys.py:141:# Link / Unlink
+utils\migration_keys.py:179:    # saved_information merge (new_id → root, skip conflicts)
+utils\migration_keys.py:193:    # msg_bank merge
+utils\migration_keys.py:204:    # impression merge
+utils\migration_keys.py:217:    # write link
+utils\migration_keys.py:234:    memory,      # SavedInformationManager
+utils\migration_keys.py:235:    bank=None,   # MessageBank (optional)
+utils\migration_keys.py:249:    # saved_information
+utils\migration_keys.py:270:    # msg_bank
+utils\migration_keys.py:283:    # remove link
+utils\msg_bank.py:13:        self.vec_collection = None  # set by initialize(), guard against pre-init calls
+utils\msg_bank.py:31:        # Separate ChromaDB collection for message vectors
+utils\msg_bank.py:59:            # Find overflow ids to sync with vector db
+utils\msg_bank.py:70:            # Get inserted row ids for encoding
+utils\msg_bank.py:78:        # Delete overflow vectors
+utils\msg_bank.py:85:        # Encode and store vectors (fire-and-forget)
+utils\msg_bank.py:118:            # Return oldest-first so format_for_gemini doesn't need to reverse
+utils\msg_bank.py:132:        # Query vector db filtered by user_id — search scope 600, but cap returned results by limit (max 50)
+utils\msg_bank.py:144:        # Fetch full rows from SQLite by id, filtered by user_id to prevent cross-user leakage
+utils\msg_bank.py:154:            # Key by id (string) — avoids collision on duplicate content
+utils\msg_bank.py:157:        # Return in semantic score order (preserving ChromaDB ranking)
+utils\msg_bank.py:186:        # Deduplicate by (content, created_at)
+utils\msg_bank.py:199:        # Fetch source vectors before deletion
+utils\msg_bank.py:222:        # Atomically replace with merged set
+utils\msg_bank.py:240:        # Delete old vectors
+utils\msg_bank.py:250:        # Re-upsert vectors
+utils\msg_bank.py:316:            # How many rows does target already have?
+utils\msg_bank.py:323:            # Fetch the most-recent source rows we can actually fit
+utils\msg_bank.py:335:        # Total source count for skipped calculation
+utils\msg_bank.py:344:        # Insert rows one-by-one to capture new IDs, build old→new mapping
+utils\msg_bank.py:358:        # Copy ChromaDB vectors by old IDs — no re-encoding needed
+utils\msg_bank.py:381:                    # Preserve channel/guild metadata, update user_id
+utils\msg_bank.py:401:            pass  # vectors are best-effort; SQLite migration is already committed
+utils\raid_recovery.py:7:    # inside on_message:
+utils\raid_recovery.py:34:# constants
+utils\raid_recovery.py:35:PURGE_LIMIT       = 60           # max messages deleted per channel
+utils\raid_recovery.py:36:CHANNEL_SEMAPHORE = asyncio.Semaphore(5)  # max concurrent channel operations
+utils\raid_recovery.py:37:AUDIT_LOG_SCAN    = 200          # audit log entries to scan
+utils\raid_recovery.py:38:MAX_MINUTES       = 1440         # 24 hours
+utils\raid_recovery.py:41:# guide embed
+utils\raid_recovery.py:93:# configuration modal
+utils\raid_recovery.py:119:        # Validate: time_window
+utils\raid_recovery.py:131:        # Validate: raider_bot_id
+utils\raid_recovery.py:142:        # Validate: announce_channel_id
+utils\raid_recovery.py:201:        value=f"<#{announce_id}>" if announce_id else "None",
+utils\raid_recovery.py:208:# guide view (opens modal)
+utils\raid_recovery.py:233:# confirm view (start / cancel)
+utils\raid_recovery.py:333:# core logic
+utils\raid_recovery.py:354:            console.log(f"[RAID] purge error in #{channel.name}: {e}", "WARN")
+utils\raid_recovery.py:435:    # Step 0 — send announcement first so members see it before messages vanish
+utils\raid_recovery.py:439:    # Step 1 — purge all accessible text channels in parallel
+utils\raid_recovery.py:457:    # Step 2 — restore channel names using audit log
+utils\raid_recovery.py:481:# entry point
+utils\schale_db.py:11:DEFAULT_REGION = "global"  # Can be 'global' or 'japan'
+utils\schale_db.py:13:# Use central SessionManager for SchaleDB requests
+utils\schale_db.py:46:    # Map các tag đặc biệt của SchaleDB sang tên thuộc tính tiếng Anh
+utils\schale_db.py:72:    # 1. Thay thế chỉ số <?1>, [?1]
+utils\schale_db.py:74:    # 2. Thay thế tên thuộc tính <%1>, [!1] thường bị trống
+utils\schale_db.py:138:        # Convert milliseconds to seconds (UTC)
+utils\schale_db.py:141:        # Format: "Jan 12, 2026 18:59 UTC"
+utils\schale_db.py:159:    # Common patterns
+utils\schale_db.py:166:        "Gacha": ""  # Remove trailing "Gacha" if nothing else matched
+utils\schale_db.py:173:    # If it's still camelCase, add spaces before capitals
+utils\schale_db.py:174:    # e.g., "SpecialPickup" -> "Special Pickup"
+utils\schale_db.py:225:                    # Convert dict to list for easier searching
+utils\schale_db.py:236:# NEW FUNCTIONS
+utils\schale_db.py:286:# Add get_localization_text for mapping internal keys to readable names
+utils\schale_db.py:317:    # Get last 2 ended banners
+utils\schale_db.py:366:    # Ưu tiên khớp tuyệt đối, bao gồm các mock student đặc biệt
+utils\schale_db.py:370:        # Thêm kiểm tra Id cho các trường hợp đặc biệt
+utils\schale_db.py:374:    # Nếu không có khớp tuyệt đối, dùng fuzzy matching như cũ
+utils\schale_db.py:410:            val = favor_values[-1][i] # Lấy mốc cao nhất
+utils\schale_db.py:469:        is_partial = any(n and query in n.lower() for n in names)  # "Thắng" in "Vũ Đình Trọng Thắng"
+utils\schale_db.py:472:            matches.append({"student": student, "similarity": 2.0})  # cái đầu tiên https://open.spotify.com/album/5jDZKqgoVRbob6A3omYTG5
+utils\schale_db.py:474:            matches.append({"student": student, "similarity": 1.5})  # cái thứ hai-waiting for streaming platform
+utils\schale_db.py:498:    # Current banners
+utils\schale_db.py:505:            # Try to parse as timestamp if it's a number
+utils\schale_db.py:514:    # Upcoming banners
+utils\schale_db.py:529:    # Recent ended banners
+utils\schale_db.py:580:#async def get_equipment(name: str = None, region: str = DEFAULT_REGION) -> Optional[Dict[str, Any]]:
+utils\schale_db.py:581:#    """
+utils\schale_db.py:582:#    Get equipment information. If name is provided, returns specific equipment.
+utils\schale_db.py:583:#    Otherwise returns all equipment.
+utils\schale_db.py:584:#    
+utils\schale_db.py:585:#    Args:
+utils\schale_db.py:586:#        name: Equipment name (optional)
+utils\schale_db.py:587:#        region: 'global' or 'japan'
+utils\schale_db.py:588:#    
+utils\schale_db.py:589:#    Returns:
+utils\schale_db.py:590:#        Equipment data
+utils\schale_db.py:591:#    """
+utils\schale_db.py:592:#    session = await _get_shared_session()
+utils\schale_db.py:593:#    endpoint = f"equipment/{name}" if name else "equipment"
+utils\schale_db.py:594:#    data = await _fetch_json(session, endpoint, {"region": region})
+utils\schale_db.py:595:#    return data
+utils\schale_db.py:612:    # Current raids
+utils\schale_db.py:624:    # Upcoming raids
+utils\schale_db.py:628:        for raid in upcoming[:3]:  # Show next 3
+utils\schale_db.py:653:    # Current events
+utils\schale_db.py:665:    # Upcoming events
+utils\schale_db.py:669:        for event in upcoming[:3]:  # Show next 3
+utils\schale_db.py:708:# Boss name → armor type weakness mapping
+utils\schale_db.py:734:    # Find weakness via mapping or fuzzy match key
+utils\schale_db.py:746:    # Score: effective = bullet hits weakness + high ATK
+utils\schale_db.py:853:# Birthday helpers
+utils\schale_db.py:874:    # Strip ordinal suffixes: "31st" → "31", "25th" → "25", "2nd" → "2"
+utils\schale_db.py:877:    # "Month DD" or "DD Month"
+utils\schale_db.py:893:        # "MM/DD" numeric
+utils\schale_db.py:901:    # Japanese: "3月28日"
+utils\schale_db.py:906:    # stdlib strptime fallback
+utils\schale_db.py:917:_BIRTHDAY_CACHE: tuple[tuple[int, int], list] | None = None  # ((month, day), students)
+utils\schale_db.py:977:#test 
+utils\schale_db.py:980:#if __name__ == "__main__":
+utils\schale_db.py:981:#  asyncio.run(main())
+utils\scheduler.py:10:# Database Setup
+utils\scheduler.py:41:            # Bảng chính
+utils\scheduler.py:56:            # Migration: thêm cột loop cho DB cũ (SQLite không hỗ trợ IF NOT EXISTS cho cột)
+utils\scheduler.py:75:# Loop Helper
+utils\scheduler.py:114:        target_dow = int(loop_at_day)          # 0 = Monday … 6 = Sunday
+utils\scheduler.py:121:        if candidate <= now:                   # same weekday but time passed
+utils\scheduler.py:127:        dom = int(loop_at_day)                 # 1–31
+utils\scheduler.py:131:            # ngày không tồn tại trong tháng hiện tại → nhảy tháng sau
+utils\scheduler.py:135:            # tiến sang tháng kế
+utils\scheduler.py:143:                # tháng kế cũng không có ngày đó (vd: 31/2) → cuối tháng
+utils\scheduler.py:183:# Background Heartbeat
+utils\scheduler.py:227:                    # Check if task has exceeded max retries
+utils\scheduler.py:235:                        # Increment retry count for this task
+utils\scheduler.py:240:                        log(f"Channel {channel_id} not found. Task {task_id} retry #{retry_count + 1}.", "WARN")
+utils\scheduler.py:246:                        # execute
+utils\scheduler.py:275:                        # task executed successfully → reset retry count
+utils\scheduler.py:278:                        # post-execute: loop vs one-shot
+utils\scheduler.py:300:# One-shot Public Tools  (không đổi so với bản gốc)
+utils\scheduler.py:362:# Loop Schedule Tool
+utils\scheduler.py:368:    # action-specific params
+utils\scheduler.py:369:    content: str = "",           # nội dung message hoặc prompt cho task
+utils\scheduler.py:370:    # loop params
+utils\scheduler.py:371:    loop_every: float = None,    # giây, chỉ dùng khi loop_type="interval"
+utils\scheduler.py:372:    loop_at_time: str = None,    # "HH:MM" UTC, dùng cho daily/weekly/monthly
+utils\scheduler.py:373:    loop_at_day: int = None,     # 0-6 (weekly) hoặc 1-31 (monthly)
+utils\scheduler.py:374:    # first trigger
+utils\scheduler.py:375:    first_trigger_time: float = None,   # Unix timestamp tuyệt đối cho lần chạy đầu
+utils\scheduler.py:376:    first_trigger_delay: float = None,  # giây tính từ bây giờ cho lần chạy đầu
+utils\scheduler.py:414:        # validate action
+utils\scheduler.py:418:        # validate loop_type
+utils\scheduler.py:423:        # validate loop params
+utils\scheduler.py:431:            # Normalize: strip any suffix like " UTC", timezone offsets, etc.
+utils\scheduler.py:440:        # tính first trigger
+utils\scheduler.py:446:            # Mặc định: tính từ loop params (lần tiếp theo theo lịch)
+utils\scheduler.py:452:        t_type = action   # "message" hoặc "task"
+utils\scheduler.py:483:# List / Delete / Clear  (hỗ trợ cả one-shot lẫn loop)
+utils\scheduler.py:561:# Get / Edit
+utils\scheduler.py:642:        # Allow clearing nullable fields with empty string
+utils\scheduler.py:675:# Misc
+utils\skills.py:52:                break  # end of frontmatter
+utils\skills.py:56:            # Multi-line description (indented continuation)
+utils\skills.py:77:        # Truncate long descriptions
+utils\text_utils.py:61:        # Skip separator rows (e.g. |---|:---:|)
+utils\todo.py:51:# public api
+utils\todo.py:72:        # Confirm all done — delete
+utils\todo.py:87:    # Auto-delete if all done
+utils\todo.py:122:    lines = ["## ACTIVE TODO"]
+utils\todo.py:158:# tool schema
+utils\tool_groups.py:17:TTL_MESSAGES = 5  # how many incoming messages a loaded group survives without being reloaded
+utils\tool_groups.py:19:# channel_id -> {group_name: messages_remaining}
+utils\tool_groups.py:48:    from utils.tool_schemas import TOOL_GROUPS  # local import avoids circular import
+utils\tool_schemas.py:93:# group_name -> list of tool dicts, built once at import time (no message-specific content here, so no need to rebuild per-call). chess tools embed turn_info but that's regenerated separately in get_gemini_tools below for freshness.
+utils\tool_schemas.py:133:    # core — always present
+utils\tool_schemas.py:135:        # web
+utils\tool_schemas.py:139:        # memory
+utils\tool_schemas.py:149:        # profile & misc
+utils\tool_schemas.py:159:    # final tool list
+utils\tool_schemas.py:163:    # Groups that were unconditionally available even in voice sessions before this refactor
+utils\tool_schemas.py:164:    # (they used to live in `shared_tools`). Lazy-loading only applies to text channels, since
+utils\tool_schemas.py:165:    # voice has no per-channel message stream to tick a TTL against.
+utils\tool_schemas.py:169:        always_on = _build_groups(turn_info="")  # no live channel turn_info available in voice
+utils\tool_schemas.py:173:        # load_tools/unload_tools only make sense with a real channel to track TTL against
+utils\tool_schemas.py:178:            # Only chess needs a freshly-built declaration (live turn_info baked into its description);
+utils\tool_schemas.py:179:            # everything else can reuse the static TOOL_GROUPS built at import time.
+utils\tool_schemas.py:192:        # Voice session — append voice-specific tools
+utils\tool_schemas.py:197:        # escalate thinking depth
+utils\tool_status.py:3:(e.g. "-# <:web_search:…> Searching for 'cats'…").
+utils\tool_status.py:12:    # web
+utils\tool_status.py:16:            #queries = queries[:2] #no need
+utils\tool_status.py:20:        return f"-# <:web_search:1484030926995587132> Searching for {query_str}..."
+utils\tool_status.py:25:        return f"-# <:web_search:1484030926995587132> Reverse image searching for {filename}..."
+utils\tool_status.py:31:            return f"-# <:web_crawl:1484030925342904450> Fetching from {url_display}..."
+utils\tool_status.py:32:        return "-# <:web_crawl:1484030925342904450> Reading page content..."
+utils\tool_status.py:37:            return f"-# <:weather:1484030923669372928> Fetching weather for {location}..."
+utils\tool_status.py:38:        return "-# <:weather:1484030923669372928> Fetching weather..."
+utils\tool_status.py:46:            return f"-# <:web_crawl:1484030925342904450> Fetching YouTube metadata{vid_tag}..."
+utils\tool_status.py:50:            return f"-# <:web_crawl:1484030925342904450> Fetching transcript{lang_tag}{vid_tag}..."
+utils\tool_status.py:51:        return f"-# <:web_crawl:1484030925342904450> Fetching YouTube video info{vid_tag}..."
+utils\tool_status.py:53:    # code sandbox
+utils\tool_status.py:57:            return "-# <:run_shell:1484030905503842324> Running shell command..."
+utils\tool_status.py:58:        return "-# <:run_code:1484030903297511535> Running Python code..."
+utils\tool_status.py:63:        return f"-# <:run_code:1484030903297511535> Peeking at{name_tag}..."
+utils\tool_status.py:69:            return f"-# <:read_skills:1484030901020131349> Reading skill docs: {names}..."
+utils\tool_status.py:70:        return "-# <:read_skills:1484030901020131349> Reading skill documentation..."
+utils\tool_status.py:72:    # file ops
+utils\tool_status.py:78:        return f"-# <:read_file:1484030897463230708> Reading file `{label}` (lines {start}–{end})..."
+utils\tool_status.py:85:            return f"-# <:create_files:1484030875434881096> Creating {names}{suffix}..."
+utils\tool_status.py:86:        return "-# <:create_files:1484030875434881096> Creating files..."
+utils\tool_status.py:93:            return f"-# <:edit_file:1484030881965543536> Editing and renaming to {new_name}..."
+utils\tool_status.py:94:        return f"-# <:edit_file:1484030881965543536> Editing {fname}..."
+utils\tool_status.py:98:        return f"-# <:send_files:1484030914836037632> Presenting {count} file{'s' if count != 1 else ''}..."
+utils\tool_status.py:103:            return f"-# <:cleanup_files:1484030874147360848> Cleaning up {len(ids)} staged file(s)..."
+utils\tool_status.py:104:        return "-# <:cleanup_files:1484030874147360848> Cleaning up all staged files..."
+utils\tool_status.py:110:            return f"-# <:move_file_persist:1484030891947724900> Persisting file `{fid}...`..."
+utils\tool_status.py:111:        return f"-# <:move_file_stage:1484030893592150066> Staging file `{fid}...`..."
+utils\tool_status.py:113:    # memory
+utils\tool_status.py:118:        return f"-# <:user_memory:1484030921391870075> {action_text} saved information..."
+utils\tool_status.py:121:        return "-# <:rag:1484030895441711284> Saving to memory..."
+utils\tool_status.py:126:            return f"-# <:rag:1484030895441711284> Querying memory for '{query}'..."
+utils\tool_status.py:127:        return "-# <:rag:1484030895441711284> Querying memory..."
+utils\tool_status.py:132:            return "-# <:user_memory:1484030921391870075> Reading channel memory..."
+utils\tool_status.py:134:            return "-# <:user_memory:1484030921391870075> Updating channel memory..."
+utils\tool_status.py:136:            return "-# <:user_memory:1484030921391870075> Clearing channel memory..."
+utils\tool_status.py:137:        return "-# <:user_memory:1484030921391870075> Managing channel memory..."
+utils\tool_status.py:142:            return "-# <:user_memory:1484030921391870075> Reading guild memory..."
+utils\tool_status.py:144:            return "-# <:user_memory:1484030921391870075> Updating guild memory..."
+utils\tool_status.py:146:            return "-# <:user_memory:1484030921391870075> Clearing guild memory..."
+utils\tool_status.py:147:        return "-# <:user_memory:1484030921391870075> Managing guild memory..."
+utils\tool_status.py:152:            return "-# <:fetch_history:1484030886914556065> Searching chat history..."
+utils\tool_status.py:153:        return "-# <:fetch_history:1484030886914556065> Fetching recent history..."
+utils\tool_status.py:155:    # blue archive
+utils\tool_status.py:159:            return f"-# <:schaledb:1484030907584090183> Querying Schale database for '{query}'..."
+utils\tool_status.py:160:        return "-# <:schaledb:1484030907584090183> Querying Schale database..."
+utils\tool_status.py:166:            return f"-# <:schaledb:1484030907584090183> Checking gacha status for `{banner}`..."
+utils\tool_status.py:169:            return f"-# <:schaledb:1484030907584090183> Logging {count} pull(s)..."
+utils\tool_status.py:171:            return "-# <:schaledb:1484030907584090183> Adding shards..."
+utils\tool_status.py:173:            return f"-# <:schaledb:1484030907584090183> Resetting banner `{banner}`..."
+utils\tool_status.py:174:        return "-# <:schaledb:1484030907584090183> Gacha tracker..."
+utils\tool_status.py:176:    # github
+utils\tool_status.py:181:            return f"-# <:fetch_github_repo:1484030885366988840> Searching GitHub for '{query}'..."
+utils\tool_status.py:185:            return f"-# <:fetch_github_repo:1484030885366988840> Fetching GitHub repo info for {repo_name}..."
+utils\tool_status.py:187:            return "-# <:fetch_github_repo:1484030885366988840> Fetching repository file tree..."
+utils\tool_status.py:189:            return "-# <:fetch_github_repo:1484030885366988840> Reading GitHub files..."
+utils\tool_status.py:191:            return "-# <:fetch_github_repo:1484030885366988840> Searching GitHub code..."
+utils\tool_status.py:192:        return "-# <:fetch_github_repo:1484030885366988840> Fetching GitHub data..."
+utils\tool_status.py:194:    # context hub
+utils\tool_status.py:200:            return f"-# <:chub:1484030878542729317> Searching Context Hub{f': {q}' if q else ''}..."
+utils\tool_status.py:202:            return f"-# <:chub:1484030878542729317> Fetching docs for `{doc_id}`..."
+utils\tool_status.py:204:            return f"-# <:chub:1484030878542729317> Saving annotation for `{doc_id}`..."
+utils\tool_status.py:206:            return f"-# <:chub:1484030878542729317> Sending feedback for `{doc_id}`..."
+utils\tool_status.py:207:        return "-# <:chub:1484030878542729317> Calling Context Hub..."
+utils\tool_status.py:209:    # chess
+utils\tool_status.py:211:        return "-# <:chess:1484030877318250567> Getting chess board..."
+utils\tool_status.py:216:            return f"-# <:chess:1484030877318250567> Making chess move: {move}..."
+utils\tool_status.py:217:        return "-# <:chess:1484030877318250567> Making chess move..."
+utils\tool_status.py:220:        return "-# <:chess:1484030877318250567> Promoting pawn..."
+utils\tool_status.py:223:        return "-# <:chess:1484030877318250567> Resetting chess game..."
+utils\tool_status.py:226:        return "-# <:chess:1484030877318250567> Sending chess board..."
+utils\tool_status.py:228:    # scheduler
+utils\tool_status.py:230:        return "-# <:schedule:1484030910960767137> Scheduling a message..."
+utils\tool_status.py:233:        return "-# <:schedule:1484030910960767137> Scheduling a task..."
+utils\tool_status.py:236:        return "-# <:schedule:1484030910960767137> Checking your scheduled tasks..."
+utils\tool_status.py:239:        return f"-# <:schedule:1484030910960767137> Deleting task ID {func_args.get('task_id')}..."
+utils\tool_status.py:242:        return "-# <:schedule:1484030910960767137> Clearing all your scheduled tasks..."
+utils\tool_status.py:247:        return f"-# <:schedule:1484030910960767137> Fetching task(s) {ids_str}..."
+utils\tool_status.py:252:        return f"-# <:schedule:1484030910960767137> Editing task {task} [{field}]..."
+utils\tool_status.py:255:        return f"-# <:schedule:1484030910960767137> Waiting for {func_args.get('wait_time')} seconds..."
+utils\tool_status.py:257:    # todo
+utils\tool_status.py:262:            return f"-# <:todo_add:1484060627264868362> Creating TODO with {n} item(s)..."
+utils\tool_status.py:266:                return "-# <:todo_done:1484060628787134556> Completing TODO..."
+utils\tool_status.py:267:            return f"-# <:todo_done:1484060628787134556> Marking {len(content)} item(s) done..."
+utils\tool_status.py:269:            return "-# <:todo_list:1484060630024458383> Updating TODO item..."
+utils\tool_status.py:270:        return "-# <:todo_list:1484060630024458383> Updating TODO..."
+utils\tool_status.py:272:    # misc / user interaction
+utils\tool_status.py:274:        return "-# <:ask_user:1484030872415109262> Waiting for your input..."
+utils\tool_status.py:277:        return "-# <:read_profile:1484030899531026593> Reading user profile..."
+utils\tool_status.py:281:        return f"-# <:read_profile:1484030899531026593> Searching for member '{query}'..." if query else "-# <:read_profile:1484030899531026593> Searching server members..."
+utils\tool_status.py:285:        return f"-# <:read_profile:1484030899531026593> Searching servers for '{query}'..." if query else "-# <:read_profile:1484030899531026593> Searching joined servers..."
+utils\tool_status.py:289:        return f"-# <:read_profile:1484030899531026593> Fetching info for server {guild_id}..." if guild_id else "-# <:read_profile:1484030899531026593> Fetching server info..."
+utils\tool_status.py:292:        return "-# <:user_memory:1484030921391870075> Sending migration key embed..."
+utils\tool_status.py:295:        return "-# <:user_memory:1484030921391870075> Sending key reset confirmation..."
+utils\tool_status.py:300:        return f"-# <:user_memory:1484030921391870075> Linking account{label}..."
+utils\tool_status.py:303:        return "-# <:user_memory:1484030921391870075> Unlinking account and copying data..."
+utils\tool_status.py:307:        return f"-# <:ask_user:1484030872415109262> Sending {fb_type}..."
+utils\tool_status.py:310:        return "-# <:song_recognition:1484030916283338783> Recognizing song..."
+utils\tool_status.py:318:        return f"-# <:rag:1484030895441711284> Summarizing last {limit} messages{suffix}{deep_tag}..."
+utils\tool_status.py:320:    # voice
+utils\tool_status.py:322:        return "-# <:join_voice:1484030888718241885> Joining voice channel..."
+utils\tool_status.py:325:        return "-# <:leave_voice:1484030890282713201> Leaving voice channel..."
+utils\tool_status.py:327:    # escalation
+utils\tool_status.py:329:        return "-# <:escalate:1484030883764633783> Thinking deeper..."
+utils\tool_status.py:331:    # tool group loading
+utils\tool_status.py:335:        return f"-# <:default:1484030880438816989> Loading tool group(s): {names}..."
+utils\tool_status.py:340:        return f"-# <:default:1484030880438816989> Unloading tool group(s): {names}..."
+utils\tool_status.py:342:    # fallback
+utils\tool_status.py:344:        return f"-# <:default:1484030880438816989> Executing {func_name}..."
+utils\vector_database.py:13:# INTEL XEON 4214R HARDWARE OPTIMIZATION
+utils\vector_database.py:14:# 12 Physical Cores. Limiting threads prevents core contention and overhead from Hyper-Threading.
+utils\vector_database.py:17:# KMP_AFFINITY ensures computation threads stay close to physical cores to leverage L3 Cache.
+utils\vector_database.py:25:        # 1. ChromaDB Configuration (Enhanced SQLite performance via Persistent Storage)
+utils\vector_database.py:32:        # 2. Load BGE-M3 Model
+utils\vector_database.py:37:        # 3. Mathematical Instruction Set Optimization (AVX-512)
+utils\vector_database.py:38:        # Utilize torch.compile if supported by the environment (PyTorch 2.0+)
+utils\vector_database.py:40:        # Set low-level PyTorch execution threads to match Xeon's physical core count
+utils\vector_database.py:60:            # Encode using executor to utilize multi-core without freezing the Event Loop.
+utils\vector_database.py:61:            # normalize_embeddings is crucial for BGE-M3 accuracy.
+utils\vector_database.py:97:                n_results=min(n_results, 10) # Cap results to prevent memory bloat
+utils\vector_database.py:110:                # Format: ID | [Timestamp]: Content
+utils\vector_database.py:127:# Singleton Instance for global access
+utils\wiki.py:1:# utils/wiki.py
+utils\wiki.py:14:# Shared session (lazy init)
+utils\wiki.py:18:    # Dùng browser UA cho chắc, dù API thường không cần
+utils\wiki.py:43:    # Remove section edit markers [edit]
+utils\wiki.py:45:    # Collapse 3+ newlines thành 2
+utils\wiki.py:47:    # Strip leading/trailing whitespace
+utils\wiki.py:58:            "suggestions": [str, ...]  # raw title list
+utils\wiki.py:65:        "namespace": 0,  # Main namespace only
+utils\wiki.py:76:        # OpenSearch format: [query, [titles], [descriptions], [urls]]
+utils\wiki.py:115:            "sections": [str, ...]  # tên các section
+utils\wiki.py:118:    # Bước 1: Lấy text extract
+utils\wiki.py:124:        "redirects": "1",      # Auto-follow redirects
+utils\wiki.py:126:        "formatversion": "2",  # Cleaner JSON format
+utils\wiki.py:127:        "explaintext": "1",    # Plain text, không phải HTML
+utils\wiki.py:157:        # Bước 2: Lấy danh sách sections (dùng parse action)
+utils\wiki.py:200:    # Lấy section list trước
+utils\wiki.py:203:    # Fuzzy match tên section (case-insensitive)
+utils\wiki.py:208:            section_idx = i + 1  # sections trong parse API 1-indexed, nhưng trong extracts thì khác
+utils\youtube.py:23:# Helpers
+utils\youtube.py:25:#support youtube.com/watch?v=VIDEOID, youtube.com/embed/VIDEOID, youtube.com/v/VIDEOID, youtube.com/shorts/VIDEOID, youtu.be/VIDEOID, etc.
+utils\youtube.py:45:# Metadata
+utils\youtube.py:109:        # yt-dlp not in PATH
+utils\youtube.py:146:# Transcript
+utils\youtube.py:214:    # Build API instance — inject cookies session if provided
+utils\youtube.py:238:    # 1. Manual transcript theo preferred languages
+utils\youtube.py:246:    # 2. Auto-generated theo preferred languages
+utils\youtube.py:255:    # 3. Last resort — bất kỳ cái nào available
+utils\youtube.py:291:    # If limit is None, return the full transcript as-is
+utils\youtube.py:298:        # Only truncate if limit is valid and less than full length
+utils\youtube.py:316:# Combined entry point
+utils\youtube.py:340:# Formatting

@@ -1,0 +1,178 @@
+import argparse
+import os
+import re
+import sys
+import shutil
+
+ROOT_DEFAULT = "."
+SKIP_NAMES = {"config.py"}
+SKIP_DIRS = {".git", "__pycache__", "venv", ".venv", "env", "node_modules"}
+SKIP_PATH_PARTS = [
+    os.path.normpath("arona/tts/ttsapi"),
+    os.path.normpath("arona/voice_changer"),
+]
+
+# ----------------------------------------------------------------------
+# Patterns
+# ----------------------------------------------------------------------
+
+# Full-line divider made of -, =, or # repeated, e.g.:
+#   # ---------------------------------------------------------------------------
+DIVIDER_RE = re.compile(r'^\s*#\s*[-=]{5,}\s*$')
+
+# "# -- Title -----------------------------------------------------------------"
+DASH_TITLE_RE = re.compile(r'^(\s*)#\s*-{2,}\s*(.+?)\s*-{2,}\s*$')
+
+# Exact lines to drop outright (jokes / meaningless)
+DROP_EXACT = {
+    "# comment magic =)))",
+}
+
+# Dead commented-out code block markers (vector_database.py torch.compile block).
+# We match a contiguous run starting with this signature and drop the whole run
+# as long as every line in the run is a comment.
+DEAD_CODE_SIGNATURES = [
+    "# if hasattr(torch, 'compile'):",
+]
+
+
+def is_skipped_path(dirpath, root):
+    rel = os.path.normpath(os.path.relpath(dirpath, root))
+    for skip in SKIP_PATH_PARTS:
+        if rel == skip or rel.startswith(skip + os.sep):
+            return True
+    return False
+
+
+def find_py_files(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        if is_skipped_path(dirpath, root):
+            dirnames[:] = []
+            continue
+        for fn in filenames:
+            if fn.endswith(".py") and fn not in SKIP_NAMES:
+                yield os.path.join(dirpath, fn)
+
+
+def collapse_banner_triplets(lines):
+    """
+    Turn:
+        # ---------------
+        # Section Title
+        # ---------------
+    into:
+        # Section Title
+    """
+    out = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if (
+            DIVIDER_RE.match(line)
+            and i + 2 < n
+            and lines[i + 1].strip().startswith("#")
+            and not DIVIDER_RE.match(lines[i + 1])
+            and DIVIDER_RE.match(lines[i + 2])
+        ):
+            title_line = lines[i + 1]
+            indent = re.match(r'^(\s*)', title_line).group(1)
+            title_text = title_line.strip().lstrip("#").strip()
+            out.append(f"{indent}# {title_text}\n")
+            i += 3
+            continue
+        out.append(line)
+        i += 1
+    return out
+
+
+def simplify_dash_titles(lines):
+    """
+    Turn "# -- Title -----" into "# Title"
+    """
+    out = []
+    for line in lines:
+        m = DASH_TITLE_RE.match(line)
+        if m:
+            indent, title = m.groups()
+            out.append(f"{indent}# {title}\n")
+        else:
+            out.append(line)
+    return out
+
+
+def drop_exact_and_dead_code(lines):
+    out = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        stripped = lines[i].strip()
+        if stripped in DROP_EXACT:
+            i += 1
+            continue
+        if any(stripped.startswith(sig) for sig in DEAD_CODE_SIGNATURES):
+            # consume this line + following contiguous comment lines
+            j = i
+            while j < n and lines[j].strip().startswith("#"):
+                j += 1
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    return out
+
+
+def process_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            original = f.readlines()
+    except Exception as e:
+        print(f"# SKIP (read error) {path}: {e}", file=sys.stderr)
+        return None
+
+    lines = original
+    lines = collapse_banner_triplets(lines)
+    lines = simplify_dash_titles(lines)
+    lines = drop_exact_and_dead_code(lines)
+
+    if lines != original:
+        return original, lines
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("root", nargs="?", default=ROOT_DEFAULT)
+    ap.add_argument("--apply", action="store_true", help="Ghi đè file thật (có backup .bak)")
+    args = ap.parse_args()
+
+    changed_files = 0
+    for path in find_py_files(args.root):
+        result = process_file(path)
+        if result is None:
+            continue
+        original, new_lines = result
+        changed_files += 1
+
+        print(f"\n===== {path} =====")
+        # simple diff preview
+        import difflib
+        diff = difflib.unified_diff(original, new_lines, lineterm="", fromfile="before", tofile="after")
+        for d in diff:
+            print(d.rstrip("\n"))
+
+        if args.apply:
+            backup_path = path + ".bak"
+            shutil.copy2(path, backup_path)
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            print(f"-> Đã sửa {path} (backup: {backup_path})")
+
+    print(f"\nTổng số file thay đổi: {changed_files}")
+    if not args.apply:
+        print("(Chế độ preview - chưa ghi file nào. Chạy lại với --apply để áp dụng thật.)")
+
+
+if __name__ == "__main__":
+    main()

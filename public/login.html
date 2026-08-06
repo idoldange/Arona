@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Login</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    /* reset box sizing để tránh overflow */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html,body {
+      height: 100%;
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+
+    body{
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      /* dùng biến --vh thay cho 100vh để fix trên mobile */
+      height: calc(var(--vh, 1vh) * 100);
+      background: linear-gradient(135deg, #0d1b2a, #301934); /* tối, xanh->tím */
+      color: #e6eef8;
+      overflow: hidden; /* chặn scroll thừa trên mobile */
+    }
+
+    .login-box{
+      width: 340px;
+      background: rgba(10,10,16,0.96);
+      padding: 36px 28px;
+      border-radius: 14px;
+      box-shadow: 0 14px 40px rgba(0,0,0,0.7);
+      border: 1px solid rgba(255,255,255,0.02);
+    }
+
+    .login-head{ text-align:center; margin-bottom: 16px; }
+    .login-head h1{ margin:0; font-size:20px; color:#f6f8fb; letter-spacing:0.2px; }
+    .login-head p{ margin:6px 0 0; font-size:12px; color:#9fb0c8; }
+
+    form { width:100%; margin-top: 8px; }
+
+    label{
+      display:block;
+      color:#b9cadb;
+      font-size:13px;
+      margin-bottom:8px;
+    }
+
+    .password-wrapper{
+      position:relative;
+      width:100%;
+      overflow:hidden; /* ngăn tràn */
+    }
+
+    input[type="password"], input[type="text"]{
+      width:100%;
+      padding:12px 44px 12px 12px; /* padding-right để dành chỗ cho nút */
+      font-size:14px;
+      border-radius:10px;
+      border:1px solid rgba(255,255,255,0.04);
+      background: #0e1116;
+      color: #e8f0ff;
+      outline: none;
+      transition: box-shadow .12s ease, border-color .12s ease;
+    }
+
+    input[type="password"]:focus, input[type="text"]:focus{
+      box-shadow: 0 6px 18px rgba(45,60,90,0.18);
+      border-color: rgba(100,120,200,0.18);
+    }
+
+    input::placeholder{ color:#67788f; }
+
+    /* toggle button (SVG) */
+    .toggle-pass{
+      position:absolute;
+      right:8px;
+      top:50%;
+      transform: translateY(-50%);
+      height:36px;
+      width:36px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      border-radius:8px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: #9fb0c8;
+    }
+    .toggle-pass:hover{ color: #e6eef8; background: rgba(255,255,255,0.02); }
+
+    button[type="submit"]{
+      margin-top: 16px;
+      width:100%;
+      padding:12px;
+      border-radius:10px;
+      border: none;
+      cursor: pointer;
+      font-weight:600;
+      background: linear-gradient(135deg, #2a5298, #6a0572);
+      color: white;
+      font-size:15px;
+      transition: transform .12s ease, opacity .12s ease;
+    }
+    button[type="submit"]:hover{ transform: translateY(-2px); }
+
+    .error{
+      margin-top:12px;
+      font-size:13px;
+      color:#ff6b6b;
+      text-align:center;
+      min-height:18px;
+    }
+
+    /* smaller screens */
+    @media (max-width:420px){
+      .login-box{ width: 92%; padding: 28px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-box" role="main">
+    <div class="login-head">
+      <h1>Remote Panel</h1>
+      <p>Sign in to control your bot</p>
+    </div>
+
+    <form id="loginForm" autocomplete="off" novalidate>
+      <!-- username ẩn, backend lấy idoldange -->
+      <input type="hidden" name="username" value="idoldange">
+
+      <label for="password">Password</label>
+      <div class="password-wrapper">
+        <input id="password" name="password" type="password" placeholder="Enter password" required aria-label="Password" />
+        <!-- Toggle using inline SVG icons (no emoji) -->
+        <button type="button" id="togglePass" class="toggle-pass" aria-label="Toggle password visibility"></button>
+      </div>
+
+      <button type="submit">Login</button>
+
+      <div id="error" class="error" aria-live="polite"></div>
+    </form>
+  </div>
+
+  <script>
+    // Fix 100vh trên mobile
+    function setVH() {
+      document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
+    }
+    setVH();
+    window.addEventListener('resize', setVH);
+
+    (function(){
+      const form = document.getElementById('loginForm');
+      const pw = document.getElementById('password');
+      const toggle = document.getElementById('togglePass');
+      const err = document.getElementById('error');
+
+      // SVGs (eye / eye-off)
+      const eyeSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+      const eyeOffSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a21.8 21.8 0 0 1 4.1-5.6"></path><path d="M1 1l22 22"></path><path d="M9.88 9.88A3 3 0 0 0 14.12 14.12"></path></svg>';
+
+      // initial icon
+      toggle.innerHTML = eyeSvg;
+
+      // Enter to submit
+      pw.addEventListener('keyup', (e) => {
+        if (e.key === 'Enter') form.requestSubmit();
+        if (err.textContent) err.textContent = '';
+      });
+
+      // Toggle show/hide password
+      toggle.addEventListener('click', () => {
+        if (pw.type === 'password') {
+          pw.type = 'text';
+          toggle.innerHTML = eyeOffSvg;
+        } else {
+          pw.type = 'password';
+          toggle.innerHTML = eyeSvg;
+        }
+        pw.focus();
+      });
+
+      // submit handler
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        err.textContent = '';
+
+        const password = pw.value || '';
+        const username = form.username.value; // Get username from hidden input
+
+        try {
+          console.log("Sending login request..."); // Add this line
+          const res = await fetch('/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: username, password: password }) // Include username in request body
+          });
+          console.log("Login request sent"); // Add this line
+
+          const data = await res.json();
+          if (data.success) {
+            console.log("Login successful (client)"); // Add this line
+            window.location.href = '/';
+          } else if (res.status === 401) {
+            console.log("Login failed: Incorrect password (client)"); // Add this line
+            err.textContent = 'Password is incorrect';
+          } else {
+            console.log("Login failed: Connection error (client)"); // Add this line
+            err.textContent = 'Connection error';
+          }
+        } catch (errx) {
+          console.log("Login failed: Connection error (client)", errx); // Add this line
+          err.textContent = 'Connection error';
+        }
+      });
+    })();
+
+
+  </script>
+</body>
+</html>
