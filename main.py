@@ -4271,7 +4271,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     has_calls = False
     escalate_thinking_level = None  # replaces old escalate_to_flash (model switch)
     search_blocked = False
-    func_msg = None  # To track the "Executing function..." message for deletion
+    func_msg = []  # To track the "Executing function..." message for deletion
     
     for part in parts_list:
       if "functionCall" in part:
@@ -4282,7 +4282,10 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         # Notify that the function is running (no need to check msg here anymore)
         if not gemini_ws.is_voice_session and message:
           func_msg_text = get_function_execution_message(func_name, func_args)
-          func_msg = await message.channel.send(func_msg_text)
+          try:
+            func_msg.append(await message.channel.send(func_msg_text))
+          except Exception as e:
+            console.log(f"Failed sending func_msg notice for {func_name}: {e}", "WARN")
         
         console.log(f"[MODEL_CALLED_FUNCTION] {func_name} with args: {func_args}", "INFO")
         
@@ -4313,10 +4316,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           escalate_thinking_level = requested_level
           has_calls = False
           
-          if func_msg:
-             await func_msg.delete()
-             func_msg = None
-          break
+          #if func_msg:
+          #   for msg in func_msg:
+          #      await msg.delete()
+          #   func_msg = []
+          #break
         
         console.log(f"[FUNCTION] {func_name} {func_args}", "INFO")
         
@@ -4359,13 +4363,13 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         
         has_calls = True
         
-        try:
-          if func_msg and func_msg.author.id == client.user.id:
-            await func_msg.delete()
-        except Exception:
-          pass
+        #try:
+        #  if func_msg and func_msg.author.id == client.user.id:
+        #    await func_msg.delete()
+        #except Exception:
+        #  pass
         
-        func_msg = None
+        #func_msg = None
     
     if has_calls:
       _consecutive_tool_rounds += 1
@@ -4385,6 +4389,15 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       })
 
     if escalate_thinking_level:
+      # Clean up any "Executing function..." notices before recursing — this branch
+      # returns early and would otherwise skip the cleanup block below, leaking messages.
+      if func_msg:
+        for msg in func_msg:
+          try:
+            await msg.delete()
+          except Exception:
+            pass
+        func_msg = []
       return await ask_gemini(
         model_name=model_name,  # same model, only thinking level changes
         text="",
@@ -4402,7 +4415,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       )
     
     if 'func_msg' in locals() and func_msg:
-            await func_msg.delete()
+          for msg in func_msg:
+            try:
+              await msg.delete()
+            except Exception as e:
+              console.log(f"Failed deleting func_msg notice: {e}", "WARN")
             
     if search_blocked and has_calls:
       console.log("[FUNCTION] Search blocked, asking model to provide answer without search", "INFO")
