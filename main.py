@@ -3685,7 +3685,15 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           pass
     except Exception as e:
       console.log(f"Failed to send thought-only attachment: {e}", "WARN")
-
+  
+  async def _delete_func_msg(func_msg):
+    if func_msg:
+      for msg in func_msg:
+        try:
+          await msg.delete()
+        except Exception as e:
+          console.log(f"Failed deleting func_msg notice: {e}", "WARN")
+      
   tools = get_gemini_tools(message, model_name)
 
   while turn_count < max_function_turns:
@@ -4413,26 +4421,31 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         typing_pause_event=typing_pause_event,
         level=escalate_thinking_level,
       )
-    
-    if 'func_msg' in locals() and func_msg:
-          for msg in func_msg:
-            try:
-              await msg.delete()
-            except Exception as e:
-              console.log(f"Failed deleting func_msg notice: {e}", "WARN")
+  
             
     if search_blocked and has_calls:
       console.log("[FUNCTION] Search blocked, asking model to provide answer without search", "INFO")
       current_text = "Search service is temporarily unavailable. Please provide your best answer without web search."
       current_attachments = None
       # Force exit after next turn
-      max_function_turns = turn_count + 1
+      # max_function_turns = turn_count + 1 no need
     elif not has_calls:
+      # clean up and exit
+      if 'func_msg' in locals() and func_msg:
+        asyncio.create_task(_delete_func_msg(func_msg))
       return response
     else:
       current_text = None
       current_attachments = None
-  
+      
+  if 'func_msg' in locals() and func_msg:
+          #for msg in func_msg:
+          #  try:
+          #    await msg.delete()
+          #  except Exception as e:
+          #    console.log(f"Failed deleting func_msg notice: {e}", "WARN")
+      asyncio.create_task(_delete_func_msg(func_msg))
+          
   return response
 
 
