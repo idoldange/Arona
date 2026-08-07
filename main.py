@@ -733,7 +733,7 @@ async def slash_arona(
             # limited). Kept as a last-resort safety net instead of failing completely silently.
             try:
                 await interaction.followup.send(
-                    "I couldn't send a response here 😢 (the interaction may have expired). "
+                    "I couldn't send a response here (the interaction may have expired). "
                     "Try calling `/arona` again!",
                     ephemeral=True,
                 )
