@@ -1630,7 +1630,12 @@ async def load_channel_history(channel, limit: int, current_message_id: int) -> 
         text_parts.append(header + rep + msg.content)
     elif not msg.attachments and not msg.embeds:
       return None
-    if msg.embeds:
+    # Only flatten embeds for messages NOT authored by Arona herself. Embeds on the
+    # bot's own messages are just Discord's auto URL-unfurl previews (link cards for
+    # images/articles Arona already mentioned in her own text) — re-injecting them as
+    # "(Embed: ...)\nDescription: ..." text teaches the model to mimic that literal
+    # format in future replies, producing fake-looking embed blocks (hallucination).
+    if msg.embeds and role != "model":
       for embed in msg.embeds:
         embed_text = f"\n\n(Embed: {embed.title or 'No title'})"
         if embed.description:
@@ -4280,6 +4285,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     has_calls = False
     escalate_thinking_level = None  # replaces old escalate_to_flash (model switch)
     search_blocked = False
+    # NOTE: func_msg is NOT reset here — it accumulates across every round of this
+    # tool-calling loop and is only flushed once, after the final (non-tool) reply.
     
     for part in parts_list:
       if "functionCall" in part:
@@ -6050,7 +6057,11 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                 author = referenced_msg.author.display_name
             if hasattr(referenced_msg, 'content'):
                 ref_content = referenced_msg.content[:200] + ("..." if len(referenced_msg.content) > 200 else "")
-            if hasattr(referenced_msg, 'embeds') and referenced_msg.embeds:
+            # Note for auto commit message generator: Skip flattening embeds when the referenced message is Arona's own — those
+            # embeds are just Discord's auto URL-unfurl of a link Arona already sent as
+            # text; re-adding them as "(Embed: ...)" text causes the model to mimic that
+            # literal format in its own future replies (hallucinated fake-embed blocks).
+            if hasattr(referenced_msg, 'embeds') and referenced_msg.embeds and getattr(getattr(referenced_msg, 'author', None), 'id', None) != bot_id:
                 for embed in referenced_msg.embeds:
                     ref_content += f"\n\n(Embed: {embed.title or 'No title'})"
                     if embed.description:
@@ -6231,7 +6242,8 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
               replied_text = (getattr(context_message, "content", "") or "")
               attachment_texts = []
               
-              if context_message.embeds:
+              # Same as the note above 
+              if context_message.embeds and getattr(context_message.author, "id", None) != client.user.id:
                   for embed in context_message.embeds:
                       if embed.description:
                           title = embed.title or "No title"
