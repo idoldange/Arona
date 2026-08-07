@@ -3652,6 +3652,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   _disable_thinking = False  # set once a model rejects thinkingConfig (e.g. after fallback to a non-thinking model); persists for rest of call
   _consecutive_tool_rounds = 0  # counts consecutive rounds where the model called at least one function; reset whenever a round has no function call
   TOOL_LOOP_NUDGE_EVERY = 5  # inject a stop-and-think nudge after this many consecutive tool-calling rounds
+  func_msg: list = []  # accumulates "Executing function..." notices across ALL rounds; only flushed once after the final reply (or on escalate/loop-exhaustion)
 
   def _mark_truncated_thought(text: str) -> str:
     stripped = text.rstrip()
@@ -4279,7 +4280,6 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     has_calls = False
     escalate_thinking_level = None  # replaces old escalate_to_flash (model switch)
     search_blocked = False
-    func_msg = []  # To track the "Executing function..." message for deletion
     
     for part in parts_list:
       if "functionCall" in part:

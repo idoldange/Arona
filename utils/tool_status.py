@@ -191,21 +191,6 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
             return "-# <:fetch_github_repo:1484030885366988840> Searching GitHub code..."
         return "-# <:fetch_github_repo:1484030885366988840> Fetching GitHub data..."
 
-    # context hub
-    elif func_name == "chub":
-        action = func_args.get("action", "")
-        doc_id = func_args.get("doc_id", "")
-        if action == "search":
-            q = func_args.get("query", "")
-            return f"-# <:chub:1484030878542729317> Searching Context Hub{f': {q}' if q else ''}..."
-        elif action == "get":
-            return f"-# <:chub:1484030878542729317> Fetching docs for `{doc_id}`..."
-        elif action == "annotate":
-            return f"-# <:chub:1484030878542729317> Saving annotation for `{doc_id}`..."
-        elif action == "feedback":
-            return f"-# <:chub:1484030878542729317> Sending feedback for `{doc_id}`..."
-        return "-# <:chub:1484030878542729317> Calling Context Hub..."
-
     # chess
     elif func_name == "get_chess_board":
         return "-# <:chess:1484030877318250567> Getting chess board..."
