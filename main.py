@@ -685,7 +685,7 @@ class InteractionChannelProxy:
     attachment9="Attachment 9",
     attachment10="Attachment 10",
 )
-@discord.app_commands.allowed_installs(guilds=True, users=True)
+@discord.app_commands.allowed_installs(guilds=False, users=True)
 async def slash_arona(
     interaction: discord.Interaction,
     prompt: str,
