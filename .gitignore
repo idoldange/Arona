@@ -257,7 +257,8 @@ temp_audio/
 
 #backup
 *.bak
-
+.bak
 # rvc
 arona/voice_changer/
 *.zip
+.zip
