@@ -6057,10 +6057,8 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                 author = referenced_msg.author.display_name
             if hasattr(referenced_msg, 'content'):
                 ref_content = referenced_msg.content[:200] + ("..." if len(referenced_msg.content) > 200 else "")
-            # Note for auto commit message generator: Skip flattening embeds when the referenced message is Arona's own — those
-            # embeds are just Discord's auto URL-unfurl of a link Arona already sent as
-            # text; re-adding them as "(Embed: ...)" text causes the model to mimic that
-            # literal format in its own future replies (hallucinated fake-embed blocks).
+            
+            # skip if arona
             if hasattr(referenced_msg, 'embeds') and referenced_msg.embeds and getattr(getattr(referenced_msg, 'author', None), 'id', None) != bot_id:
                 for embed in referenced_msg.embeds:
                     ref_content += f"\n\n(Embed: {embed.title or 'No title'})"
