@@ -65,7 +65,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pypdf reportlab \
     python-pptx \
     openpyxl xlsxwriter \
-    imageio rembg[cpu,cli]
+    imageio rembg[cpu,cli] \
+    gdown
 
 # 7b. Node.js & npm (LTS via NodeSource)
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
