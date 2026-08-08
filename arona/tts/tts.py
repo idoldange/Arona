@@ -22,15 +22,18 @@ GPT_MODEL_PATH = "GPT_weights_v2Pro/arona-e20.ckpt"
 SOVITS_MODEL_PATH = "SoVITS_weights_v2Pro/arona_e25_s175.pth"
 
 def _init_():
+  try:
     resp = requests.get(f"{API_URL}/set_gpt_weights", params={"weights_path": GPT_MODEL_PATH})
     vresp = requests.get(f"{API_URL}/set_sovits_weights", params={"weights_path": SOVITS_MODEL_PATH})
     if resp.status_code == 200 and vresp.status_code == 200:
         console.log("TTS models loaded successfully.", "INFO")
     else:
         console.log(f"Failed to load TTS models.", "ERROR")
+  except Exception as e:
+        console.log(f"Error occurred while initializing TTS models: {e}", "ERROR")
 _init_()
 
-gpu_lock = asyncio.Semaphore(4) # Actually TTS use CPU
+gpu_lock = asyncio.Semaphore(4) # Actually TTS use CPU(in my case)
 async def text_to_speech(text: str, lang: str = "ja") -> str:
     
     async with gpu_lock:
