@@ -155,3 +155,16 @@ RVC_EMBEDDER_MODEL = "contentvec"
 RVC_APPLIO_HOST    = "127.0.0.1"
 RVC_APPLIO_PORT    = 6969
 RVC_APPLIO_SR      = 48000
+
+
+# ── Text-to-Speech (TTS) ─────────────────────────────────────
+
+API_URL = "http://127.0.0.1:9880"
+GPT_MODEL_PATH = "GPT_weights_v2Pro/arona-e20.ckpt"
+SOVITS_MODEL_PATH = "SoVITS_weights_v2Pro/arona_e25_s175.pth"
+
+TTS_REF = {
+    "ref_path": "output/slicer_opt/2.wav_0020727040_0020837440.wav",
+    "prompt_text": "どうですか先生? 頑張れそうですか?",
+    "prompt_lang": "ja"
+}

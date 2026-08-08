@@ -17,9 +17,6 @@ from utils.http_session import session_manager
 async def _get_shared_session():
     return await session_manager.get_session()
 
-API_URL = "http://127.0.0.1:9880"
-GPT_MODEL_PATH = "GPT_weights_v2Pro/arona-e20.ckpt"
-SOVITS_MODEL_PATH = "SoVITS_weights_v2Pro/arona_e25_s175.pth"
 
 def _init_():
   try:
@@ -37,11 +34,7 @@ gpu_lock = asyncio.Semaphore(4) # Actually TTS use CPU(in my case)
 async def text_to_speech(text: str, lang: str = "ja") -> str:
     
     async with gpu_lock:
-        preset = {
-            "ref_path": "output/slicer_opt/2.wav_0020727040_0020837440.wav",
-            "prompt_text": "どうですか先生? 頑張れそうですか?",
-            "prompt_lang": "ja"
-        }
+        preset = TTS_REF
         
         params = {
             "text": text,
