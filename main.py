@@ -4770,7 +4770,7 @@ async def _single_web_search(query: str, per_link_timeout: int = 5, crawl_per_qu
   if search_type not in ("text", "news", "videos", "images"):
     search_type = "text"
 
-  console.log(f"Searching DuckDuckGo ({search_type}) for: {query}", "INFO")
+  console.log(f"Searching ({search_type}) for: {query}", "INFO")
 
   try:
     if search_type == "text":
@@ -4783,10 +4783,10 @@ async def _single_web_search(query: str, per_link_timeout: int = 5, crawl_per_qu
       results_raw = await asyncio.to_thread(lambda: list(DDGS().images(query, max_results=10)))
   except Exception as e:
     console.log(f"[DDGS] Search failed: {e}", "ERROR")
-    return f"ERR: DuckDuckGo ({search_type}): {e}"
+    return f"ERR: Search failed ({search_type}): {e}"
 
   if not results_raw:
-    return f"No {search_type} results from DuckDuckGo."
+    return f"No {search_type} results."
 
   # --- videos: no crawlable article body, format metadata directly ---
   if search_type == "videos":
