@@ -2,7 +2,7 @@
 
 Arona is an AI Discord bot built in Python, featuring intelligent conversation, voice interaction, TTS, memory management, an affection/bond system, integrations with GitHub, YouTube, weather, chess, and a remote web control panel.
 
-> This project is still in an experimental/development stage. A portion of the codebase was generated automatically and may not be fully optimized, so please use it with caution.
+> This project is still in an experimental/development stage. A portion of the codebase was generated automatically and may not be fully optimized, so please use it with caution. (i'm just lazy)
 
 ## Key Features
 
