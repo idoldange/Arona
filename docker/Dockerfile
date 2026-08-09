@@ -17,16 +17,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # p7zip-full  -> giải nén 7z (unzip/zip đã có sẵn ở trên); .rar cần gói "unrar"
 #                nhưng gói đó nằm ở component non-free, sources.list hiện chỉ có main
 #                nên nếu cần .rar phải thêm non-free vào sources.list riêng
-# radare2 và upx-ucl KHÔNG có trong repo "bookworm" main, chỉ có ở
-# "bookworm-backports" -> cài riêng ở bước dưới.
+# upx-ucl KHÔNG có trong repo "bookworm" main, chỉ có ở "bookworm-backports"
+# -> cài riêng ở bước dưới.
 
-# radare2 + upx-ucl từ bookworm-backports (không có ở main)
+# upx-ucl từ bookworm-backports (không có ở main)
 RUN printf 'deb http://mirror.sg.gs/debian bookworm-backports main\n' >> /etc/apt/sources.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends -t bookworm-backports radare2 upx-ucl \
+    && apt-get install -y --no-install-recommends -t bookworm-backports upx-ucl \
     && rm -rf /var/lib/apt/lists/*
-# radare2     -> disasm + (sau khi cài plugin r2dec ở dưới) pseudo-C decompile
-# upx-ucl     -> pack/unpack binary bị UPX-pack (rất hay gặp khi phân tích file lạ)
+# upx-ucl -> pack/unpack binary bị UPX-pack (rất hay gặp khi phân tích file lạ)
+
 # NOTE: iptables/iproute2 intentionally NOT installed here anymore.
 # arona-executor no longer holds NET_ADMIN/NET_RAW - the killswitch is set up
 # once inside the privileged `warp` container (see warp-killswitch.sh).
@@ -114,19 +114,12 @@ ENV PATH=/home/sandboxuser/.npm-global/bin:$PATH
 
 # 7e. Reverse engineering / decompilation toolkit
 # ------------------------------------------------------------------
-# C/C++/Rust/Go (compiled binaries): binutils + gdb + radare2 (đã cài ở step 1)
-#   cho ra disassembly (objdump -d, r2 "pd") — KHÔNG phải pseudo-C.
-#   r2dec bên dưới thêm lệnh "pdd" trong radare2 để ra pseudo-C code thật sự.
-RUN mkdir -p /opt/radare2-plugins \
-    && (r2pm init || true) \
-    && R2PM_DIR=/opt/radare2-plugins r2pm -ci r2dec \
-    && chmod -R a+rX /opt/radare2-plugins
-# LƯU Ý: r2pm cài plugin vào thư mục của user chạy build (root ở đây). Nếu
-# /home/sandboxuser là tmpfs ephemeral lúc runtime (như comment PIP_USER ở
-# dưới), sandboxuser sẽ KHÔNG thấy plugin nếu radare2 tìm ở ~/.local/share/radare2.
-# Nên test lại sau khi build: `su-exec sandboxuser r2 -qc "aaa;pdd @main" <bin>`
-# Nếu không load được plugin, set thêm ENV R2_USER_PLUGINS hoặc symlink
-# /opt/radare2-plugins vào đúng path mà radare2 build này tìm plugin.
+# C/C++/Rust/Go (compiled binaries): binutils + gdb (đã cài ở step 1)
+#   cho ra disassembly (objdump -d) + debug runtime (gdb) — KHÔNG phải
+#   pseudo-C. radare2/r2dec đã bị bỏ vì radare2 tồn đọng nhiều CVE chưa vá
+#   và bị Debian gỡ khỏi archive; nếu sau này cần decompile C thật sự thì
+#   cân nhắc Ghidra headless (nặng, build image riêng) thay vì nhét vào đây.
+
 
 # Java / Android (.class, .jar, .apk, .dex)
 RUN apt-get update && apt-get install -y --no-install-recommends \
