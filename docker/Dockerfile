@@ -1,14 +1,32 @@
 FROM python:3.12-slim-bookworm
 
 # 0. Switch to Singapore mirror (faster from VN)
-RUN printf 'deb http://mirror.sg.gs/debian bullseye main\ndeb http://mirror.sg.gs/debian-security bullseye-security main\ndeb http://mirror.sg.gs/debian bullseye-updates main\n' > /etc/apt/sources.list
+RUN printf 'deb http://mirror.sg.gs/debian bookworm main\ndeb http://mirror.sg.gs/debian-security bookworm-security main\ndeb http://mirror.sg.gs/debian bookworm-updates main\n' > /etc/apt/sources.list
 
 # 1. System dependencies & Fontconfig
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl wget git libssl-dev libffi-dev \
     dnsutils iputils-ping unzip zip ffmpeg procps psmisc neofetch \
     fontconfig locales proxychains4 \
+    binutils gdb file strace ltrace \
+    clang llvm cmake pkg-config p7zip-full jq \
     && rm -rf /var/lib/apt/lists/*
+# binutils    -> objdump/nm/readelf/addr2line/strings (đọc ELF, static analysis)
+# gdb         -> debug/step qua binary lúc runtime
+# clang/llvm  -> có llvm-objdump, thêm 1 toolchain C/C++ khác ngoài gcc
+# p7zip-full  -> giải nén 7z (unzip/zip đã có sẵn ở trên); .rar cần gói "unrar"
+#                nhưng gói đó nằm ở component non-free, sources.list hiện chỉ có main
+#                nên nếu cần .rar phải thêm non-free vào sources.list riêng
+# radare2 và upx-ucl KHÔNG có trong repo "bookworm" main, chỉ có ở
+# "bookworm-backports" -> cài riêng ở bước dưới.
+
+# radare2 + upx-ucl từ bookworm-backports (không có ở main)
+RUN printf 'deb http://mirror.sg.gs/debian bookworm-backports main\n' >> /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends -t bookworm-backports radare2 upx-ucl \
+    && rm -rf /var/lib/apt/lists/*
+# radare2     -> disasm + (sau khi cài plugin r2dec ở dưới) pseudo-C decompile
+# upx-ucl     -> pack/unpack binary bị UPX-pack (rất hay gặp khi phân tích file lạ)
 # NOTE: iptables/iproute2 intentionally NOT installed here anymore.
 # arona-executor no longer holds NET_ADMIN/NET_RAW - the killswitch is set up
 # once inside the privileged `warp` container (see warp-killswitch.sh).
@@ -62,10 +80,14 @@ RUN pip install --no-cache-dir --upgrade pip && \
     cryptography \
     matplotlib pillow \
     python-docx \
-    pypdf reportlab \
+    pypdf reportlab pymupdf pdfplumber \
     python-pptx \
     openpyxl xlsxwriter \
-    imageio rembg[cpu,cli] \
+    imageio rembg[cpu,cli] opencv-python-headless \
+    beautifulsoup4 lxml \
+    duckdb pyarrow \
+    pyyaml python-dotenv tabulate \
+    "qrcode[pil]" faker \
     gdown
 
 # 7b. Node.js & npm (LTS via NodeSource)
@@ -89,6 +111,55 @@ RUN mkdir -p /home/sandboxuser/.npm-global \
 ENV NPM_CONFIG_PREFIX=/home/sandboxuser/.npm-global
 # Expose user-global bin so installed CLIs are immediately available in PATH
 ENV PATH=/home/sandboxuser/.npm-global/bin:$PATH
+
+# 7e. Reverse engineering / decompilation toolkit
+# ------------------------------------------------------------------
+# C/C++/Rust/Go (compiled binaries): binutils + gdb + radare2 (đã cài ở step 1)
+#   cho ra disassembly (objdump -d, r2 "pd") — KHÔNG phải pseudo-C.
+#   r2dec bên dưới thêm lệnh "pdd" trong radare2 để ra pseudo-C code thật sự.
+RUN mkdir -p /opt/radare2-plugins \
+    && (r2pm init || true) \
+    && R2PM_DIR=/opt/radare2-plugins r2pm -ci r2dec \
+    && chmod -R a+rX /opt/radare2-plugins
+# LƯU Ý: r2pm cài plugin vào thư mục của user chạy build (root ở đây). Nếu
+# /home/sandboxuser là tmpfs ephemeral lúc runtime (như comment PIP_USER ở
+# dưới), sandboxuser sẽ KHÔNG thấy plugin nếu radare2 tìm ở ~/.local/share/radare2.
+# Nên test lại sau khi build: `su-exec sandboxuser r2 -qc "aaa;pdd @main" <bin>`
+# Nếu không load được plugin, set thêm ENV R2_USER_PLUGINS hoặc symlink
+# /opt/radare2-plugins vào đúng path mà radare2 build này tìm plugin.
+
+# Java / Android (.class, .jar, .apk, .dex)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openjdk-17-jdk-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+# CFR - decompile .class/.jar ra Java source (pin version cho reproducible build)
+RUN mkdir -p /opt/tools \
+    && curl -fLo /opt/tools/cfr.jar \
+    https://github.com/leibnitz27/cfr/releases/download/0.152/cfr-0.152.jar \
+    && printf '#!/bin/sh\nexec java -jar /opt/tools/cfr.jar "$@"\n' > /usr/local/bin/cfr \
+    && chmod +x /usr/local/bin/cfr
+
+# jadx - decompile APK/DEX ra Java source (pin version)
+RUN curl -fLo jadx.zip -L \
+    https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip \
+    && unzip -q jadx.zip -d /opt/jadx && rm jadx.zip \
+    && chmod +x /opt/jadx/bin/jadx /opt/jadx/bin/jadx-gui \
+    && ln -s /opt/jadx/bin/jadx /usr/local/bin/jadx
+
+# apktool - decompile resource/manifest/smali của APK (pin version)
+RUN curl -fLo /usr/local/bin/apktool.jar -L \
+    https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar \
+    && printf '#!/bin/sh\nexec java -jar /usr/local/bin/apktool.jar "$@"\n' > /usr/local/bin/apktool \
+    && chmod +x /usr/local/bin/apktool
+
+# Python bytecode (.pyc) -> source (best-effort, hoạt động tốt nhất với <=3.8,
+# bytecode 3.9+ đổi format nhiều nên độ chính xác giảm dần theo version)
+RUN git clone --depth=1 https://github.com/zrax/pycdc.git /opt/pycdc \
+    && cd /opt/pycdc && cmake -B build . && cmake --build build -j$(nproc) \
+    && ln -s /opt/pycdc/build/pycdc /usr/local/bin/pycdc \
+    && ln -s /opt/pycdc/build/pycdas /usr/local/bin/pycdas
+# ------------------------------------------------------------------
 
 # Set default font for Matplotlib
 RUN mkdir -p /home/sandboxuser/.config/matplotlib && \

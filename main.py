@@ -5507,6 +5507,9 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
       try:
         # remove pitch control `↑`, `↓` 
         # tts_text = tts_text.replace("↑", "").replace("↓", "") #no need
+        
+        # remove <mood>
+        tts_text = re.sub(r"<mood>.*?</mood>", "", tts_text, flags=re.DOTALL) 
         tts_msg = await channel.send(
           content=f"-# {tts_text}",
           file=discord.File(BytesIO(tts_data), filename=tts_filename)
