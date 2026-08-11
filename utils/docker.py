@@ -8,6 +8,7 @@ import json
 import tempfile
 import subprocess
 from console import console
+from config import DOCKER_DESKTOP_PATH
 
 # Audit logger for execution events
 import logging
@@ -105,7 +106,7 @@ class AronaDocker:
                 # Check if daemon not running
                 if "docker api" in result.stderr.lower() or "daemon" in result.stderr.lower():
                     console.log("Docker daemon is not running. Attempting to start Docker Desktop.", "WARN")
-                    subprocess.run(["C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"])
+                    subprocess.run([DOCKER_DESKTOP_PATH])
                 else:
                     console.log(f"Error checking container status: {result.stderr}", "ERROR")
         except Exception as e:

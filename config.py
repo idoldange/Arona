@@ -62,6 +62,11 @@ SEARCH_URL = "https://serpapi.com/search.json"
 MAX_SCHEULED_TASK_RETRIES = 5  # Max retries for a failed scheduled task before giving up
 
 
+# ── Docker ───────────────────────────────────────────────────
+
+DOCKER_DESKTOP_PATH = "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"
+
+
 # ── Affection System ─────────────────────────────────────────
 
 # Tick timing
