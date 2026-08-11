@@ -5508,21 +5508,21 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
       tts_status_msg = await channel.send("-# Generating TTS audio...")
     except Exception:
       tts_status_msg = None
-    lang = detect(tts_text)
-    if lang not in ["ja", "ko", "zh-cn", "zh-tw", "en"]:
-      translated = extract_gemini_text(await ask_gemini(model_name=LITE_MODEL,text=f"Context: Original user message: ```{message.content}```\nTranslate the following text to Japanese for TTS. Output Hiragana/Katakana only. Return ONLY the translated characters — no XML tags, no extra text, no markdown, no punctuation beyond what is natural in Japanese: {tts_text}", message=message))
-      translated = re.sub(r"<tts>|</tts>", "", translated).strip()
-      console.log(f"Translated text for TTS: {translated}", "INFO")
-      translated_lang = detect(translated)
-      if translated_lang not in ["ja", "ko", "zh-cn", "zh-tw", "en"]:
-        if tts_status_msg:
-          try:
-            await tts_status_msg.delete()
-          except Exception:
-            pass
-        await channel.send(f"-# TTS Error: Unsupported language. Raw text: {tts_text}")
-        return
-      tts_text = translated
+    #lang = detect(tts_text)
+    #if lang not in ["ja", "ko", "zh-cn", "zh-tw", "en"]:
+    #  translated = extract_gemini_text(await ask_gemini(model_name=LITE_MODEL,text=f"Context: Original user message: ```{message.content}```\nTranslate the following text to Japanese for TTS. Output Hiragana/Katakana only. Return ONLY the translated characters — no XML tags, no extra text, no markdown, no punctuation beyond what is natural in Japanese: {tts_text}", message=message))
+    #  translated = re.sub(r"<tts>|</tts>", "", translated).strip()
+    #  console.log(f"Translated text for TTS: {translated}", "INFO")
+    #  translated_lang = detect(translated)
+    #  if translated_lang not in ["ja", "ko", "zh-cn", "zh-tw", "en"]:
+    #    if tts_status_msg:
+    #      try:
+    #        await tts_status_msg.delete()
+    #      except Exception:
+    #        pass
+    #    await channel.send(f"-# TTS Error: Unsupported language. Raw text: {tts_text}")
+    #    return
+    #  tts_text = translated
     tts_data = await text_to_speech(tts_text)
     if tts_status_msg:
       try:
