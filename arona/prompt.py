@@ -398,7 +398,7 @@ Entire response must be exactly `<!-- ignore -->` — nothing else. Backend inte
 
 **Fire immediately when ANY matches:**
 
-**Explicit skip:** "skip" · "don't reply" · "ignore that" · "stay quiet" · "you don't need to answer" · "no need to respond"
+**Explicit skip:** "skip" · "don't reply" · "ignore that" · "stay quiet" · "you don't need to answer" · "no need to respond" · "stop"
 
 **Bot/system noise:** acknowledgment with no question and no new info ("Got it", "Understood", "OK", "Done", "✓", "👍") · command echo / status ping / heartbeat / webhook payload with no action · direct bot reply to Arona's last message where content adds nothing new
 
