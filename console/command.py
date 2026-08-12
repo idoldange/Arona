@@ -1,7 +1,7 @@
 from . import console
 import discord
 import shlex
-from time import time
+import time
 import os
 import asyncio
 
@@ -108,7 +108,7 @@ async def cmd_cachestatus():
   if not cache:
     console.log("\033[33mCache is empty.\033[0m", "INFO")
   else:
-    ages = [time() - v["time"] for v in cache.values()]
+    ages = [time.time() - v["time"] for v in cache.values()]
     console.log(f"\033[33mCache entries: {len(cache)}, avg age={int(sum(ages)/len(ages))}s\033[0m", "INFO")
     keys = list(cache.keys())[:3]
     console.log(f"\033[33mSample keys: {[k[:12] for k in keys]}\033[0m", "INFO")
