@@ -1,5 +1,5 @@
 import random
-
+import os
 from console import console
 from config import SAFETY_SETTINGS, DEFAULT_TEMPERATURE, UNSTICK_MODEL
 from arona.prompt import get_arona_prompt
