@@ -21,6 +21,12 @@ DEFAULT_TEMPERATURE = 1.0
 MAX_RETRIES         = 1        # rounds
 DEFAULT_TIMEOUT     = 600      # seconds
 ENABLE_FUNCTIONS    = True
+
+# Send decoy requests to break 503 loops
+UNSTICK_ON_503        = True           # enable/disable the whole mechanism
+UNSTICK_503_THRESHOLD = 3              # consecutive 503s (across rounds/keys) before firing
+UNSTICK_MODEL         = DEFAULT_MODEL  # decoy uses the main model to improve chances of recovery
+
 MAX_FUNCTION_TURNS  = 100
 THINKING_MSG_DELAY  = 20       # seconds before sending "thinking deeper" message
 INCLUDE_THOUGHT     = False

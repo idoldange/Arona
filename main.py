@@ -1,9 +1,7 @@
 # pyright: reportMissingImports=false
 import sys
 import os
-# Anchor CWD to the directory containing main.py so all relative paths
-# (DB files, assets, etc.) resolve correctly regardless of how the process
-# was launched (Task Scheduler, service, etc.)
+# Anchor CWD to the directory containing main.py
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 def crash_handler(type, value, tb):
     import traceback
@@ -100,6 +98,7 @@ from utils.edit_text_file import create_files, edit_file as edit_text_file, send
 from utils.todo import todo_create, todo_done, todo_edit, get_todo_block, build_todo_embed, TODO_TOOL_SCHEMA
 from utils.gacha_tracker import add_pulls, reset_banner, set_shards, get_status, get_all_banners
 from utils.channel_memory import get_memory as get_channel_memory, set_memory as set_channel_memory, append_memory as append_channel_memory, clear_memory as clear_channel_memory, build_prompt_block as build_channel_memory_block
+from utils.unstick_request import fire_unstick_request
 from utils.guild_memory import get_memory as get_guild_memory, set_memory as set_guild_memory, append_memory as append_guild_memory, clear_memory as clear_guild_memory, build_prompt_block as build_guild_memory_block
 from utils.impression import build_impression_block, update_impression
 from utils.youtube import get_video_info as get_youtube_info, format_for_gemini as format_youtube, get_transcript as get_youtube_transcript
@@ -3821,6 +3820,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     _429_round_count = 0  # track consecutive rounds where ALL keys returned 429
     _schema_stripped = False  # set when 400 "too much branching" strips tool_config mid-retry
     _thinking_stripped = False  # set when 400 "Thinking level/budget not supported" strips thinkingConfig mid-retry
+    _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
     # _overload_msg stored globally keyed by channel so send_reply can delete it
     for round_num in range(max_retries):
       if round_num > 0:
@@ -3948,6 +3948,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               console.log(f"Thought extraction error: {te}", "WARN")
 
             _LAST_WORKING_KEY_INDEX = key_idx
+            _consecutive_503_count = 0
             break
 
           # Non-200 responses: capture body for diagnosis
@@ -3977,6 +3978,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             
             continue
           if resp.status == 503:
+            _consecutive_503_count += 1
+            if UNSTICK_ON_503 and _consecutive_503_count >= UNSTICK_503_THRESHOLD:
+              console.log(f"[UNSTICK] {_consecutive_503_count} consecutive 503s, firing decoy request with different context", "WARN")
+              asyncio.create_task(fire_unstick_request())
+              _consecutive_503_count = 0  # reset so it can fire again after N more consecutive 503s
             if round_num == 0 and model_name != RATE_LIMIT_MODEL:
               console.log(f"503 on round 1, falling back to {FALLBACK_MODEL}", "WARN")
               model_name = FALLBACK_MODEL
