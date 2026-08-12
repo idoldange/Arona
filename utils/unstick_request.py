@@ -1,9 +1,12 @@
 import random
 
 from console import console
-from config import GEMINI_API_KEY, SAFETY_SETTINGS, DEFAULT_TEMPERATURE, UNSTICK_MODEL
+from config import SAFETY_SETTINGS, DEFAULT_TEMPERATURE, UNSTICK_MODEL
 from arona.prompt import get_arona_prompt
 from utils.http_session import session_manager
+import json
+GEMINI_API_KEY_ = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_KEY = json.loads(GEMINI_API_KEY_) if GEMINI_API_KEY_ else []
 _DUMMY_HISTORY_POOL = [
   [
     {"role": "user", "parts": [{"text": "Is Sensei here already? I wanted to check if you have anything new to report."}]},
