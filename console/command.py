@@ -1,16 +1,10 @@
-__all__ = [
-  "cmd_reload",
-  "cmd_debug_start",
-  "cmd_debug_stop",
-  "cmd_debug_status",
-  "cmd_rep_bot",
-  "cmd_clearcache",
-  "cmd_cachestatus",
-]
 from . import console
 import discord
 import shlex
 from time import time
+import os
+import asyncio
+
 async def cmd_reload():
   """Reload bot code (for development)
   Usage: reload"""
@@ -55,7 +49,7 @@ async def cmd_reload():
     console.log(f"\033[31m[RELOAD] A critical error occurred during the reload process: {e}\033[0m", "ERROR")
 
 async def cmd_debug_start(client=None):
-  """Bật chế độ debug
+  """Enable debug mode.
   Usage: debug start"""
   import main
   if getattr(main, 'debug_enabled', False):
@@ -70,7 +64,7 @@ async def cmd_debug_start(client=None):
       )
 
 async def cmd_debug_stop(client=None):
-  """Tắt chế độ debug
+  """Disable debug mode.
   Usage: debug stop"""
   import main
   if not getattr(main, 'debug_enabled', False):
@@ -85,21 +79,21 @@ async def cmd_debug_stop(client=None):
       )
 
 async def cmd_debug_status():
-  """Hiển thị trạng thái debug"""
+  """Display debug status."""
   import main
   if getattr(main, 'debug_enabled', False):
     console.log(f"\033[35mDebug:\033[0m \033[32mON\033[0m", "INFO")
   else:
     console.log(f"\033[35mDebug:\033[0m \033[31mOFF\033[0m", "INFO")
 async def cmd_rep_bot():
-  """Chuyển đổi việc bot có mention bot khác hay không
+  """Toggle whether the bot should mention other bots.
   Usage: rep_bot"""
   import main
   main.mention_other_bot = not getattr(main, 'mention_other_bot', False)
   console.log(f"\033[35mMention other bots: {'ON' if main.mention_other_bot else 'OFF'}\033[0m", "INFO")
 
 async def cmd_clearcache():
-  """Xoá cache
+  """Clear the cache.
   Usage: clearcache"""
   import main
   n = len(getattr(main, '_image_search_cache', {}))
@@ -107,7 +101,7 @@ async def cmd_clearcache():
   console.log(f"\033[33mImage search cache cleared ({n} entries removed)\033[0m", "INFO")
 
 async def cmd_cachestatus():
-  """Hiển thị trạng thái cache
+  """Show cache status.
   Usage: cachestatus"""
   import main
   cache = getattr(main, '_image_search_cache', {})
@@ -119,3 +113,7 @@ async def cmd_cachestatus():
     keys = list(cache.keys())[:3]
     console.log(f"\033[33mSample keys: {[k[:12] for k in keys]}\033[0m", "INFO")
     
+async def cmd_sync():
+  """Push local changes to the remote repository.
+  Usage: sync"""
+  await asyncio.to_thread(os.system, 'sync.bat')

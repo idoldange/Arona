@@ -7313,6 +7313,7 @@ COMMANDS = {
   "clearcache": cmd_clearcache,
   "cachestatus": cmd_cachestatus,
   "reload": cmd_reload,
+  "sync": cmd_sync
 }
 
 
