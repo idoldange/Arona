@@ -113,7 +113,7 @@ class GithubRepo:
         tree_limit: int = 200,
     ) -> Any:
         """
-        action      : search | info | get_tree | tree | read_files | find_string
+        action      : search | info | get_tree | tree | read_files | find_string | commits
         url         : repo / file URL
         query       : search term (search / find_string)
         urls_list   : file URLs (read_files)
@@ -145,6 +145,8 @@ class GithubRepo:
                 result = await self._get_tree(session, url, tree_offset, tree_limit)
             elif action == "find_string":
                 result = await self._find_string(session, url, query)
+            elif action == "commits":
+                result = await self._get_commits(session, url, tree_offset, tree_limit)
 
             self._ram_cache[cache_key] = result
             await self._check_rate_limit()
@@ -370,6 +372,51 @@ class GithubRepo:
 
         except Exception as e:
             return {"error": f"Failed to fetch tree: {str(e)}"}
+
+    # commits
+
+    async def _get_commits(self, session, url: str, offset: int = 0, limit: int = 30) -> Dict:
+        p = self._parse_url(url)
+        if not p["owner"]:
+            return {"error": "Invalid GitHub URL."}
+
+        limit = max(1, min(100, limit))
+        params = {"per_page": limit, "page": offset // limit + 1}
+        if p["branch"]:
+            params["sha"] = p["branch"]
+        if p["path"]:
+            params["path"] = p["path"]
+
+        try:
+            async with session.get(
+                f"{self.base_api}/repos/{p['owner']}/{p['repo']}/commits",
+                params=params
+            ) as resp:
+                self._update_rate_limit(resp.headers)
+                if resp.status == 403:
+                    return {"error": "Rate limit exceeded or access forbidden."}
+                if resp.status != 200:
+                    return {"error": f"Failed to fetch commits. Status: {resp.status}"}
+                data = await resp.json()
+        except Exception as e:
+            return {"error": f"Failed to fetch commits: {str(e)}"}
+
+        commits = [
+            {
+                "sha":     c["sha"][:7],
+                "author":  (c["commit"]["author"] or {}).get("name", "unknown"),
+                "date":    (c["commit"]["author"] or {}).get("date", ""),
+                "message": c["commit"]["message"].split("\n")[0],
+                "url":     c["html_url"],
+            }
+            for c in data
+        ]
+
+        return {
+            "repository": f"{p['owner']}/{p['repo']}",
+            "returned":   len(commits),
+            "commits":    commits,
+        }
 
     # find string  (line number + ±10 line context)
 

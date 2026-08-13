@@ -189,6 +189,8 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
             return "-# <:fetch_github_repo:1484030885366988840> Reading GitHub files..."
         elif action == "find_string":
             return "-# <:fetch_github_repo:1484030885366988840> Searching GitHub code..."
+        elif action == "commits":
+            return "-# <:fetch_github_repo:1484030885366988840> Fetching commit history..."
         return "-# <:fetch_github_repo:1484030885366988840> Fetching GitHub data..."
 
     # chess
