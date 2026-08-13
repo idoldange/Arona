@@ -22,6 +22,10 @@ MAX_RETRIES         = 1        # rounds
 DEFAULT_TIMEOUT     = 600      # seconds
 ENABLE_FUNCTIONS    = True
 
+# Quotas and limits for free-tier users
+FREE_TIER_DAILY_LIMIT   = 50    # messages/day per user without own key
+GLOBAL_DAILY_SOFT_LIMIT = 0    # total messages/day across all free-tier users, 0 = disabled
+
 # Send decoy requests to break 503 loops
 UNSTICK_ON_503        = True           # enable/disable the whole mechanism
 UNSTICK_503_THRESHOLD = 3              # consecutive 503s (across rounds/keys) before firing
@@ -134,11 +138,12 @@ BASE_EXP_MAX = 4.4
 # ── Database ─────────────────────────────────────────────────
 
 import os
-_BASE  = os.path.dirname(os.path.abspath(__file__))
-DB_DIR = os.path.join(_BASE, "database")
-SAVEDINFO_DB_PATH = os.path.join(DB_DIR, "saved_information.db")   # User's saved info and impressions
-VECTOR_DB_PATH = os.path.join(DB_DIR, "vector_db")                 # Persistent storage for ChromaDB to optimize SQLite performance
-AFFECTION_DB_PATH = os.path.join(DB_DIR, "affection.db")           # Mood and bond data
+_BASE              = os.path.dirname(os.path.abspath(__file__))
+DB_DIR             = os.path.join(_BASE,  "database")
+SAVEDINFO_DB_PATH  = os.path.join(DB_DIR, "saved_information.db")  # User's saved info and impressions
+VECTOR_DB_PATH     = os.path.join(DB_DIR, "vector_db")             # Persistent storage for ChromaDB to optimize SQLite performance
+AFFECTION_DB_PATH  = os.path.join(DB_DIR, "affection.db")          # Mood and bond data
+BYOK_DB_PATH       = os.path.join(DB_DIR, "apikeys.db")            # User's own API keys and usage data
 
 
 # ── Vector Database ──────────────────────────────────────────
