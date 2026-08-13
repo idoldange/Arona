@@ -1,5 +1,6 @@
 import discord
 from utils import apikeys
+from utils.migration_keys import resolve_id
 
 TUTORIAL_URL = "https://youtu.be/PdOuGVz0ZIw?si=MbFpJgD0iy9uHvYU&t=10"
 
@@ -13,7 +14,7 @@ class ApiKeyModal(discord.ui.Modal, title="Add Gemini API key(s)"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        keys = apikeys.add_keys(interaction.user.id, str(self.keys_input.value))
+        keys = apikeys.add_keys(resolve_id(interaction.user.id), str(self.keys_input.value))
         embed = discord.Embed(
             title="Key(s) added",
             description=f"You now have {len(keys)} key(s) total. Requests will use your own key(s), no daily limit applied by Arona.\n\nUse at your own risk — you are responsible for how these keys are used.",
@@ -38,7 +39,7 @@ class ListKeysView(discord.ui.View):
 
     @discord.ui.button(label="Show my keys", style=discord.ButtonStyle.primary)
     async def show_keys(self, interaction: discord.Interaction, button: discord.ui.Button):
-        keys = apikeys.get_keys(interaction.user.id)
+        keys = apikeys.get_keys(resolve_id(interaction.user.id))
         if not keys:
             await interaction.response.send_message("You have no keys saved.", ephemeral=True)
             return

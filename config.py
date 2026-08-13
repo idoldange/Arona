@@ -23,7 +23,7 @@ DEFAULT_TIMEOUT     = 600      # seconds
 ENABLE_FUNCTIONS    = True
 
 # Quotas and limits for free-tier users
-FREE_TIER_DAILY_LIMIT   = 50    # messages/day per user without own key
+FREE_TIER_DAILY_LIMIT   = 100  # messages/day per user without own key(idk if 100 is enough)
 GLOBAL_DAILY_SOFT_LIMIT = 0    # total messages/day across all free-tier users, 0 = disabled
 
 # Send decoy requests to break 503 loops

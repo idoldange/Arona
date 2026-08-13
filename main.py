@@ -3356,7 +3356,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
   keys = GEMINI_API_KEY
   base_url = "https://generativelanguage.googleapis.com/v1beta"
   if message is not None:
-    own_keys = apikeys.get_keys(message.author.id)
+    own_keys = apikeys.get_keys(resolve_id(message.author.id))
     if own_keys:
       keys = own_keys
   
@@ -3657,7 +3657,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   keys = GEMINI_API_KEY
   base_url = "https://generativelanguage.googleapis.com/v1beta"
   if message is not None:
-    own_keys = apikeys.get_keys(message.author.id)
+    own_keys = apikeys.get_keys(resolve_id(message.author.id))
     if own_keys:
       keys = own_keys
   history = msg_history if isinstance(msg_history, list) else []
@@ -6490,15 +6490,15 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
 
       temperature = DEFAULT_TEMPERATURE
 
-      if not apikeys.check_quota(message.author.id):
-        used, limit = apikeys.get_quota_status(message.author.id)
+      if not apikeys.check_quota(resolve_id(message.author.id)):
+        used, limit = apikeys.get_quota_status(resolve_id(message.author.id))
         await send_with_retry(message.channel, f"Daily free message limit reached ({used}/{limit}). Resets at midnight Pacific.\nType `!arona addkey` to use your own key instead (don't worry, it's free).")
         return
 
       raw_reply = await ask_gemini(model_name, reply_text, attachments=gemini_attachments, sys_prompt=True, msg_history=history, temperature=temperature, timeout=60000, enable_functions=True, message=message, typing_pause_event=_pause_typing, rules=special_rules, level="low", safety_note=safety_note)
 
       if not (isinstance(raw_reply, dict) and raw_reply.get("error")):
-        apikeys.increment_quota(message.author.id)
+        apikeys.increment_quota(resolve_id(message.author.id))
       if isinstance(raw_reply, dict) and raw_reply.get("error") == "503":
         await send_with_retry(message.channel, "Arona is having trouble reaching the AI servers right now. Please try again in a few minutes.")
         console.log("Received 503 from Gemini API", "ERROR")
@@ -6880,7 +6880,7 @@ async def on_message(message):
     if not arg.isdigit():
       await send_with_retry(message.channel, "Usage: `!arona removekey <index>` — see `!arona listkeys` for indices.")
       return
-    removed = apikeys.remove_key(message.author.id, int(arg))
+    removed = apikeys.remove_key(resolve_id(message.author.id), int(arg))
     if removed is None:
       await send_with_retry(message.channel, "No key at that index. See `!arona listkeys`.")
       return
@@ -6890,7 +6890,7 @@ async def on_message(message):
 
   if message.content.lower() == "!arona quota":
     console.log(f"User {message.author.display_name} used !arona quota", "INFO")
-    used, limit = apikeys.get_quota_status(message.author.id)
+    used, limit = apikeys.get_quota_status(resolve_id(message.author.id))
     if used is None:
       await send_with_retry(message.channel, "Using your own key — no daily limit.")
     else:
@@ -6932,7 +6932,7 @@ async def on_message(message):
       bank_result = {"rows_deleted": 0, "vectors_deleted": 0}
       console.log(f"[forgetme] message wipe failed for {user_id}: {e}", "ERROR")
     delete_key(message.author.id)
-    apikeys.delete_all(user_id)
+    apikeys.delete_all(resolve_id(message.author.id))
 
     await send_with_retry(
       message.channel,

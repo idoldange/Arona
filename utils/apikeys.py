@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet
 from config import FREE_TIER_DAILY_LIMIT, GLOBAL_DAILY_SOFT_LIMIT
 from config import BYOK_DB_PATH as DB_PATH
+import dotenv
+dotenv.load_dotenv()
 
 _secret = os.getenv("APIKEY_ENCRYPT_SECRET")
 if not _secret:
