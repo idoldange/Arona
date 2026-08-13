@@ -22,7 +22,6 @@ def _conn():
     c.execute("""CREATE TABLE IF NOT EXISTS user_credentials (
         user_id INTEGER PRIMARY KEY,
         keys_encrypted BLOB,
-        base_url TEXT,
         key_index INTEGER DEFAULT 0,
         added_at TEXT
     )""")
@@ -52,15 +51,36 @@ def _today() -> str:
     return pacific.date().isoformat()
 
 
-def set_keys(user_id: int, raw: str) -> list[str]:
-    keys = [k.strip() for k in raw.split(",") if k.strip()]
+def add_keys(user_id: int, raw: str) -> list[str]:
+    new_keys = [k.strip() for k in raw.split(",") if k.strip()]
+    existing = get_keys(user_id) or []
+    keys = existing + new_keys
     with _conn() as c:
         c.execute(
             "INSERT INTO user_credentials (user_id, keys_encrypted, key_index, added_at) VALUES (?,?,0,?) "
-            "ON CONFLICT(user_id) DO UPDATE SET keys_encrypted=excluded.keys_encrypted, key_index=0",
+            "ON CONFLICT(user_id) DO UPDATE SET keys_encrypted=excluded.keys_encrypted",
             (user_id, _enc(keys), time.strftime("%Y-%m-%d %H:%M:%S"))
         )
     return keys
+
+
+def remove_key(user_id: int, index: int) -> "str | None":
+    keys = get_keys(user_id) or []
+    if index < 1 or index > len(keys):
+        return None
+    removed = keys.pop(index - 1)
+    with _conn() as c:
+        if keys:
+            c.execute("UPDATE user_credentials SET keys_encrypted=?, key_index=0 WHERE user_id=?", (_enc(keys), user_id))
+        else:
+            c.execute("UPDATE user_credentials SET keys_encrypted=NULL, key_index=0 WHERE user_id=?", (user_id,))
+    return removed
+
+
+def mask_key(key: str) -> str:
+    if len(key) <= 8:
+        return "****"
+    return f"{key[:4]}...{key[-4:]}"
 
 
 def remove_keys(user_id: int):
@@ -68,28 +88,12 @@ def remove_keys(user_id: int):
         c.execute("UPDATE user_credentials SET keys_encrypted=NULL, key_index=0 WHERE user_id=?", (user_id,))
 
 
-def set_url(user_id: int, url: str):
+def get_keys(user_id: int):
     with _conn() as c:
-        c.execute(
-            "INSERT INTO user_credentials (user_id, base_url, added_at) VALUES (?,?,?) "
-            "ON CONFLICT(user_id) DO UPDATE SET base_url=excluded.base_url",
-            (user_id, url, time.strftime("%Y-%m-%d %H:%M:%S"))
-        )
-
-
-def remove_url(user_id: int):
-    with _conn() as c:
-        c.execute("UPDATE user_credentials SET base_url=NULL WHERE user_id=?", (user_id,))
-
-
-def get_credentials(user_id: int):
-    with _conn() as c:
-        row = c.execute("SELECT keys_encrypted, base_url, key_index FROM user_credentials WHERE user_id=?", (user_id,)).fetchone()
-    if not row:
-        return None, None, 0
-    keys_blob, url, idx = row
-    keys = _dec(keys_blob) if keys_blob else None
-    return keys, url, idx or 0
+        row = c.execute("SELECT keys_encrypted FROM user_credentials WHERE user_id=?", (user_id,)).fetchone()
+    if not row or not row[0]:
+        return None
+    return _dec(row[0])
 
 
 def rotate_key(user_id: int):
@@ -103,8 +107,7 @@ def rotate_key(user_id: int):
 
 
 def has_own_key(user_id: int) -> bool:
-    keys, _, _ = get_credentials(user_id)
-    return bool(keys)
+    return bool(get_keys(user_id))
 
 
 def check_quota(user_id: int) -> bool:

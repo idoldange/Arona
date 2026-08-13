@@ -44,6 +44,8 @@ from collections import OrderedDict
 from utils.scheduler import *
 from utils.memory import memory
 from utils.migration_keys import get_or_create_key, reset_key, resolve_id, link_account, unlink_account, is_linked, delete_key
+from utils import apikeys
+from utils.discord_ui_apikeys import build_addkey_embed, build_listkeys_embed
 server_start_time = time.time()
 import os
 from utils.schale_db import *
@@ -356,6 +358,7 @@ async def _check_midnight_reset():
   pacific_offset = timedelta(hours=-8)  # PST (no DST handling needed for daily reset)
   pacific_now = datetime.now(timezone.utc) + pacific_offset
   today = pacific_now.date()
+  apikeys.check_daily_reset()
   if _KEY_RESET_DATE != today:
     if _KEY_RESET_DATE is not None:
       _changed = False
@@ -3352,6 +3355,10 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
   retry_delay = 2.0
   keys = GEMINI_API_KEY
   base_url = "https://generativelanguage.googleapis.com/v1beta"
+  if message is not None:
+    own_keys = apikeys.get_keys(message.author.id)
+    if own_keys:
+      keys = own_keys
   
   if enable_functions:
     return await _ask_gemini_with_functions(
@@ -3649,6 +3656,10 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   
   keys = GEMINI_API_KEY
   base_url = "https://generativelanguage.googleapis.com/v1beta"
+  if message is not None:
+    own_keys = apikeys.get_keys(message.author.id)
+    if own_keys:
+      keys = own_keys
   history = msg_history if isinstance(msg_history, list) else []
   _initial_ctx_len = len(history)  # track original context window for load_more_context
   current_text = text
@@ -6478,7 +6489,16 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
       console.log(f"Prompt: {reply_text}", "DEBUG")
 
       temperature = DEFAULT_TEMPERATURE
+
+      if not apikeys.check_quota(message.author.id):
+        used, limit = apikeys.get_quota_status(message.author.id)
+        await send_with_retry(message.channel, f"Daily free message limit reached ({used}/{limit}). Resets at midnight Pacific.\nType `!arona addkey` to use your own key instead (don't worry, it's free).")
+        return
+
       raw_reply = await ask_gemini(model_name, reply_text, attachments=gemini_attachments, sys_prompt=True, msg_history=history, temperature=temperature, timeout=60000, enable_functions=True, message=message, typing_pause_event=_pause_typing, rules=special_rules, level="low", safety_note=safety_note)
+
+      if not (isinstance(raw_reply, dict) and raw_reply.get("error")):
+        apikeys.increment_quota(message.author.id)
       if isinstance(raw_reply, dict) and raw_reply.get("error") == "503":
         await send_with_retry(message.channel, "Arona is having trouble reaching the AI servers right now. Please try again in a few minutes.")
         console.log("Received 503 from Gemini API", "ERROR")
@@ -6722,7 +6742,7 @@ async def on_message(message):
 
   if message.content.lower().startswith("!arona help"):
     console.log(f"User {message.author.display_name} used !arona help", "INFO")
-    await send_with_retry(message.channel, "**Arona Commands:**\n- `!arona help`: Show this message\n- `!arona base64 encode <text>`: Encode text\n- `!arona base64 decode <text>`: Decode text\n- `!arona channel add/remove`: Manage auto-respond channels (requires `Manage Channels` permission)\n- `!arona clear`: Clear Arona's memory in this channel — messages before this point will be ignored (requires `Manage Messages` permission or DM)\n- `!arona forgetme`: Permanently delete all data Arona has stored about you (saved info, message history, account key)\n\n**Usage:**\n- You can mention Arona in any message to get a response.\n- You can also set specific channels for Arona to respond in using the channel commands.\n- Referencing to a message will provide context to Arona for a more informed response.\n**For more information, please visit [the GitHub repository](https://github.com/idoldange/arona-ai)**")
+    await send_with_retry(message.channel, "**Arona Commands:**\n- `!arona help`: Show this message\n- `!arona base64 encode <text>`: Encode text\n- `!arona base64 decode <text>`: Decode text\n- `!arona channel add/remove`: Manage auto-respond channels (requires `Manage Channels` permission)\n- `!arona clear`: Clear Arona's memory in this channel — messages before this point will be ignored (requires `Manage Messages` permission or DM)\n- `!arona forgetme`: Permanently delete all data Arona has stored about you (saved info, message history, account key)\n- `!arona addkey`: Add your own Gemini API key(s) via an embed/modal, no daily limit\n- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n- `!arona quota`: Check your remaining daily messages\n\n**Usage:**\n- You can mention Arona in any message to get a response.\n- You can also set specific channels for Arona to respond in using the channel commands.\n- Referencing to a message will provide context to Arona for a more informed response.\n**For more information, please visit [the GitHub repository](https://github.com/idoldange/arona-ai)**")
     return
 
   base64_match = re.match(r"^!arona\s+base64", message.content, re.IGNORECASE)
@@ -6842,6 +6862,41 @@ async def on_message(message):
     await send_with_retry(message.channel, f"Cleared memory for this channel. Arona will ignore messages sent before <t:{int(clear_time)}:R> in future interactions.") #<t:1672531200:R> 
     return
   
+  if message.content.lower() == "!arona addkey":
+    console.log(f"User {message.author.display_name} used !arona addkey", "INFO")
+    embed, view = build_addkey_embed()
+    await send_with_retry(message.channel, embed=embed, view=view)
+    return
+
+  if message.content.lower() == "!arona listkeys":
+    console.log(f"User {message.author.display_name} used !arona listkeys", "INFO")
+    embed, view = build_listkeys_embed()
+    await send_with_retry(message.channel, embed=embed, view=view)
+    return
+
+  if message.content.lower().startswith("!arona removekey"):
+    console.log(f"User {message.author.display_name} used !arona removekey", "INFO")
+    arg = message.content[len("!arona removekey"):].strip()
+    if not arg.isdigit():
+      await send_with_retry(message.channel, "Usage: `!arona removekey <index>` — see `!arona listkeys` for indices.")
+      return
+    removed = apikeys.remove_key(message.author.id, int(arg))
+    if removed is None:
+      await send_with_retry(message.channel, "No key at that index. See `!arona listkeys`.")
+      return
+    embed = discord.Embed(title="Key removed", description=f"Removed key `{apikeys.mask_key(removed)}`.", color=discord.Color.green())
+    await send_with_retry(message.channel, embed=embed)
+    return
+
+  if message.content.lower() == "!arona quota":
+    console.log(f"User {message.author.display_name} used !arona quota", "INFO")
+    used, limit = apikeys.get_quota_status(message.author.id)
+    if used is None:
+      await send_with_retry(message.channel, "Using your own key — no daily limit.")
+    else:
+      await send_with_retry(message.channel, f"Free tier: {used}/{limit} messages used today. Resets at midnight Pacific.")
+    return
+
   # !arona forgetme, lets a user permanently wipe all data Arona has stored about them
   if message.content.lower() == "!arona forgetme":
     console.log(f"User {message.author.display_name} used !arona forgetme", "INFO")
@@ -6877,6 +6932,7 @@ async def on_message(message):
       bank_result = {"rows_deleted": 0, "vectors_deleted": 0}
       console.log(f"[forgetme] message wipe failed for {user_id}: {e}", "ERROR")
     delete_key(message.author.id)
+    apikeys.delete_all(user_id)
 
     await send_with_retry(
       message.channel,
