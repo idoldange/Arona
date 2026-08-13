@@ -3993,7 +3993,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             # check the already-fetched body_text string instead (was: resp.get(...),
             # which crashes with AttributeError since ClientResponse has no .get()).
             if "Resource has been exhausted" in body_text:
-              await asyncio.sleep(10.0)
+              await asyncio.sleep(30.0)
             # this is per key rate limit, need to wait 1.5s    
             await asyncio.sleep(1.5 * (attempt_num ** 0.5))  # gradual per-key delay
             
@@ -4031,11 +4031,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             # Retry the SAME key on 503 instead of rotating to the next one.
             # Only move on to the next key after MAX_SAME_KEY_503_RETRIES failed
             # attempts on this key, to avoid looping forever on a dead backend.
-            _same_key_503_retries += 1
-            if _same_key_503_retries >= MAX_SAME_KEY_503_RETRIES:
-              console.log(f"[503-RETRY] Key {key_idx} hit 503 {_same_key_503_retries}x in a row, giving up on this key", "WARN")
-              key_pos += 1
-              _same_key_503_retries = 0
+            #_same_key_503_retries += 1
+            #if _same_key_503_retries >= MAX_SAME_KEY_503_RETRIES:
+            #  console.log(f"[503-RETRY] Key {key_idx} hit 503 {_same_key_503_retries}x in a row, giving up on this key", "WARN")
+            #  key_pos += 1
+            #  _same_key_503_retries = 0
             continue
           
           if resp.status == 400:
@@ -4060,6 +4060,33 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             #log payload for 400 errors to help diagnose malformed requests
             #console.log(f"400 Bad Request for key {key_idx}. Payload: {json.dumps(payload)}", "DEBUG")
             return {"error": "400", "details": last_error_detail}
+          if resp.status == 403:
+            # check for msg "message": "Permission denied: Consumer 'api_key:AIzaSyB2U1dd1W97cNtVZAfbFksPoElnNUeY5sY' has been suspended.",
+            # if true, the remove the key from .env file and the list
+            #use regrex, not just if ... in
+            if re.search(r"Permission denied: Consumer 'api_key:[^']+' has been suspended", body_text):
+              console.log(f"[403] Key {key_idx} has been suspended, removing from key list", "ERROR")
+              # remove the key from the list
+              global GEMINI_API_KEY
+              GEMINI_API_KEY = [k for i, k in enumerate(GEMINI_API_KEY) if i != key_idx]
+              # remove the key from the .env file by reading the file, edit json array GEMINI_API_KEY='[]' and write back
+              env_file = ".env"
+              try:
+                with open(env_file, "r") as f:
+                  env_data = f.read()
+                # replace the GEMINI_API_KEY line with the new list
+                new_env_data = re.sub(r"GEMINI_API_KEY\s*=\s*\[[^\]]*\]", f"GEMINI_API_KEY={GEMINI_API_KEY}", env_data)
+                with open(env_file, "w") as f:
+                  f.write(new_env_data)
+              except Exception as e:
+                console.log(f"Failed to update .env file: {e}", "ERROR")
+              # update the key_order list
+              key_order = [i for i in range(len(keys))]
+              if not keys:
+                return {"error": "403", "details": "All API keys have been suspended."}
+              key_pos += 1
+              await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
+              continue
         except Exception as e:
           last_error_detail = f"Exception for key {key_idx}: {e}\n{traceback.format_exc()}"
           console.log(last_error_detail, "ERROR")
