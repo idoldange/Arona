@@ -5,11 +5,15 @@ import subprocess
 import urllib.request
 
 def get_git_diff():
+    # --function-context (-W): mo rong moi hunk ra toan bo ham/vong lap chua no,
+    # nen model biet duoc thay doi nam trong ham/khoi nao, khong chi thay may dong +/-.
+    diff_args = ["git", "diff", "--function-context", "--cached"]
     try:
-        diff = subprocess.check_output(["git", "diff", "--cached"], text=True, encoding="utf-8", errors="ignore")
+        diff = subprocess.check_output(diff_args, text=True, encoding="utf-8", errors="ignore")
         if not diff.strip():
-            diff = subprocess.check_output(["git", "diff"], text=True, encoding="utf-8", errors="ignore")
-        return diff[:40000] 
+            diff_args = ["git", "diff", "--function-context"]
+            diff = subprocess.check_output(diff_args, text=True, encoding="utf-8", errors="ignore")
+        return diff[:1000000]
     except Exception:
         return ""
 
@@ -52,9 +56,12 @@ def main():
 
     prompt = (
         "Analyze this git diff and create a concise, professional Git commit message in English.\n"
+        "The diff includes full function/loop context (via --function-context), not just changed lines, "
+        "so identify exactly which file(s), function(s)/method(s), or loop/block were modified.\n"
         "Format:\n"
         "Title line (max 50 chars, conventional format like feat:, fix:, refactor:)\n\n"
-        "Short bullet points describing key changes.\n\n"
+        "Short bullet points describing key changes, each mentioning the relevant file and function/loop name "
+        "(e.g. `- fix buffering in arch.py:read_output() loop`).\n\n"
         f"Diff:\n{diff}"
     )
 
