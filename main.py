@@ -49,6 +49,9 @@ import os
 from utils.schale_db import *
 import shlex
 from config import *
+# Số lần thử lại tối đa với CÙNG 1 key khi gặp lỗi 503 trước khi mới chuyển sang key khác.
+# Nếu đã khai báo MAX_SAME_KEY_503_RETRIES trong config.py thì dùng giá trị đó, không thì mặc định 3.
+MAX_SAME_KEY_503_RETRIES = globals().get("MAX_SAME_KEY_503_RETRIES", 3)
 import discord
 import re
 from arona.prompt import get_arona_prompt, get_live_arona_prompt
@@ -3833,8 +3836,13 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           console.log(f"[KEY_ROTATE] Round {round_num + 1}/{max_retries}, retrying all keys after delay...", "WARN")
           await asyncio.sleep(2.0 * round_num)
       _round_429_count = 0  # 429 hits this round
-      for attempt_num, key_idx in enumerate(key_order, start=1):
-        if attempt_num > 1:
+      key_pos = 0
+      attempt_num = 0
+      _same_key_503_retries = 0  # consecutive 503s on the CURRENT key (reset when key changes)
+      while key_pos < len(key_order):
+        key_idx = key_order[key_pos]
+        attempt_num += 1
+        if attempt_num > 1 and _same_key_503_retries == 0:
           console.log(f"[KEY_ROTATE] Round {round_num + 1}, switching to key {key_idx}", "WARN")
         console.log(f"[{model_name}] Round {round_num + 1}/{max_retries}, Attempt {attempt_num}/{len(keys)} (Key {key_idx + 1})", "INFO")
         API_KEY = keys[key_idx]
@@ -3901,6 +3909,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           if resp is None:
             last_error_detail = f"No response object for key index {key_idx}"
             console.log(last_error_detail, "WARN")
+            key_pos += 1
+            _same_key_503_retries = 0
             continue
 
           if resp.status == 200:
@@ -3976,6 +3986,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             # this is per key rate limit, need to wait 1.5s    
             await asyncio.sleep(1.5 * (attempt_num ** 0.5))  # gradual per-key delay
             
+            key_pos += 1  # 429 still rotates to the next key
+            _same_key_503_retries = 0
             continue
           if resp.status == 503:
             _consecutive_503_count += 1
@@ -4004,7 +4016,15 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 _bust_token = os.urandom(8).hex()  # e.g. "a3f7c21b9e4d0582"
                 _base = _parts[0]["text"].split("\n<!-- bust:")[0]  # strip previous bust comment
                 _parts[0]["text"] = _base + f"\n<!-- bust:{_bust_token} -->"
-            await asyncio.sleep(1.0 * (round_num + 1))  # back off before next key attempt
+            await asyncio.sleep(1.0 * (round_num + 1))  # back off before retrying
+            # Retry the SAME key on 503 instead of rotating to the next one.
+            # Only move on to the next key after MAX_SAME_KEY_503_RETRIES failed
+            # attempts on this key, to avoid looping forever on a dead backend.
+            _same_key_503_retries += 1
+            if _same_key_503_retries >= MAX_SAME_KEY_503_RETRIES:
+              console.log(f"[503-RETRY] Key {key_idx} hit 503 {_same_key_503_retries}x in a row, giving up on this key", "WARN")
+              key_pos += 1
+              _same_key_503_retries = 0
             continue
           
           if resp.status == 400:
@@ -4032,6 +4052,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         except Exception as e:
           last_error_detail = f"Exception for key {key_idx}: {e}\n{traceback.format_exc()}"
           console.log(last_error_detail, "ERROR")
+          key_pos += 1
+          _same_key_503_retries = 0
           continue
       if response or _schema_stripped or _thinking_stripped:
         break
