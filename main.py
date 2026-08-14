@@ -292,6 +292,18 @@ _LAST_WORKING_MODEL: "str | None" = None  # None = use DEFAULT_MODEL (no overrid
 _KEY_RESET_DATE = None  # Track last midnight-Pacific reset date
 STATE_FILE = "key_state.json"
 
+# Per-user "last working key" index for BYOK (bring-your-own-key) users.
+# Kept completely separate from _LAST_WORKING_KEY_INDEX (which tracks the shared/free
+# key pool) so that a BYOK request never clobbers the free pool's remembered-good-key
+# state (and vice versa). In-memory only — no need to persist across restarts like the
+# free pool's state does.
+_BYOK_LAST_WORKING_KEY_INDEX: Dict[str, int] = {}
+# How many retry rounds a BYOK user gets before giving up. Free-pool requests use
+# `max_retries` (config.MAX_RETRIES) since they can fall back across many shared keys;
+# BYOK users often only have 1-2 keys, so give them proportionally more rounds to loop
+# through rate-limit/backoff windows before surfacing an error to them.
+BYOK_MAX_RETRIES = MAX_RETRIES
+
 # Global backoff state — shared across concurrent requests to avoid key stampede
 _GLOBAL_BACKOFF_UNTIL: float = 0.0  # monotonic timestamp; all requests wait if now < this
 _GLOBAL_BACKOFF_LOCK = asyncio.Lock()  # serialize backoff timestamp writes
@@ -3355,10 +3367,19 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
   retry_delay = 2.0
   keys = GEMINI_API_KEY
   base_url = "https://generativelanguage.googleapis.com/v1beta"
+  # BYOK gets its own key-rotation identity (byok_user_id) and its own remembered-index
+  # state (_BYOK_LAST_WORKING_KEY_INDEX), completely separate from the shared free-key
+  # pool's _LAST_WORKING_KEY_INDEX. This stops a BYOK request from resetting/overwriting
+  # the free pool's remembered good key, which used to force free-key users to loop
+  # through already-known-bad keys again.
+  byok_user_id: "str | None" = None
+  using_own_keys = False
   if message is not None:
-    own_keys = apikeys.get_keys(resolve_id(message.author.id))
+    byok_user_id = str(resolve_id(message.author.id))
+    own_keys = apikeys.get_keys(byok_user_id)
     if own_keys:
       keys = own_keys
+      using_own_keys = True
   
   if enable_functions:
     return await _ask_gemini_with_functions(
@@ -3504,15 +3525,34 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
         "includeThoughts": INCLUDE_THOUGHT,
       }
     
-    # Smart key selection: try last working key first, then wrap around
+    # Smart key selection: try last working key first, then wrap around.
+    # BYOK reads/writes its own per-user index (_BYOK_LAST_WORKING_KEY_INDEX) instead of
+    # the shared _LAST_WORKING_KEY_INDEX, so it never disturbs the free pool's state.
     num_keys = len(keys)
-    if 0 <= _LAST_WORKING_KEY_INDEX < num_keys:
-        start_index = _LAST_WORKING_KEY_INDEX
+    last_working_idx = (
+      _BYOK_LAST_WORKING_KEY_INDEX.get(byok_user_id, 0) if using_own_keys
+      else _LAST_WORKING_KEY_INDEX
+    )
+    if 0 <= last_working_idx < num_keys:
+        start_index = last_working_idx
         key_order = [(start_index + i) % num_keys for i in range(num_keys)]
     else:
         key_order = list(range(num_keys))
     blocked = 0
-    for attempt in range(1, max_retries + 1):
+    # BYOK users usually only have 1-2 keys, so give them more rounds to loop through
+    # rate-limit/backoff windows instead of surfacing an error after a handful of tries.
+    effective_max_retries = BYOK_MAX_RETRIES if using_own_keys else max_retries
+
+    def _remember_working_key(key_idx: int):
+      # Route the "remembered good key" write to the right state: BYOK -> per-user dict,
+      # free pool -> the shared/persisted global.
+      if using_own_keys:
+        _BYOK_LAST_WORKING_KEY_INDEX[byok_user_id] = key_idx
+      else:
+        global _LAST_WORKING_KEY_INDEX
+        _LAST_WORKING_KEY_INDEX = key_idx
+
+    for attempt in range(1, effective_max_retries + 1):
       for key_idx in key_order:
         API_KEY = keys[key_idx]
         console.log(f"[{model}] Attempt {attempt}, Key {key_idx+1}/{len(keys)}", "INFO")
@@ -3523,7 +3563,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
 
         if resp.status == 200:
           data = await resp.json()
-          _LAST_WORKING_KEY_INDEX = key_idx  # Remember working key
+          _remember_working_key(key_idx)  # Remember working key
           
           if "promptFeedback" in data:
             feedback = data["promptFeedback"]
@@ -3585,7 +3625,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
               continue
             if resp.status == 200:
               data = await resp.json()
-              _LAST_WORKING_KEY_INDEX = key_idx
+              _remember_working_key(key_idx)
               if "promptFeedback" in data:
                 feedback = data["promptFeedback"]
                 if feedback.get("blockReason"):
@@ -3657,10 +3697,18 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
 
   keys = GEMINI_API_KEY
   base_url = "https://generativelanguage.googleapis.com/v1beta"
+  # BYOK gets its own key-rotation identity and its own remembered-index state
+  # (_BYOK_LAST_WORKING_KEY_INDEX), kept fully separate from the shared free-key pool's
+  # _LAST_WORKING_KEY_INDEX so a BYOK request never resets the free pool's remembered
+  # good key (which used to force free-key users to loop through dead keys again).
+  byok_user_id: "str | None" = None
+  using_own_keys = False
   if message is not None:
-    own_keys = apikeys.get_keys(resolve_id(message.author.id))
+    byok_user_id = str(resolve_id(message.author.id))
+    own_keys = apikeys.get_keys(byok_user_id)
     if own_keys:
       keys = own_keys
+      using_own_keys = True
   history = msg_history if isinstance(msg_history, list) else []
   _initial_ctx_len = len(history)  # track original context window for load_more_context
   current_text = text
@@ -3824,12 +3872,28 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     # Try request
     await _check_midnight_reset()
     num_keys = len(keys)
-    if 0 <= _LAST_WORKING_KEY_INDEX < num_keys:
-        start_index = _LAST_WORKING_KEY_INDEX
+    # BYOK reads its own per-user index (_BYOK_LAST_WORKING_KEY_INDEX) instead of the
+    # shared _LAST_WORKING_KEY_INDEX, so it never disturbs the free pool's remembered
+    # good key.
+    last_working_idx = (
+      _BYOK_LAST_WORKING_KEY_INDEX.get(byok_user_id, 0) if using_own_keys
+      else _LAST_WORKING_KEY_INDEX
+    )
+    if 0 <= last_working_idx < num_keys:
+        start_index = last_working_idx
         key_order = [(start_index + i) % num_keys for i in range(num_keys)]
     else:
         key_order = list(range(num_keys))
-    
+
+    def _remember_working_key(key_idx: int):
+      # Route the "remembered good key" write to the right state: BYOK -> per-user dict,
+      # free pool -> the shared/persisted global.
+      if using_own_keys:
+        _BYOK_LAST_WORKING_KEY_INDEX[byok_user_id] = key_idx
+      else:
+        global _LAST_WORKING_KEY_INDEX
+        _LAST_WORKING_KEY_INDEX = key_idx
+
     response = None
     last_error_detail = None
     _429_round_count = 0  # track consecutive rounds where ALL keys returned 429
@@ -3837,15 +3901,18 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     _thinking_stripped = False  # set when 400 "Thinking level/budget not supported" strips thinkingConfig mid-retry
     _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
     # _overload_msg stored globally keyed by channel so send_reply can delete it
-    for round_num in range(max_retries):
+    # BYOK users usually only have 1-2 keys, so give them more rounds to loop through
+    # rate-limit/backoff windows instead of surfacing an error after a handful of tries.
+    effective_max_retries = BYOK_MAX_RETRIES if using_own_keys else max_retries
+    for round_num in range(effective_max_retries):
       if round_num > 0:
         # Exponential backoff if last round was all-429 (per-IP rate limit)
         if _429_round_count > 0:
           delay = min(10.0 * (2 ** (_429_round_count - 1)), 120.0)
-          console.log(f"[KEY_ROTATE] Round {round_num + 1}/{max_retries}, all-429 last round — waiting {delay:.0f}s...", "WARN")
+          console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, all-429 last round — waiting {delay:.0f}s...", "WARN")
           await asyncio.sleep(delay)
         else:
-          console.log(f"[KEY_ROTATE] Round {round_num + 1}/{max_retries}, retrying all keys after delay...", "WARN")
+          console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, retrying all keys after delay...", "WARN")
           await asyncio.sleep(2.0 * round_num)
       _round_429_count = 0  # 429 hits this round
       key_pos = 0
@@ -3856,7 +3923,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         attempt_num += 1
         if attempt_num > 1 and _same_key_503_retries == 0:
           console.log(f"[KEY_ROTATE] Round {round_num + 1}, switching to key {key_idx}", "WARN")
-        console.log(f"[{model_name}] Round {round_num + 1}/{max_retries}, Attempt {attempt_num}/{len(keys)} (Key {key_idx + 1})", "INFO")
+        console.log(f"[{model_name}] Round {round_num + 1}/{effective_max_retries}, Attempt {attempt_num}/{len(keys)} (Key {key_idx + 1})", "INFO")
         API_KEY = keys[key_idx]
         full_model_name = f"models/{model_name}" if not model_name.startswith("models/") else model_name
         url = f"{base_url}/{full_model_name}:generateContent"
@@ -3969,7 +4036,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             except Exception as te:
               console.log(f"Thought extraction error: {te}", "WARN")
 
-            _LAST_WORKING_KEY_INDEX = key_idx
+            _remember_working_key(key_idx)
             _consecutive_503_count = 0
             break
 
