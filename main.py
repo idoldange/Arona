@@ -3979,6 +3979,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, retrying all keys after delay...", "WARN")
           await asyncio.sleep(2.0 * round_num)
       _round_429_count = 0  # 429 hits this round
+      _free_429_count = 0   # of the above, how many were free-pool keys (vs own BYOK keys)
       key_pos = 0
       attempt_num = 0
       _same_key_503_retries = 0  # consecutive 503s on the CURRENT key (reset when key changes)
@@ -4114,6 +4115,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
 
           if resp.status == 429:
             _round_429_count += 1
+            if key_idx >= num_own_keys:
+              _free_429_count += 1
             if _is_tpm_limit(body_text):
               _tpm_limited_keys.add(key_idx)
               console.log(f"[429-TPM] Key {key_idx} hit token/min limit ({len(_tpm_limited_keys)}/{len(key_order)} keys)", "WARN")
@@ -4285,16 +4288,30 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         _429_round_count += 1
         # All keys hit non-TPM 429 → switch to RATE_LIMIT_MODEL immediately on first all-429 round
         # (RPD / RPM exhausted — no point retrying same model with same keys)
+        #
+        # Whether to PERSIST this switch globally (via _update_last_working_model, which
+        # every future call — BYOK or free-tier — reads at startup) depends on whether the
+        # free key pool was actually implicated. If usable_free_keys == 0 this round, key_order
+        # was own-keys-only (e.g. a BYOK user whose free-tier fallback allowance is already
+        # used up today), so an all-429 round here only proves THEIR own key(s) are rate
+        # limited — it says nothing about the shared free pool's health and must not leak
+        # into global state. Only a round where the free-pool portion of key_order was
+        # present AND itself fully 429'd counts as genuine free-pool exhaustion.
+        _free_pool_exhausted_this_round = usable_free_keys > 0 and _free_429_count == usable_free_keys
+        _should_persist = (not using_own_keys) or _free_pool_exhausted_this_round
+        _scope_note = "" if _should_persist else " (BYOK own-key only — switching locally for this user, NOT persisted globally)"
         if model_name != RATE_LIMIT_MODEL:
-          console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL} early", "WARN")
+          console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL} early{_scope_note}", "WARN")
           model_name = RATE_LIMIT_MODEL
           _tpm_limited_keys.clear()
-          await _update_last_working_model(RATE_LIMIT_MODEL)  # persist so next session starts on fallback
+          if _should_persist:
+            await _update_last_working_model(RATE_LIMIT_MODEL)  # persist so next session starts on fallback
         elif model_name == RATE_LIMIT_MODEL:
-          console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL_} early", "WARN")
+          console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL_} early{_scope_note}", "WARN")
           model_name = RATE_LIMIT_MODEL_
           _tpm_limited_keys.clear()
-          await _update_last_working_model(RATE_LIMIT_MODEL_)  # persist so next session starts on fallback
+          if _should_persist:
+            await _update_last_working_model(RATE_LIMIT_MODEL_)  # persist so next session starts on fallback
       else:
         _429_round_count = 0
 
