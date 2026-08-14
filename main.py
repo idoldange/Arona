@@ -6740,7 +6740,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
         # fallback allowance is already used up today — a different situation from a
         # normal free-tier user running out, so it gets its own message.
         reset_ts = _next_midnight_pacific_ts()
-        await send_with_retry(message.channel, f"Arona couldn't get a response using your own key(s), and your free-tier fallback allowance is used up for today too. Resets <t:{reset_ts}:R>.\nCheck `!arona listkeys` — your key(s) may be invalid, out of quota on Google's side, or rate-limited.")
+        await send_with_retry(message.channel, f"Arona couldn't get a response using your own key(s), and your free-tier fallback allowance is used up for today too. Resets <t:{reset_ts}:R>.\nCheck `!arona listkeys` — your key(s) may be invalid, out of quota on Google's side, or rate-limited. You can try `!arona addkey` to add more key(s) or wait until your quota reset.")
         console.log("BYOK own key(s) failed and free-tier fallback exhausted", "WARN")
         console.log(f"Model used: {model_name}", "INFO")
         console.log("===== [END MESSAGE] =====", "INFO")
