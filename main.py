@@ -3652,7 +3652,14 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
             await asyncio.sleep(3)  # Brief pause before next key
             continue
           return {"error": f"HTTP {resp.status}: {text}"}
-
+        
+        if resp.status == 403:
+          console.log(f"[{model}] HTTP {resp.status}, return", "WARN")
+          continue  # Try next key; 403 can be transient or due to key restrictions
+        
+        if resp.status == 401:
+          console.log(f"[{model}] HTTP {resp.status}, return", "WARN")
+          continue  # Try next key; 401 can be transient or due to key restrictions
         if resp.status in (500, 502, 503):
           # Don't rotate key — server errors are transient. Backoff on same key.
           if resp.status == 503 and model == DEFAULT_MODEL and use_smart_fallback:
@@ -4259,6 +4266,12 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               key_pos = min(key_pos, len(key_order) - 1)
               await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
               continue
+            
+          if resp.status == 401:
+            console.log(f"[401] Key {key_idx} unauthorized, trying next", "WARN")
+            key_pos += 1
+            _same_key_503_retries = 0
+            continue
         except Exception as e:
           last_error_detail = f"Exception for key {key_idx}: {e}\n{traceback.format_exc()}"
           console.log(last_error_detail, "ERROR")
@@ -7711,7 +7724,7 @@ async def console_command_loop():
       if not question:
         console.log("\033[31mUsage: ask <your question>\033[0m", "ERROR")
         continue
-      raw = await ask_gemini("gemini-3-flash-preview", question, sys_prompt=True, attachments=".\\main.py", enable_functions=False)
+      raw = await ask_gemini(DEFAULT_MODEL, question, sys_prompt=True, attachments=".\\main.py", enable_functions=False)
       resp = extract_gemini_text(raw)
       console.log(f"\033[32m[ASK] {resp}\033[0m", "INFO")
       continue
