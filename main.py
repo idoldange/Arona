@@ -3645,6 +3645,12 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
         if resp.status == 400:
           console.log(f"[{model}] HTTP {resp.status}, return", "WARN")
           text = await resp.text()
+          #check: API key not valid. Please pass a valid API key.
+          # if yes then switch key
+          if "API key not valid" in text:
+            console.log(f"[{model}] Key {key_idx+1} invalid, trying next", "WARN")
+            await asyncio.sleep(3)  # Brief pause before next key
+            continue
           return {"error": f"HTTP {resp.status}: {text}"}
 
         if resp.status in (500, 502, 503):
@@ -4178,6 +4184,13 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               break  # break key loop; round loop checks _schema_stripped below
             #log payload for 400 errors to help diagnose malformed requests
             #console.log(f"400 Bad Request for key {key_idx}. Payload: {json.dumps(payload)}", "DEBUG")
+
+            if "API key not valid" in body_text:
+              console.log(f"[400] Key {key_idx+1} invalid, trying next", "WARN")
+              key_pos += 1 
+              _same_key_503_retries = 0
+              continue
+
             return {"error": "400", "details": last_error_detail}
           if resp.status == 403:
             # check for msg "message": "Permission denied: Consumer 'api_key:AIzaSyB2U1dd1W97cNtVZAfbFksPoElnNUeY5sY' has been suspended.",
@@ -7068,7 +7081,14 @@ async def on_message(message):
   if message.content.lower() == "!arona addkey":
     console.log(f"User {message.author.display_name} used !arona addkey", "INFO")
     embed, view = build_addkey_embed()
-    await send_with_retry(message.channel, embed=embed, view=view)
+    
+    try: await send_with_retry(message.channel, embed=embed, view=view)
+    except Exception as e:
+      console.log(f"Failed to send addkey embed: {e}", "ERROR")
+      if isinstance(e, discord.errors.Forbidden):
+        await send_with_retry(message.channel, "Arona don't have permission to send embeds in this channel.")
+      else:
+        await send_with_retry(message.channel, "Failed to send the addkey embed. Please try again later.")
     return
 
   if message.content.lower() == "!arona listkeys":
