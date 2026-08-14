@@ -298,11 +298,7 @@ STATE_FILE = "key_state.json"
 # state (and vice versa). In-memory only — no need to persist across restarts like the
 # free pool's state does.
 _BYOK_LAST_WORKING_KEY_INDEX: Dict[str, int] = {}
-# How many retry rounds a BYOK user gets before giving up. Free-pool requests use
-# `max_retries` (config.MAX_RETRIES) since they can fall back across many shared keys;
-# BYOK users often only have 1-2 keys, so give them proportionally more rounds to loop
-# through rate-limit/backoff windows before surfacing an error to them.
-BYOK_MAX_RETRIES = MAX_RETRIES
+BYOK_MAX_RETRIES = MAX_RETRIES 
 
 # Global backoff state — shared across concurrent requests to avoid key stampede
 _GLOBAL_BACKOFF_UNTIL: float = 0.0  # monotonic timestamp; all requests wait if now < this
@@ -364,6 +360,16 @@ async def _update_last_working_model(model: "str | None"):
         _LAST_WORKING_MODEL = model
         await _save_key_state()
 
+def _next_midnight_pacific_ts() -> int:
+  """Unix timestamp (int) for the next midnight Pacific — for Discord's <t:...:R>/<t:...:t>
+  auto-localizing timestamp formatting. Uses the same fixed PST offset (no DST handling)
+  as the daily key/quota reset for consistency."""
+  pacific_offset = timedelta(hours=-8)
+  pacific_now = datetime.now(timezone.utc) + pacific_offset
+  next_midnight_pacific = datetime.combine(pacific_now.date() + timedelta(days=1), datetime.min.time())
+  next_midnight_utc = next_midnight_pacific - pacific_offset
+  return int(next_midnight_utc.replace(tzinfo=timezone.utc).timestamp())
+
 async def _check_midnight_reset():
   """Reset key index to 0 AND clear model override when Pacific date rolls over."""
   global _LAST_WORKING_KEY_INDEX, _KEY_RESET_DATE, _LAST_WORKING_MODEL
@@ -382,9 +388,60 @@ async def _check_midnight_reset():
         console.log(f"[KEY_RESET] Midnight Pacific: clearing model override ({_LAST_WORKING_MODEL} → default)", "INFO")
         _LAST_WORKING_MODEL = None
         _changed = True
+      if _BYOK_LAST_WORKING_KEY_INDEX:
+        console.log(f"[KEY_RESET] Midnight Pacific: clearing BYOK remembered-key state for {len(_BYOK_LAST_WORKING_KEY_INDEX)} user(s)", "INFO")
+        _BYOK_LAST_WORKING_KEY_INDEX.clear()
       if _changed:
         await _save_key_state()
     _KEY_RESET_DATE = today
+
+def _build_key_order(num_own_keys: int, num_free_keys: int, byok_user_id: "str | None") -> list:
+  """Build the attempt order over a `keys` list shaped as own_keys + GEMINI_API_KEY
+  (own keys occupy indices [0, num_own_keys), free keys occupy [num_own_keys, end)).
+
+  Own-key portion starts from that user's remembered index (_BYOK_LAST_WORKING_KEY_INDEX)
+  and wraps; free-key portion starts from the shared pool's remembered index
+  (_LAST_WORKING_KEY_INDEX) and wraps, offset into the combined list by num_own_keys.
+  Own keys are always tried before falling back to the free pool.
+
+  When num_own_keys == 0 (plain free-pool request) this reduces to exactly the old
+  free-pool-only ordering.
+  """
+  own_order = []
+  if num_own_keys:
+    own_start = _BYOK_LAST_WORKING_KEY_INDEX.get(byok_user_id, 0)
+    if not (0 <= own_start < num_own_keys):
+      own_start = 0
+    own_order = [(own_start + i) % num_own_keys for i in range(num_own_keys)]
+
+  free_order = []
+  if num_free_keys:
+    free_start = _LAST_WORKING_KEY_INDEX if 0 <= _LAST_WORKING_KEY_INDEX < num_free_keys else 0
+    free_order = [num_own_keys + (free_start + i) % num_free_keys for i in range(num_free_keys)]
+
+  return own_order + free_order
+
+async def _remember_working_key(num_own_keys: int, byok_user_id: "str | None", key_idx: int):
+  """Persist which key just worked, routed to the right state: an own-key index (BYOK)
+  goes to the per-user dict, a fallback free-pool index (>= num_own_keys) is translated
+  back to a free-pool-local index and written to the shared/persisted global.
+
+  Also charges the free-tier quota for a BYOK user IFF this success came from the free
+  pool (i.e. their own key(s) failed and we fell back) — BYOK users only count against
+  the shared free-tier allowance once their own keys stop covering the request."""
+  global _LAST_WORKING_KEY_INDEX
+  if key_idx < num_own_keys:
+    _BYOK_LAST_WORKING_KEY_INDEX[byok_user_id] = key_idx
+  else:
+    free_local_idx = key_idx - num_own_keys
+    if _LAST_WORKING_KEY_INDEX != free_local_idx:
+      _LAST_WORKING_KEY_INDEX = free_local_idx
+      await _save_key_state()
+    if num_own_keys > 0:
+      # This was a BYOK user falling back to the shared free pool — charge their
+      # free-tier quota for it (ignore_own_key=True bypasses the normal "has own key
+      # = unlimited" bypass, since that bypass is exactly what we need to skip here).
+      apikeys.increment_quota(byok_user_id, ignore_own_key=True)
 
 gemini_ws: GeminiWebSocket = GeminiWebSocket(
     voice="leda", 
@@ -3372,14 +3429,22 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
   # pool's _LAST_WORKING_KEY_INDEX. This stops a BYOK request from resetting/overwriting
   # the free pool's remembered good key, which used to force free-key users to loop
   # through already-known-bad keys again.
+  #
+  # If the user has their own keys, `keys` becomes own_keys + GEMINI_API_KEY: own keys
+  # are always tried first (indices [0, num_own_keys)), and once those are exhausted the
+  # request falls back into the shared free pool (indices [num_own_keys, end)) instead of
+  # just giving up. num_own_keys is the offset that separates the two portions.
   byok_user_id: "str | None" = None
   using_own_keys = False
+  own_keys: list = []
+  num_own_keys = 0
   if message is not None:
     byok_user_id = str(resolve_id(message.author.id))
     own_keys = apikeys.get_keys(byok_user_id)
     if own_keys:
-      keys = own_keys
+      keys = own_keys + GEMINI_API_KEY
       using_own_keys = True
+      num_own_keys = len(own_keys)
   
   if enable_functions:
     return await _ask_gemini_with_functions(
@@ -3525,32 +3590,16 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
         "includeThoughts": INCLUDE_THOUGHT,
       }
     
-    # Smart key selection: try last working key first, then wrap around.
-    # BYOK reads/writes its own per-user index (_BYOK_LAST_WORKING_KEY_INDEX) instead of
-    # the shared _LAST_WORKING_KEY_INDEX, so it never disturbs the free pool's state.
+    # Smart key selection: own keys first (if BYOK), then fall back into the shared free
+    # pool starting from its own remembered index. See _build_key_order for details.
     num_keys = len(keys)
-    last_working_idx = (
-      _BYOK_LAST_WORKING_KEY_INDEX.get(byok_user_id, 0) if using_own_keys
-      else _LAST_WORKING_KEY_INDEX
-    )
-    if 0 <= last_working_idx < num_keys:
-        start_index = last_working_idx
-        key_order = [(start_index + i) % num_keys for i in range(num_keys)]
-    else:
-        key_order = list(range(num_keys))
+    num_free_keys = num_keys - num_own_keys
+    key_order = _build_key_order(num_own_keys, num_free_keys, byok_user_id)
     blocked = 0
-    # BYOK users usually only have 1-2 keys, so give them more rounds to loop through
-    # rate-limit/backoff windows instead of surfacing an error after a handful of tries.
+    # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
+    # rate-limit/backoff windows (and through the free-pool fallback) instead of surfacing
+    # an error after a handful of tries.
     effective_max_retries = BYOK_MAX_RETRIES if using_own_keys else max_retries
-
-    def _remember_working_key(key_idx: int):
-      # Route the "remembered good key" write to the right state: BYOK -> per-user dict,
-      # free pool -> the shared/persisted global.
-      if using_own_keys:
-        _BYOK_LAST_WORKING_KEY_INDEX[byok_user_id] = key_idx
-      else:
-        global _LAST_WORKING_KEY_INDEX
-        _LAST_WORKING_KEY_INDEX = key_idx
 
     for attempt in range(1, effective_max_retries + 1):
       for key_idx in key_order:
@@ -3563,7 +3612,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
 
         if resp.status == 200:
           data = await resp.json()
-          _remember_working_key(key_idx)  # Remember working key
+          await _remember_working_key(num_own_keys, byok_user_id, key_idx)  # Remember working key
           
           if "promptFeedback" in data:
             feedback = data["promptFeedback"]
@@ -3625,7 +3674,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
               continue
             if resp.status == 200:
               data = await resp.json()
-              _remember_working_key(key_idx)
+              await _remember_working_key(num_own_keys, byok_user_id, key_idx)
               if "promptFeedback" in data:
                 feedback = data["promptFeedback"]
                 if feedback.get("blockReason"):
@@ -3701,14 +3750,22 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   # (_BYOK_LAST_WORKING_KEY_INDEX), kept fully separate from the shared free-key pool's
   # _LAST_WORKING_KEY_INDEX so a BYOK request never resets the free pool's remembered
   # good key (which used to force free-key users to loop through dead keys again).
+  #
+  # If the user has their own keys, `keys` becomes own_keys + GEMINI_API_KEY: own keys
+  # are always tried first (indices [0, num_own_keys)), and once those are exhausted the
+  # request falls back into the shared free pool (indices [num_own_keys, end)) instead of
+  # just giving up. num_own_keys is the offset that separates the two portions.
   byok_user_id: "str | None" = None
   using_own_keys = False
+  own_keys: list = []
+  num_own_keys = 0
   if message is not None:
     byok_user_id = str(resolve_id(message.author.id))
     own_keys = apikeys.get_keys(byok_user_id)
     if own_keys:
-      keys = own_keys
+      keys = own_keys + GEMINI_API_KEY
       using_own_keys = True
+      num_own_keys = len(own_keys)
   history = msg_history if isinstance(msg_history, list) else []
   _initial_ctx_len = len(history)  # track original context window for load_more_context
   current_text = text
@@ -3872,27 +3929,20 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     # Try request
     await _check_midnight_reset()
     num_keys = len(keys)
-    # BYOK reads its own per-user index (_BYOK_LAST_WORKING_KEY_INDEX) instead of the
-    # shared _LAST_WORKING_KEY_INDEX, so it never disturbs the free pool's remembered
-    # good key.
-    last_working_idx = (
-      _BYOK_LAST_WORKING_KEY_INDEX.get(byok_user_id, 0) if using_own_keys
-      else _LAST_WORKING_KEY_INDEX
-    )
-    if 0 <= last_working_idx < num_keys:
-        start_index = last_working_idx
-        key_order = [(start_index + i) % num_keys for i in range(num_keys)]
-    else:
-        key_order = list(range(num_keys))
-
-    def _remember_working_key(key_idx: int):
-      # Route the "remembered good key" write to the right state: BYOK -> per-user dict,
-      # free pool -> the shared/persisted global.
-      if using_own_keys:
-        _BYOK_LAST_WORKING_KEY_INDEX[byok_user_id] = key_idx
-      else:
-        global _LAST_WORKING_KEY_INDEX
-        _LAST_WORKING_KEY_INDEX = key_idx
+    num_free_keys = num_keys - num_own_keys
+    # BYOK users only draw against the shared free-tier quota once their own keys have
+    # failed for this request (i.e. only if we actually need to fall back into the free
+    # pool). Check once up front: if their free-tier allowance is already used up too,
+    # exclude the free-pool portion from key_order entirely (no point burning API calls
+    # on keys we're not allowed to use), and surface a distinct error once own keys are
+    # exhausted so the caller can show a message different from the normal quota message.
+    byok_free_quota_available = True
+    if using_own_keys:
+      byok_free_quota_available = apikeys.check_quota(byok_user_id, ignore_own_key=True)
+    usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
+    # Own keys first (if BYOK), then fall back into the shared free pool starting from
+    # its own remembered index. See _build_key_order for details.
+    key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id)
 
     response = None
     last_error_detail = None
@@ -3901,8 +3951,9 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     _thinking_stripped = False  # set when 400 "Thinking level/budget not supported" strips thinkingConfig mid-retry
     _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
     # _overload_msg stored globally keyed by channel so send_reply can delete it
-    # BYOK users usually only have 1-2 keys, so give them more rounds to loop through
-    # rate-limit/backoff windows instead of surfacing an error after a handful of tries.
+    # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
+    # rate-limit/backoff windows (and through the free-pool fallback) instead of surfacing
+    # an error after a handful of tries.
     effective_max_retries = BYOK_MAX_RETRIES if using_own_keys else max_retries
     for round_num in range(effective_max_retries):
       if round_num > 0:
@@ -4036,7 +4087,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             except Exception as te:
               console.log(f"Thought extraction error: {te}", "WARN")
 
-            _remember_working_key(key_idx)
+            await _remember_working_key(num_own_keys, byok_user_id, key_idx)
             _consecutive_503_count = 0
             break
 
@@ -4136,9 +4187,13 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               console.log(f"[403] Key {key_idx} has been suspended, removing from key list", "ERROR")
               suspended_key = keys[key_idx]
 
-              # Only touch the global pool / .env if the suspended key actually belongs to it
-              # (avoids nuking a global key by index when `keys` is actually a user's own_keys list)
-              if suspended_key in GEMINI_API_KEY:
+              if key_idx < num_own_keys:
+                # Suspended key belongs to this user's own BYOK list, not the shared pool.
+                # own_keys is the actual list object returned by apikeys.get_keys(), so
+                # mutating it in place removes the key from that user's stored key set.
+                own_keys[:] = [k for k in own_keys if k != suspended_key]
+                num_own_keys = len(own_keys)
+              elif suspended_key in GEMINI_API_KEY:
                 # mutate in-place so any other reference to GEMINI_API_KEY (e.g. stale `keys`
                 # aliases held by other concurrent calls) also sees the removal
                 GEMINI_API_KEY[:] = [k for k in GEMINI_API_KEY if k != suspended_key]
@@ -4177,15 +4232,17 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 except Exception as e:
                   console.log(f"Failed to update .env file: {e}", "ERROR")
 
-              # remove from whichever list is actually driving this call's rotation
-              # (GEMINI_API_KEY global or a user's own_keys), by value, not by index
-              keys[:] = [k for k in keys if k != suspended_key]
+              # Rebuild the combined keys list fresh (own_keys and/or GEMINI_API_KEY may have
+              # just shrunk above), then rebuild the attempt order against the new key count
+              # (still respecting the free-quota gate computed at the top of this call).
+              keys = (own_keys + GEMINI_API_KEY) if using_own_keys else GEMINI_API_KEY
+              num_free_keys = len(keys) - num_own_keys
+              usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
 
               if not keys:
                 return {"error": "403", "details": "All API keys have been suspended."}
 
-              # rebuild key_order against the new (shorter) key count
-              key_order = list(range(len(keys)))
+              key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id)
               key_pos = min(key_pos, len(key_order) - 1)
               await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
               continue
@@ -4216,6 +4273,12 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         _429_round_count = 0
 
     if not response and not _schema_stripped and not _thinking_stripped:
+      if using_own_keys and not byok_free_quota_available:
+        # Own key(s) failed for this request AND their free-tier fallback allowance is
+        # already used up today — distinct from the normal "hit a transient error" or
+        # "normal free-tier user out of messages" cases, so the caller can show a
+        # message that's actually about their own key(s), not the generic free-tier one.
+        return {"error": "byok_quota_exhausted", "details": last_error_detail}
       if last_error_detail and "HTTP 503" in last_error_detail:
         return {"error": "503", "details": last_error_detail}
       if last_error_detail and "HTTP 429" in last_error_detail:
@@ -6621,13 +6684,24 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
 
       if not apikeys.check_quota(resolve_id(message.author.id)):
         used, limit = apikeys.get_quota_status(resolve_id(message.author.id))
-        await send_with_retry(message.channel, f"Daily free message limit reached ({used}/{limit}). Resets at midnight Pacific.\nType `!arona addkey` to use your own key instead (don't worry, it's free).")
+        reset_ts = _next_midnight_pacific_ts()
+        await send_with_retry(message.channel, f"Daily free message limit reached ({used}/{limit}). Resets <t:{reset_ts}:R>.\nType `!arona addkey` to use your own key instead (don't worry, it's free).")
         return
 
       raw_reply = await ask_gemini(model_name, reply_text, attachments=gemini_attachments, sys_prompt=True, msg_history=history, temperature=temperature, timeout=60000, enable_functions=True, message=message, typing_pause_event=_pause_typing, rules=special_rules, level="low", safety_note=safety_note)
 
       if not (isinstance(raw_reply, dict) and raw_reply.get("error")):
         apikeys.increment_quota(resolve_id(message.author.id))
+      if isinstance(raw_reply, dict) and raw_reply.get("error") == "byok_quota_exhausted":
+        # BYOK user: their own key(s) didn't work for this request AND their free-tier
+        # fallback allowance is already used up today — a different situation from a
+        # normal free-tier user running out, so it gets its own message.
+        reset_ts = _next_midnight_pacific_ts()
+        await send_with_retry(message.channel, f"Arona couldn't get a response using your own key(s), and your free-tier fallback allowance is used up for today too. Resets <t:{reset_ts}:R>.\nCheck `!arona listkeys` — your key(s) may be invalid, out of quota on Google's side, or rate-limited.")
+        console.log("BYOK own key(s) failed and free-tier fallback exhausted", "WARN")
+        console.log(f"Model used: {model_name}", "INFO")
+        console.log("===== [END MESSAGE] =====", "INFO")
+        return
       if isinstance(raw_reply, dict) and raw_reply.get("error") == "503":
         await send_with_retry(message.channel, "Arona is having trouble reaching the AI servers right now. Please try again in a few minutes.")
         console.log("Received 503 from Gemini API", "ERROR")
@@ -7019,11 +7093,17 @@ async def on_message(message):
 
   if message.content.lower() == "!arona quota":
     console.log(f"User {message.author.display_name} used !arona quota", "INFO")
-    used, limit = apikeys.get_quota_status(resolve_id(message.author.id))
+    _uid = resolve_id(message.author.id)
+    used, limit = apikeys.get_quota_status(_uid)
+    reset_ts = _next_midnight_pacific_ts()
     if used is None:
-      await send_with_retry(message.channel, "Using your own key — no daily limit.")
+      # Has own key(s) — unlimited via their own key, but still show how much of the
+      # free-tier fallback (used automatically if their own key(s) ever fail) they've
+      # drawn on today, since that's no longer always zero.
+      fallback_used, fallback_limit = apikeys.get_quota_status(_uid, ignore_own_key=True)
+      await send_with_retry(message.channel, f"Using your own key — no daily limit.\nFree-tier fallback (used automatically if your key(s) fail): {fallback_used}/{fallback_limit} today. Resets <t:{reset_ts}:R>.")
     else:
-      await send_with_retry(message.channel, f"Free tier: {used}/{limit} messages used today. Resets at midnight Pacific.")
+      await send_with_retry(message.channel, f"Free tier: {used}/{limit} messages used today. Resets <t:{reset_ts}:R>.")
     return
 
   # !arona forgetme, lets a user permanently wipe all data Arona has stored about them

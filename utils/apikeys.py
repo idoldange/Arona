@@ -112,8 +112,16 @@ def has_own_key(user_id: int) -> bool:
     return bool(get_keys(user_id))
 
 
-def check_quota(user_id: int) -> bool:
-    if has_own_key(user_id):
+def check_quota(user_id: int, ignore_own_key: bool = False) -> bool:
+    """Check whether user_id can still send a free-tier message today.
+
+    By default, users with their own stored key(s) always pass (unlimited).
+    Pass ignore_own_key=True to check the *free-tier* limit itself regardless of
+    whether the user has own keys stored — used when a BYOK user's own keys have
+    all failed for this request and the bot needs to know whether it's allowed to
+    fall back to the shared free key pool.
+    """
+    if not ignore_own_key and has_own_key(user_id):
         return True
     with _conn() as c:
         row = c.execute("SELECT message_count FROM user_quota WHERE user_id=? AND date=?", (user_id, _today())).fetchone()
@@ -128,8 +136,15 @@ def check_quota(user_id: int) -> bool:
     return True
 
 
-def increment_quota(user_id: int):
-    if has_own_key(user_id):
+def increment_quota(user_id: int, ignore_own_key: bool = False):
+    """Record one free-tier message used today.
+
+    By default a no-op for users with their own stored key(s) (unlimited, nothing to
+    track). Pass ignore_own_key=True to force the increment anyway — used when a BYOK
+    user actually fell back to a shared free key for this request, so that usage still
+    counts against their free-tier allowance.
+    """
+    if not ignore_own_key and has_own_key(user_id):
         return
     today = _today()
     with _conn() as c:
@@ -145,8 +160,14 @@ def increment_quota(user_id: int):
         )
 
 
-def get_quota_status(user_id: int):
-    if has_own_key(user_id):
+def get_quota_status(user_id: int, ignore_own_key: bool = False):
+    """Return (used, limit) for the free-tier allowance.
+
+    By default returns (None, None) for users with their own stored key(s) (unlimited).
+    Pass ignore_own_key=True to get the underlying free-tier usage numbers regardless
+    (e.g. to report how much of the free-tier fallback a BYOK user has used today).
+    """
+    if not ignore_own_key and has_own_key(user_id):
         return None, None
     with _conn() as c:
         row = c.execute("SELECT message_count FROM user_quota WHERE user_id=? AND date=?", (user_id, _today())).fetchone()
