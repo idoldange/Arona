@@ -3653,7 +3653,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   - It manages the logic for iterative function calls and response handling.
   """
   global _LAST_WORKING_KEY_INDEX
-  
+  global GEMINI_API_KEY
+
   keys = GEMINI_API_KEY
   base_url = "https://generativelanguage.googleapis.com/v1beta"
   if message is not None:
@@ -4066,25 +4067,59 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             #use regrex, not just if ... in
             if re.search(r"Permission denied: Consumer 'api_key:[^']+' has been suspended", body_text):
               console.log(f"[403] Key {key_idx} has been suspended, removing from key list", "ERROR")
-              # remove the key from the list
-              global GEMINI_API_KEY
-              GEMINI_API_KEY = [k for i, k in enumerate(GEMINI_API_KEY) if i != key_idx]
-              # remove the key from the .env file by reading the file, edit json array GEMINI_API_KEY='[]' and write back
-              env_file = ".env"
-              try:
-                with open(env_file, "r") as f:
-                  env_data = f.read()
-                # replace the GEMINI_API_KEY line with the new list
-                new_env_data = re.sub(r"GEMINI_API_KEY\s*=\s*\[[^\]]*\]", f"GEMINI_API_KEY={GEMINI_API_KEY}", env_data)
-                with open(env_file, "w") as f:
-                  f.write(new_env_data)
-              except Exception as e:
-                console.log(f"Failed to update .env file: {e}", "ERROR")
-              # update the key_order list
-              key_order = [i for i in range(len(keys))]
+              suspended_key = keys[key_idx]
+
+              # Only touch the global pool / .env if the suspended key actually belongs to it
+              # (avoids nuking a global key by index when `keys` is actually a user's own_keys list)
+              if suspended_key in GEMINI_API_KEY:
+                # mutate in-place so any other reference to GEMINI_API_KEY (e.g. stale `keys`
+                # aliases held by other concurrent calls) also sees the removal
+                GEMINI_API_KEY[:] = [k for k in GEMINI_API_KEY if k != suspended_key]
+
+                env_file = ".env"
+                try:
+                  with open(env_file, "r") as f:
+                    lines = f.readlines()
+
+                  new_value_json = json.dumps(GEMINI_API_KEY)
+                  updated = False
+                  for i, line in enumerate(lines):
+                    stripped = line.lstrip()
+                    leading_ws = line[: len(line) - len(stripped)]
+                    # Must be exactly "GEMINI_API_KEY" followed by optional space then "=",
+                    # NOT a look-alike name like "MY_GEMINI_API_KEY" or "GEMINI_API_KEY_OLD".
+                    if not stripped.startswith("GEMINI_API_KEY"):
+                      continue
+                    after_name = stripped[len("GEMINI_API_KEY"):]
+                    after_name_stripped = after_name.lstrip(" \t")
+                    if not after_name_stripped.startswith("="):
+                      continue  # e.g. GEMINI_API_KEY_OLD=... -> reject
+
+                    after_eq = after_name_stripped[1:].lstrip(" \t")
+                    quote = after_eq[0] if after_eq[:1] in ("'", '"') else ""
+                    newline_suffix = "\n" if line.endswith("\n") else ""
+                    lines[i] = f"{leading_ws}GEMINI_API_KEY = {quote}{new_value_json}{quote}{newline_suffix}"
+                    updated = True
+                    break  # only ever one GEMINI_API_KEY line, stop after first match
+
+                  if not updated:
+                    console.log("GEMINI_API_KEY line not found in .env, skipped write", "WARN")
+                  else:
+                    with open(env_file, "w") as f:
+                      f.writelines(lines)
+                except Exception as e:
+                  console.log(f"Failed to update .env file: {e}", "ERROR")
+
+              # remove from whichever list is actually driving this call's rotation
+              # (GEMINI_API_KEY global or a user's own_keys), by value, not by index
+              keys[:] = [k for k in keys if k != suspended_key]
+
               if not keys:
                 return {"error": "403", "details": "All API keys have been suspended."}
-              key_pos += 1
+
+              # rebuild key_order against the new (shorter) key count
+              key_order = list(range(len(keys)))
+              key_pos = min(key_pos, len(key_order) - 1)
               await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
               continue
         except Exception as e:
