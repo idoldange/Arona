@@ -3654,11 +3654,11 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
           return {"error": f"HTTP {resp.status}: {text}"}
         
         if resp.status == 403:
-          console.log(f"[{model}] HTTP {resp.status}, try next key", "WARN")
+          console.log(f"[{model}] HTTP {resp.status}, return", "WARN")
           continue  # Try next key; 403 can be transient or due to key restrictions
         
         if resp.status == 401:
-          console.log(f"[{model}] HTTP {resp.status}, try next key", "WARN")
+          console.log(f"[{model}] HTTP {resp.status}, return", "WARN")
           continue  # Try next key; 401 can be transient or due to key restrictions
         if resp.status in (500, 502, 503):
           # Don't rotate key — server errors are transient. Backoff on same key.
@@ -4368,72 +4368,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       continue
         
     # Process response
-    if "candidates" not in response or not response["candidates"]:
-      return response
 
-    finish_reason = response["candidates"][0].get("finishReason", "")
-    if finish_reason == "MALFORMED_FUNCTION_CALL":
-      malformed_retries += 1
-      finish_message = response["candidates"][0].get("finishMessage", "")
-      parts_so_far   = response["candidates"][0].get("content", {}).get("parts", [])
-
-      if malformed_retries <= MAX_MALFORMED_RETRIES:
-        # Detect which function was malformed
-        detected_func = detect_malformed_function(finish_message, parts_so_far)
-        _last_detected_func = detected_func  # persist for tool_config on next retry
-        console.log(
-          f"[MALFORMED] attempt {malformed_retries}/{MAX_MALFORMED_RETRIES} "
-          f"| detected_func={detected_func!r} | msg={finish_message[:120]!r}",
-          "WARN"
-        )
-        
-        console.log(f"Full respone: {response}", "DEBUG")
-
-        # Roll back history — remove bad user turn and any partial model turn
-        turn_count -= 1
-        if history and history[-1].get("role") == "user":
-          history.pop()
-        if history and history[-1].get("role") == "model":
-          history.pop()
-
-        # Build a targeted correction message
-        correction = build_malformed_retry_message(finish_message, detected_func, malformed_retries)
-        history.append({"role": "user", "parts": [{"text": correction}]})
-
-        # Lower temperature so model is less "creative" and sticks to schema
-        retry_temperature = get_retry_temperature(temperature, malformed_retries)
-
-        await asyncio.sleep(1.0 * malformed_retries)
-        continue
-      else:
-        console.log("[MALFORMED] Max retries reached, prompting user", "ERROR")
-        if message and hasattr(message, 'channel'):
-          retry_future = asyncio.get_event_loop().create_future()
-          embed = discord.Embed(
-            title="Arona ran into an issue",
-            description="Arona ran into an issue generating this response after several attempts. Would you like to retry?",
-            color=0xe74c3c
-          )
-          view = MalformedRetryView(retry_future, author_id=message.author.id)
-          view._sent_message = await message.channel.send(embed=embed, view=view)
-          try:
-            should_retry = await asyncio.wait_for(retry_future, timeout=120)
-          except asyncio.TimeoutError:
-            should_retry = False
-          if should_retry:
-            malformed_retries = 0
-            retry_temperature  = temperature  # reset temperature on manual retry
-            turn_count -= 1
-            continue
-        return {"_malformed_exhausted": True}
-
-    malformed_retries = 0  # Reset on successful response
-    retry_temperature  = temperature  # Restore temperature after malformed streak
-    _last_detected_func = None  # Clear forced function target after successful call
-    parts_list = response["candidates"][0].get("content", {}).get("parts", [])
-    # NOTE: empty_response_retries is reset below, after the empty-response guard passes
-
-    # Safety block — promptFeedback.blockReason is set.
+    # Safety block — promptFeedback.blockReason is set. This must be checked BEFORE the
+    # "no candidates" guard below: a PROHIBITED_CONTENT-style block has no "candidates"
+    # key at all, so if that guard ran first it would short-circuit with a bare
+    # `return response`, silently skipping the retry flow entirely.
     # Flow: 1× silent auto-retry → user embed (max 2 retries) → cancel/timeout deletes embed silently.
     _pf = response.get("promptFeedback", {})
     if isinstance(_pf, dict) and _pf.get("blockReason"):
@@ -4508,6 +4447,71 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         )
         await message.channel.send(embed=final_embed)
         return {"_empty_stop": True}
+
+    if "candidates" not in response or not response["candidates"]:
+      return response
+
+    finish_reason = response["candidates"][0].get("finishReason", "")
+    if finish_reason == "MALFORMED_FUNCTION_CALL":
+      malformed_retries += 1
+      finish_message = response["candidates"][0].get("finishMessage", "")
+      parts_so_far   = response["candidates"][0].get("content", {}).get("parts", [])
+
+      if malformed_retries <= MAX_MALFORMED_RETRIES:
+        # Detect which function was malformed
+        detected_func = detect_malformed_function(finish_message, parts_so_far)
+        _last_detected_func = detected_func  # persist for tool_config on next retry
+        console.log(
+          f"[MALFORMED] attempt {malformed_retries}/{MAX_MALFORMED_RETRIES} "
+          f"| detected_func={detected_func!r} | msg={finish_message[:120]!r}",
+          "WARN"
+        )
+        
+        console.log(f"Full respone: {response}", "DEBUG")
+
+        # Roll back history — remove bad user turn and any partial model turn
+        turn_count -= 1
+        if history and history[-1].get("role") == "user":
+          history.pop()
+        if history and history[-1].get("role") == "model":
+          history.pop()
+
+        # Build a targeted correction message
+        correction = build_malformed_retry_message(finish_message, detected_func, malformed_retries)
+        history.append({"role": "user", "parts": [{"text": correction}]})
+
+        # Lower temperature so model is less "creative" and sticks to schema
+        retry_temperature = get_retry_temperature(temperature, malformed_retries)
+
+        await asyncio.sleep(1.0 * malformed_retries)
+        continue
+      else:
+        console.log("[MALFORMED] Max retries reached, prompting user", "ERROR")
+        if message and hasattr(message, 'channel'):
+          retry_future = asyncio.get_event_loop().create_future()
+          embed = discord.Embed(
+            title="Arona ran into an issue",
+            description="Arona ran into an issue generating this response after several attempts. Would you like to retry?",
+            color=0xe74c3c
+          )
+          view = MalformedRetryView(retry_future, author_id=message.author.id)
+          view._sent_message = await message.channel.send(embed=embed, view=view)
+          try:
+            should_retry = await asyncio.wait_for(retry_future, timeout=120)
+          except asyncio.TimeoutError:
+            should_retry = False
+          if should_retry:
+            malformed_retries = 0
+            retry_temperature  = temperature  # reset temperature on manual retry
+            turn_count -= 1
+            continue
+        return {"_malformed_exhausted": True}
+
+    malformed_retries = 0  # Reset on successful response
+    retry_temperature  = temperature  # Restore temperature after malformed streak
+    _last_detected_func = None  # Clear forced function target after successful call
+    parts_list = response["candidates"][0].get("content", {}).get("parts", [])
+    # NOTE: empty_response_retries is reset below, after the empty-response guard passes
 
     # Empty response — model returned no text parts and no function call parts at all
     # (regardless of finish_reason). Retry up to MAX_MALFORMED_RETRIES times by
