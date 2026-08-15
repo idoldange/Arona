@@ -3968,12 +3968,27 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     # rate-limit/backoff windows (and through the free-pool fallback) instead of surfacing
     # an error after a handful of tries.
     effective_max_retries = BYOK_MAX_RETRIES if using_own_keys else max_retries
-    for round_num in range(effective_max_retries):
+    round_num = 0
+    # Set True right after an all-429 model switch below, to guarantee the switched-to
+    # model actually gets tried at least once even if the normal retry budget is already
+    # exhausted this call (e.g. MAX_RETRIES=1 would otherwise switch model and immediately
+    # give up in the same round, never actually sending a request with the new model).
+    # Capped so a pathological ping-pong (RATE_LIMIT_MODEL <-> RATE_LIMIT_MODEL_) can't
+    # balloon the round count — at most one bonus round per model tier.
+    _bonus_round_pending = False
+    _bonus_rounds_used = 0
+    _BONUS_ROUND_CAP = 2
+    while round_num < effective_max_retries or _bonus_round_pending:
+      _is_bonus_round = round_num >= effective_max_retries
+      _bonus_round_pending = False
       if round_num > 0:
         # Exponential backoff if last round was all-429 (per-IP rate limit)
         if _429_round_count > 0:
           delay = min(10.0 * (2 ** (_429_round_count - 1)), 120.0)
-          console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, all-429 last round — waiting {delay:.0f}s...", "WARN")
+          if _is_bonus_round:
+            console.log(f"[KEY_ROTATE] Bonus round (model just switched) — waiting {delay:.0f}s...", "WARN")
+          else:
+            console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, all-429 last round — waiting {delay:.0f}s...", "WARN")
           await asyncio.sleep(delay)
         else:
           console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, retrying all keys after delay...", "WARN")
@@ -3988,7 +4003,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         attempt_num += 1
         if attempt_num > 1 and _same_key_503_retries == 0:
           console.log(f"[KEY_ROTATE] Round {round_num + 1}, switching to key {key_idx}", "WARN")
-        console.log(f"[{model_name}] Round {round_num + 1}/{effective_max_retries}, Attempt {attempt_num}/{len(keys)} (Key {key_idx + 1})", "INFO")
+        _round_label = "Bonus round" if _is_bonus_round else f"Round {round_num + 1}/{effective_max_retries}"
+        console.log(f"[{model_name}] {_round_label}, Attempt {attempt_num}/{len(keys)} (Key {key_idx + 1})", "INFO")
         API_KEY = keys[key_idx]
         full_model_name = f"models/{model_name}" if not model_name.startswith("models/") else model_name
         url = f"{base_url}/{full_model_name}:generateContent"
@@ -4306,14 +4322,21 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           _tpm_limited_keys.clear()
           if _should_persist:
             await _update_last_working_model(RATE_LIMIT_MODEL)  # persist so next session starts on fallback
+          if _bonus_rounds_used < _BONUS_ROUND_CAP:
+            _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
+            _bonus_rounds_used += 1
         elif model_name == RATE_LIMIT_MODEL:
           console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL_} early{_scope_note}", "WARN")
           model_name = RATE_LIMIT_MODEL_
           _tpm_limited_keys.clear()
           if _should_persist:
             await _update_last_working_model(RATE_LIMIT_MODEL_)  # persist so next session starts on fallback
+          if _bonus_rounds_used < _BONUS_ROUND_CAP:
+            _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
+            _bonus_rounds_used += 1
       else:
         _429_round_count = 0
+      round_num += 1
 
     if not response and not _schema_stripped and not _thinking_stripped:
       if using_own_keys and not byok_free_quota_available:
