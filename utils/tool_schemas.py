@@ -183,16 +183,25 @@ def get_gemini_tools(
                 else:
                     tools += TOOL_GROUPS.get(group_name, [])
 
+    #if message:
+    #    if isinstance(getattr(message.author, "voice", None), discord.VoiceState) and message.author.voice.channel:
+    #        tools.append({"name": "join_voice", "description": "Join Sensei's voice channel. Only call when explicitly asked.", "parameters": {"type": "object", "properties": {}, "required": []}})
+    #    if message.guild and message.guild.voice_client and message.guild.voice_client.is_connected():
+    #        tools.append({"name": "leave_voice", "description": "Disconnect from voice channel. farewell_message sent to text channel after leaving.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string"}}, "required": []}})
+    #else:
+    #    # Voice session — append voice-specific tools
+    #    tools.append({"name": "leave_voice", "description": "Disconnect from voice channel. farewell_message sent to text channel after leaving.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string"}}, "required": []}})
+    #    tools.append({"name": "send_text_message", "description": "Send text to the associated text channel during a voice session. Use for links, code, anything awkward spoken aloud.", "parameters": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}})
     if message:
         if isinstance(getattr(message.author, "voice", None), discord.VoiceState) and message.author.voice.channel:
-            tools.append({"name": "join_voice", "description": "Join Sensei's voice channel. Only call when explicitly asked.", "parameters": {"type": "object", "properties": {}, "required": []}})
+            tools.append({"name": "join_voice", "description": "Join Sensei's voice channel. Currently not working, don't call.", "parameters": {"type": "object", "properties": {}, "required": []}})
         if message.guild and message.guild.voice_client and message.guild.voice_client.is_connected():
-            tools.append({"name": "leave_voice", "description": "Disconnect from voice channel. farewell_message sent to text channel after leaving.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string"}}, "required": []}})
+            tools.append({"name": "leave_voice", "description": "Disconnect from voice channel. farewell_message sent to text channel after leaving. Currently not working, don't call.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string"}}, "required": []}})
     else:
         # Voice session — append voice-specific tools
-        tools.append({"name": "leave_voice", "description": "Disconnect from voice channel. farewell_message sent to text channel after leaving.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string"}}, "required": []}})
+        tools.append({"name": "leave_voice", "description": "Disconnect from voice channel. farewell_message sent to text channel after leaving. Currently not working, don't call.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string"}}, "required": []}})
         tools.append({"name": "send_text_message", "description": "Send text to the associated text channel during a voice session. Use for links, code, anything awkward spoken aloud.", "parameters": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}})
-
+    #wait for lib update
     if model_name == DEFAULT_MODEL:
         # escalate thinking depth
         tools.append({"name": "escalate", "description": "Boost thinking depth for this response. Trigger: complex reasoning, math, chess analysis, code architecture, or when Sensei explicitly says 'full power' / 'think harder'. level: 'medium' = solid boost, 'high' = maximum.", "parameters": {"type": "object", "properties": {"level": {"type": "string", "enum": ["medium", "high"]}}, "required": ["level"]}})
