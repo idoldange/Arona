@@ -3654,11 +3654,11 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
           return {"error": f"HTTP {resp.status}: {text}"}
         
         if resp.status == 403:
-          console.log(f"[{model}] HTTP {resp.status}, return", "WARN")
+          console.log(f"[{model}] HTTP {resp.status}, try next key", "WARN")
           continue  # Try next key; 403 can be transient or due to key restrictions
         
         if resp.status == 401:
-          console.log(f"[{model}] HTTP {resp.status}, return", "WARN")
+          console.log(f"[{model}] HTTP {resp.status}, try next key", "WARN")
           continue  # Try next key; 401 can be transient or due to key restrictions
         if resp.status in (500, 502, 503):
           # Don't rotate key — server errors are transient. Backoff on same key.
@@ -5438,7 +5438,8 @@ async def send_and_cleanup_code_outputs(message: discord.Message, msg_id: str, s
             PREVIEW_EXTS = (".html", ".htm", ".jsx", ".tsx", ".md", ".mermaid", ".mmd",
                             ".svg", ".json", ".csv", ".pdf",
                             ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
-                            ".txt", ".log", ".py", ".sh", ".cpp", ".js", ".ts", ".go", ".rs", ".java", ".cs", ".bash", ".bat", ".ps1", ".yaml", ".yml", ".xml", ".sql", ".markdown")
+                            ".txt", ".log", ".py", ".sh", ".cpp", ".js", ".ts", ".go", ".rs", ".java", ".cs", ".bash", ".bat", ".ps1", ".yaml", ".yml", ".xml", ".sql", ".markdown",
+                            ".doc", ".docx", ".rtf", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx")
             for i in range(0, len(files_to_send), 10):
                 batch = files_to_send[i:i+10]
                 sent = await message.channel.send(
@@ -5751,11 +5752,12 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
           preview_exts = (".html", ".htm", ".jsx", ".tsx", ".md", ".mermaid", ".mmd",
                           ".svg", ".json", ".csv", ".pdf",
                           ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
-                          ".txt", ".log", ".py", ".sh", ".cpp", ".js", ".ts", ".go", ".rs", ".java", ".cs", ".bash", ".bat", ".ps1", ".yaml", ".yml", ".xml", ".sql", ".markdown")
+                          ".txt", ".log", ".py", ".sh", ".cpp", ".js", ".ts", ".go", ".rs", ".java", ".cs", ".bash", ".bat", ".ps1", ".yaml", ".yml", ".xml", ".sql", ".markdown",
+                          ".doc", ".docx", ".rtf", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx")
           html_cdn_urls = [(att.filename, att.url) for att in sent_with_files.attachments if att.filename.endswith(preview_exts)]
           if html_cdn_urls:
             preview_lines = "\n".join(
-              f"[{fname} — Preview](https://arona-ai.github.io/artifact?url={urllib.parse.quote(url, safe='')})"
+              f"[{fname} — Preview](https://arona.hangdongwibu.io/artifact/?url={urllib.parse.quote(url, safe='')})"
               for fname, url in html_cdn_urls
             )
             try:
