@@ -10,6 +10,7 @@ from discord import VoiceClient, Message
 from arona.voice_engine.src.stream import QueuedStreamingPCMAudio
 from attachment import discord_attachment_to_parts
 from console import console
+import config
 
 class GeminiWebSocket:
     def __init__(self, voice: str = 'aoede', persona: str = "You are a helpful assistant") -> None:
@@ -33,7 +34,8 @@ class GeminiWebSocket:
                  
                     }
                 },
-                "enable_affective_dialog": True
+                #"enable_affective_dialog": True
+                "thinking_level": "LOW"
             }
         }
     
@@ -89,7 +91,7 @@ class GeminiWebSocket:
         tools_config = self.tools if self.tools else [{'google_search': {}}]
         setup_msg = {
             "setup": {
-                "model": "models/gemini-2.5-flash-native-audio-preview-12-2025",
+                "model": f"models/{config.LIVE_MODEL}", #"models/gemini-2.5-flash-native-audio-preview-12-2025", # use 3.1 now
                 "generation_config": self.config["generation_config"],
                 "system_instruction": {"parts": [{"text": self.persona}]},
                 "tools": tools_config,
@@ -98,10 +100,10 @@ class GeminiWebSocket:
                     "function_calling_config": {"mode": "AUTO"}
                 },
         
-                # 2. Bật Proactive (Bỏ qua tạp âm, chỉ trả lời khi cần)
-                "proactivity": {
-                    "proactive_audio": True
-                },
+                ## 2. Bật Proactive (Bỏ qua tạp âm, chỉ trả lời khi cần)
+                #"proactivity": {
+                #    "proactive_audio": True
+                #},
         
                 # 3. Bật và cấu hình VAD (Tự động nhận diện giọng nói)
                 "realtime_input_config": {
