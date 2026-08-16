@@ -14,7 +14,22 @@ class ApiKeyModal(discord.ui.Modal, title="Add Gemini API key(s)"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        keys = apikeys.add_keys(resolve_id(interaction.user.id), str(self.keys_input.value))
+        user_id = resolve_id(interaction.user.id)
+        keys = apikeys.add_keys(user_id, str(self.keys_input.value))
+        # Newly added key(s) may fix a previously "exhausted" BYOK state (e.g. their old
+        # key(s) died, they just pasted in fresh ones) — clear the "route straight to free
+        # pool" flag and the remembered fallback model so their next request actually
+        # tries the new key(s) instead of skipping past them until midnight Pacific.
+        # Deferred import: main.py imports this module (for build_addkey_embed), so a
+        # top-level import here would be circular — importing inside the handler, once
+        # both modules are already fully loaded, avoids that.
+        try:
+            import main
+            _uid = str(user_id)
+            main._BYOK_OWN_KEYS_EXHAUSTED.pop(_uid, None)
+            main._BYOK_LAST_WORKING_MODEL.pop(_uid, None)
+        except Exception:
+            pass
         embed = discord.Embed(
             title="Key(s) added",
             description=f"You now have {len(keys)} key(s) total. Requests will use your own key(s), no daily limit applied by Arona.",

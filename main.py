@@ -300,6 +300,21 @@ STATE_FILE = "key_state.json"
 _BYOK_LAST_WORKING_KEY_INDEX: Dict[str, int] = {}
 BYOK_MAX_RETRIES = MAX_RETRIES 
 
+# Per-user flag: this BYOK user's own key(s) have already proven fully exhausted
+# (all-429 in a round) earlier today. Once set, future requests from this user skip
+# straight to the shared free pool instead of re-trying (and backing off on) key(s) we
+# already know are dead this round — saves a full doomed round of latency per message.
+# In-memory only, cleared on the daily Pacific midnight reset alongside the state above.
+_BYOK_OWN_KEYS_EXHAUSTED: Dict[str, bool] = {}
+
+# Per-user persisted model override for BYOK users, mirroring _LAST_WORKING_MODEL but
+# scoped to a single user instead of global. Set when THAT user's own key(s) hit an
+# all-429 (their key(s) specifically are rate-limited — says nothing about the shared
+# free pool's health, so it must never leak into the global override). Read back on
+# their next request so they don't have to re-discover the same fallback every message.
+# In-memory only, cleared on the daily Pacific midnight reset.
+_BYOK_LAST_WORKING_MODEL: Dict[str, str] = {}
+
 # Global backoff state — shared across concurrent requests to avoid key stampede
 _GLOBAL_BACKOFF_UNTIL: float = 0.0  # monotonic timestamp; all requests wait if now < this
 _GLOBAL_BACKOFF_LOCK = asyncio.Lock()  # serialize backoff timestamp writes
@@ -391,11 +406,17 @@ async def _check_midnight_reset():
       if _BYOK_LAST_WORKING_KEY_INDEX:
         console.log(f"[KEY_RESET] Midnight Pacific: clearing BYOK remembered-key state for {len(_BYOK_LAST_WORKING_KEY_INDEX)} user(s)", "INFO")
         _BYOK_LAST_WORKING_KEY_INDEX.clear()
+      if _BYOK_OWN_KEYS_EXHAUSTED:
+        console.log(f"[KEY_RESET] Midnight Pacific: clearing BYOK own-key-exhausted flags for {len(_BYOK_OWN_KEYS_EXHAUSTED)} user(s)", "INFO")
+        _BYOK_OWN_KEYS_EXHAUSTED.clear()
+      if _BYOK_LAST_WORKING_MODEL:
+        console.log(f"[KEY_RESET] Midnight Pacific: clearing BYOK per-user model overrides for {len(_BYOK_LAST_WORKING_MODEL)} user(s)", "INFO")
+        _BYOK_LAST_WORKING_MODEL.clear()
       if _changed:
         await _save_key_state()
     _KEY_RESET_DATE = today
 
-def _build_key_order(num_own_keys: int, num_free_keys: int, byok_user_id: "str | None") -> list:
+def _build_key_order(num_own_keys: int, num_free_keys: int, byok_user_id: "str | None", skip_own: bool = False) -> list:
   """Build the attempt order over a `keys` list shaped as own_keys + GEMINI_API_KEY
   (own keys occupy indices [0, num_own_keys), free keys occupy [num_own_keys, end)).
 
@@ -404,11 +425,16 @@ def _build_key_order(num_own_keys: int, num_free_keys: int, byok_user_id: "str |
   (_LAST_WORKING_KEY_INDEX) and wraps, offset into the combined list by num_own_keys.
   Own keys are always tried before falling back to the free pool.
 
+  skip_own: when True (this user's own key(s) already confirmed all-429'd earlier today,
+  see _BYOK_OWN_KEYS_EXHAUSTED), the own-key portion is left out entirely and the order
+  goes straight to the free pool — no point re-trying (and backing off on) keys we
+  already know are dead for the rest of the day.
+
   When num_own_keys == 0 (plain free-pool request) this reduces to exactly the old
   free-pool-only ordering.
   """
   own_order = []
-  if num_own_keys:
+  if num_own_keys and not skip_own:
     own_start = _BYOK_LAST_WORKING_KEY_INDEX.get(byok_user_id, 0)
     if not (0 <= own_start < num_own_keys):
       own_start = 0
@@ -3408,11 +3434,9 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
   """
   # Use config defaults if parameters not provided
   model_name = model_name or DEFAULT_MODEL
-  # Apply persisted model override (e.g. RATE_LIMIT_MODEL saved after all-429 last session)
-  # Only override when caller didn't explicitly request a non-default model.
-  if _LAST_WORKING_MODEL and model_name == DEFAULT_MODEL:
-    console.log(f"[KEY_STATE] Applying persisted model override: {_LAST_WORKING_MODEL}", "INFO")
-    model_name = _LAST_WORKING_MODEL
+  # Whether the caller explicitly asked for a specific (non-default) model — if so, no
+  # override (global or per-user) should touch it. Checked before any override is applied.
+  _model_explicitly_requested = model_name != DEFAULT_MODEL
   temperature = temperature if temperature is not None else DEFAULT_TEMPERATURE
   max_retries = max_retries or MAX_RETRIES
   timeout = timeout or DEFAULT_TIMEOUT
@@ -3445,7 +3469,21 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
       keys = own_keys + GEMINI_API_KEY
       using_own_keys = True
       num_own_keys = len(own_keys)
-  
+
+  # Apply a persisted model override (e.g. RATE_LIMIT_MODEL saved after an earlier
+  # all-429), but only when the caller didn't explicitly request a specific model. A BYOK
+  # user's own remembered fallback (_BYOK_LAST_WORKING_MODEL, set when THEIR own key(s)
+  # got rate-limited) takes priority over the global free-pool override, since it reflects
+  # their key(s)' state specifically and says nothing about the shared pool's health.
+  if not _model_explicitly_requested:
+    _byok_model_override = _BYOK_LAST_WORKING_MODEL.get(byok_user_id) if using_own_keys else None
+    if _byok_model_override:
+      console.log(f"[KEY_STATE] Applying BYOK per-user model override for {byok_user_id}: {_byok_model_override}", "INFO")
+      model_name = _byok_model_override
+    elif _LAST_WORKING_MODEL:
+      console.log(f"[KEY_STATE] Applying persisted model override: {_LAST_WORKING_MODEL}", "INFO")
+      model_name = _LAST_WORKING_MODEL
+
   if enable_functions:
     return await _ask_gemini_with_functions(
       model_name=model_name,
@@ -3592,9 +3630,12 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
     
     # Smart key selection: own keys first (if BYOK), then fall back into the shared free
     # pool starting from its own remembered index. See _build_key_order for details.
+    # If this user's own key(s) already proved exhausted earlier today, skip them and go
+    # straight to the free pool instead of re-trying known-dead keys.
     num_keys = len(keys)
     num_free_keys = num_keys - num_own_keys
-    key_order = _build_key_order(num_own_keys, num_free_keys, byok_user_id)
+    _skip_own_keys = using_own_keys and _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id, False)
+    key_order = _build_key_order(num_own_keys, num_free_keys, byok_user_id, skip_own=_skip_own_keys)
     blocked = 0
     # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
     # rate-limit/backoff windows (and through the free-pool fallback) instead of surfacing
@@ -3953,9 +3994,23 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     if using_own_keys:
       byok_free_quota_available = apikeys.check_quota(byok_user_id, ignore_own_key=True)
     usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
-    # Own keys first (if BYOK), then fall back into the shared free pool starting from
-    # its own remembered index. See _build_key_order for details.
-    key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id)
+    # If this user's own key(s) already proved fully exhausted (all-429) earlier today,
+    # skip them entirely and go straight to the free pool — no point burning a doomed
+    # round re-trying (and backing off on) keys we already know are dead for today.
+    _skip_own_keys = using_own_keys and _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id, False)
+    # Own keys first (if BYOK and not already known-exhausted), then fall back into the
+    # shared free pool starting from its own remembered index. See _build_key_order.
+    key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
+    # How many own-key slots are actually present in key_order this turn — used below to
+    # tell whether an all-429 round genuinely implicates (and exhausts) this user's own
+    # keys, vs. a round that only ever contained free-pool keys (already-skipped own keys).
+    own_keys_in_order = 0 if _skip_own_keys else num_own_keys
+
+    # Nothing left to try this request: own key(s) already confirmed exhausted today AND
+    # the free-tier fallback allowance is also used up. Bail immediately instead of
+    # looping through empty rounds (key_order would be [] — no key to even attempt).
+    if using_own_keys and _skip_own_keys and not byok_free_quota_available:
+      return {"error": "byok_quota_exhausted", "details": f"User {byok_user_id}'s own key(s) previously confirmed exhausted today, and free-tier fallback allowance is also used up."}
 
     response = None
     last_error_detail = None
@@ -4281,7 +4336,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               if not keys:
                 return {"error": "403", "details": "All API keys have been suspended."}
 
-              key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id)
+              key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
+              own_keys_in_order = 0 if _skip_own_keys else num_own_keys
               key_pos = min(key_pos, len(key_order) - 1)
               await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
               continue
@@ -4300,7 +4356,9 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       if response or _schema_stripped or _thinking_stripped:
         break
       # Update consecutive 429-round counter for backoff + early model switch
-      if _round_429_count == len(key_order):
+      # (key_order guard: an empty key_order — e.g. all keys just got suspended out from
+      # under this round — must never look like a "genuine all-429" round)
+      if key_order and _round_429_count == len(key_order):
         _429_round_count += 1
         # All keys hit non-TPM 429 → switch to RATE_LIMIT_MODEL immediately on first all-429 round
         # (RPD / RPM exhausted — no point retrying same model with same keys)
@@ -4316,12 +4374,23 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         _free_pool_exhausted_this_round = usable_free_keys > 0 and _free_429_count == usable_free_keys
         _should_persist = (not using_own_keys) or _free_pool_exhausted_this_round
         _scope_note = "" if _should_persist else " (BYOK own-key only — switching locally for this user, NOT persisted globally)"
+        # If this user's own key(s) were actually part of key_order this round (i.e. not
+        # already skipped as known-exhausted) and the round still all-429'd, their own
+        # key(s) are exhausted for today too — remember it so their NEXT request skips
+        # straight to the free pool instead of re-discovering the same thing from scratch.
+        if using_own_keys and own_keys_in_order > 0 and not _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id):
+          console.log(f"[BYOK] User {byok_user_id}'s own key(s) exhausted (all-429 this round) — will route straight to free pool for the rest of today", "WARN")
+          _BYOK_OWN_KEYS_EXHAUSTED[byok_user_id] = True
         if model_name != RATE_LIMIT_MODEL:
           console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL} early{_scope_note}", "WARN")
           model_name = RATE_LIMIT_MODEL
           _tpm_limited_keys.clear()
           if _should_persist:
             await _update_last_working_model(RATE_LIMIT_MODEL)  # persist so next session starts on fallback
+          if using_own_keys:
+            # Per-user fallback, independent of the global override — read back on this
+            # same user's next request even when the global state stays untouched.
+            _BYOK_LAST_WORKING_MODEL[byok_user_id] = RATE_LIMIT_MODEL
           if _bonus_rounds_used < _BONUS_ROUND_CAP:
             _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
             _bonus_rounds_used += 1
@@ -4331,6 +4400,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           _tpm_limited_keys.clear()
           if _should_persist:
             await _update_last_working_model(RATE_LIMIT_MODEL_)  # persist so next session starts on fallback
+          if using_own_keys:
+            _BYOK_LAST_WORKING_MODEL[byok_user_id] = RATE_LIMIT_MODEL_
           if _bonus_rounds_used < _BONUS_ROUND_CAP:
             _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
             _bonus_rounds_used += 1
@@ -7221,6 +7292,13 @@ async def on_message(message):
       console.log(f"[forgetme] message wipe failed for {user_id}: {e}", "ERROR")
     delete_key(message.author.id)
     apikeys.delete_all(resolve_id(message.author.id))
+    # Also drop any in-memory BYOK state we're holding on this user (remembered key
+    # index, exhausted-today flag, per-user model override) — forgetme should wipe
+    # everything Arona remembers about them, not just what's on disk.
+    _forgetme_uid = str(resolve_id(message.author.id))
+    _BYOK_LAST_WORKING_KEY_INDEX.pop(_forgetme_uid, None)
+    _BYOK_OWN_KEYS_EXHAUSTED.pop(_forgetme_uid, None)
+    _BYOK_LAST_WORKING_MODEL.pop(_forgetme_uid, None)
 
     await send_with_retry(
       message.channel,
