@@ -3637,6 +3637,11 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
     _skip_own_keys = using_own_keys and _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id, False)
     key_order = _build_key_order(num_own_keys, num_free_keys, byok_user_id, skip_own=_skip_own_keys)
     blocked = 0
+    # PROHIBITED_CONTENT-style blocks (promptFeedback.blockReason) come from the safety
+    # classifier judging the CONTENT of the prompt — the API key used is irrelevant, so
+    # rotating through key_order chasing a different outcome is pointless and just burns
+    # through the key list. Retry once (classifier calls can be flaky) then stop.
+    _prompt_block_retried = False
     # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
     # rate-limit/backoff windows (and through the free-pool fallback) instead of surfacing
     # an error after a handful of tries.
@@ -3661,10 +3666,23 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
               block_reason = feedback.get("blockReason", "UNKNOWN")
               console.log(f"[PROMPT_BLOCKED] Model: {model}, Reason: {block_reason}", "WARN")
               blocked += 1
-              if blocked >= 3:
-                console.log(f"[{model}] Multiple prompt blocks detected.", "WARN")
-                return data
-              continue
+              # Content-level block — switching key never changes this, so don't fall
+              # through into `continue` (which would move on to the next key in
+              # key_order). Retry once on the SAME key in case the classifier call was
+              # flaky, then give up immediately instead of burning through every key.
+              if not _prompt_block_retried:
+                _prompt_block_retried = True
+                console.log(f"[{model}] Prompt blocked ({block_reason}), retrying once on the same key...", "WARN")
+                await asyncio.sleep(1.5)
+                resp = await send_request(model, API_KEY, payload)
+                if resp and resp.status == 200:
+                  data = await resp.json()
+                  _pf2 = data.get("promptFeedback", {})
+                  if not (isinstance(_pf2, dict) and _pf2.get("blockReason")):
+                    await _remember_working_key(num_own_keys, byok_user_id, key_idx)
+                    return data
+                  console.log(f"[{model}] Still blocked after retry ({_pf2.get('blockReason')}), giving up — not rotating keys.", "WARN")
+              return data
           
           return data
 
@@ -3734,10 +3752,13 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
                 if feedback.get("blockReason"):
                   block_reason = feedback.get("blockReason", "UNKNOWN")
                   console.log(f"[PROMPT_BLOCKED] Model: {model}, Reason: {block_reason}", "WARN")
-                  if blocked >= 3:
-                    console.log(f"[{model}] Multiple prompt blocks detected.", "WARN")
-                    return data
-                  continue  # Treat as blocked and try next key
+                  blocked += 1
+                  # Same rule as above: content-level block, key-independent — a 503
+                  # backoff already implicitly retried this key once, so don't rotate
+                  # keys chasing a different verdict. Give up right here.
+                  console.log(f"[{model}] Blocked after 503 backoff retry — not rotating keys, giving up.", "WARN")
+                  _prompt_block_retried = True
+                  return data
               _recovered = True
               return data
             if resp.status not in (500, 502, 503):
