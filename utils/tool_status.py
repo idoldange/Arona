@@ -62,6 +62,9 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
         name_tag = f" `{fname}`" if fname else ""
         return f"-# <:run_code:1484030903297511535> Peeking at{name_tag}..."
 
+    elif func_name == "cleanup_sandbox":
+        return "-# <:run_code:1484030903297511535> Wiping sandbox workspace..."
+
     elif func_name == "read_skills":
         skills = func_args.get("skills", [])
         if skills:
@@ -92,6 +95,15 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
         if new_name:
             return f"-# <:edit_file:1484030881965543536> Editing and renaming to {new_name}..."
         return f"-# <:edit_file:1484030881965543536> Editing {fname}..."
+
+    elif func_name == "find_str":
+        queries = func_args.get("queries", [])
+        ref = func_args.get("file_ref", "")
+        label = (ref[:8] + "...") if len(ref) > 12 else ref
+        if queries:
+            q_str = ", ".join(f"'{q}'" for q in queries[:2])
+            return f"-# <:read_file:1484030897463230708> Searching `{label}` for {q_str}..."
+        return f"-# <:read_file:1484030897463230708> Searching `{label}`..."
 
     elif func_name == "send_files":
         count = len(func_args.get("file_refs", []))
@@ -126,6 +138,11 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
             return f"-# <:rag:1484030895441711284> Querying memory for '{query}'..."
         return "-# <:rag:1484030895441711284> Querying memory..."
 
+    elif func_name == "rag_delete":
+        doc_id = func_args.get("doc_id", "")
+        label = f" `{doc_id[:8]}...`" if doc_id else ""
+        return f"-# <:rag:1484030895441711284> Deleting memory{label}..."
+
     elif func_name == "channel_memory":
         action = func_args.get("action", "get")
         if action == "get":
@@ -152,12 +169,31 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
             return "-# <:fetch_history:1484030886914556065> Searching chat history..."
         return "-# <:fetch_history:1484030886914556065> Fetching recent history..."
 
+    elif func_name == "load_more_context":
+        limit = func_args.get("limit", 30)
+        return f"-# <:fetch_history:1484030886914556065> Loading {limit} more channel messages..."
+
     # blue archive
     elif func_name == "schaledb_query":
         query = func_args.get("query", func_args.get("action", ""))
         if query:
             return f"-# <:schaledb:1484030907584090183> Querying Schale database for '{query}'..."
         return "-# <:schaledb:1484030907584090183> Querying Schale database..."
+
+    elif func_name == "student_birthday":
+        action = func_args.get("action", "")
+        if action == "find":
+            name = func_args.get("name", "")
+            return f"-# <:schaledb:1484030907584090183> Looking up {name}'s birthday..." if name else "-# <:schaledb:1484030907584090183> Looking up student birthday..."
+        elif action == "today":
+            return "-# <:schaledb:1484030907584090183> Checking today's birthdays..."
+        elif action == "date":
+            month = func_args.get("month")
+            day = func_args.get("day")
+            if month and day:
+                return f"-# <:schaledb:1484030907584090183> Checking birthdays on {month}/{day}..."
+            return "-# <:schaledb:1484030907584090183> Checking birthdays by date..."
+        return "-# <:schaledb:1484030907584090183> Checking student birthdays..."
 
     elif func_name == "gacha_tracker":
         action = func_args.get("action", "status")
@@ -218,6 +254,13 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
 
     elif func_name == "schedule_task":
         return "-# <:schedule:1484030910960767137> Scheduling a task..."
+
+    elif func_name == "schedule_loop":
+        loop_type = func_args.get("loop_type", "")
+        action = func_args.get("action", "")
+        kind = "recurring task" if action == "task" else "recurring message"
+        type_tag = f" [{loop_type}]" if loop_type else ""
+        return f"-# <:schedule:1484030910960767137> Scheduling {kind}{type_tag}..."
 
     elif func_name == "list_user_tasks":
         return "-# <:schedule:1484030910960767137> Checking your scheduled tasks..."
@@ -310,6 +353,9 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
 
     elif func_name == "leave_voice":
         return "-# <:leave_voice:1484030890282713201> Leaving voice channel..."
+
+    elif func_name == "send_text_message":
+        return "-# <:default:1484030880438816989> Sending a text message to the channel..."
 
     # escalation
     elif func_name == "escalate":
