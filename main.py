@@ -4534,6 +4534,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           description=(
             "Request blocked due to [our policy](https://ai.google.dev/gemini-api/terms). "
             "This may be a false positive."
+            "\n This message will be deleted in 30 seconds."
           ),
           color=0xe74c3c,
         )
@@ -6867,6 +6868,8 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
         used, limit = apikeys.get_quota_status(resolve_id(message.author.id))
         reset_ts = _next_midnight_pacific_ts()
         await send_with_retry(message.channel, f"Daily free message limit reached ({used}/{limit}). Resets <t:{reset_ts}:R>.\nType `!arona addkey` to use your own key instead (don't worry, it's free).")
+        console.log(f"User {message.author.display_name}'s daily free message limit reached ({used}/{limit}). Resets <t:{reset_ts}:R>.", "INFO")
+        console.log("===== [END MESSAGE] =====", "INFO")
         return
 
       raw_reply = await ask_gemini(model_name, reply_text, attachments=gemini_attachments, sys_prompt=True, msg_history=history, temperature=temperature, timeout=60000, enable_functions=True, message=message, typing_pause_event=_pause_typing, rules=special_rules, level="low", safety_note=safety_note)
@@ -7925,6 +7928,8 @@ async def main():
   console.log(f"Python version: {sys.version}", "INFO")
   console.log(f"OS: {os.name}, Platform: {sys.platform}", "INFO")
   console.log(f"Total Gemini API keys: {len(GEMINI_API_KEY)}", "INFO")
+  _load_key_state()
+  console.log(f"Current Gemini API key idx: {_LAST_WORKING_KEY_INDEX} | Model: {_LAST_WORKING_MODEL if _LAST_WORKING_MODEL else DEFAULT_MODEL}", "INFO")
   # Preload chess piece assets so images are ready on startup
   try:
     chess_manager.preload_assets()
