@@ -40,7 +40,7 @@ started = False
 console.log("Starting Arona bot...", "INFO")
 import time
 from uuid import uuid4
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from utils.scheduler import *
 from utils.memory import memory
 from utils.migration_keys import get_or_create_key, reset_key, resolve_id, link_account, unlink_account, is_linked, delete_key
@@ -5627,29 +5627,37 @@ async def send_with_retry(channel, *args, max_retries=3, initial_delay=1, **kwar
           raise
       else:
         raise
-    except (asyncio.TimeoutError, ConnectionError, OSError) as e:
-      # Transient connection errors - should retry
+    except asyncio.TimeoutError as e:
+      # AMBIGUOUS: a local timeout waiting for Discord's HTTP response does NOT
+      # mean the request failed to reach Discord - the message may have already
+      # been created server-side while the ack was lost/delayed in transit.
+      # Retrying here risks sending a real duplicate message, so we do NOT retry.
+      console.log(f"[SEND_RETRY] Timeout waiting for send ack (message may have still been delivered) - NOT retrying to avoid duplicate: {e}", "ERROR")
+      raise
+    except (ConnectionError, OSError) as e:
+      # Only safe to retry connection errors that happen establishing the
+      # connection (i.e. before any request reached Discord). If the error
+      # occurred after the request was sent, we can't tell - treat as ambiguous
+      # and don't retry.
       last_error = e
-      if attempt < max_retries:
-        console.log(f"[SEND_RETRY] Transient error on attempt {attempt + 1}/{max_retries + 1}, retrying in {delay}s: {type(e).__name__}", "WARN")
-        await asyncio.sleep(delay)
-        delay *= 2
-      else:
-        console.log(f"[SEND_RETRY] Transient error failed after {max_retries + 1} attempts", "ERROR")
-        raise
+      console.log(f"[SEND_RETRY] Connection error, NOT retrying to avoid duplicate send: {type(e).__name__}: {e}", "ERROR")
+      raise
     except Exception as e:
-      # Check if it's an HTTP error with transient indicators
+      # Check if it's an HTTP error that is UNAMBIGUOUSLY safe to retry
+      # (Discord explicitly rejected the request before creating anything).
       err_str = str(e)
-      if any(indicator in err_str for indicator in ["503", "upstream connect", "connection failure", "Connection reset", "aiohttp", "ClientConnectorError"]):
+      if "503" in err_str or "upstream connect" in err_str:
         last_error = e
         if attempt < max_retries:
-          console.log(f"[SEND_RETRY] HTTP transient error on attempt {attempt + 1}/{max_retries + 1}, retrying in {delay}s: {e}", "WARN")
+          console.log(f"[SEND_RETRY] HTTP 503 on attempt {attempt + 1}/{max_retries + 1}, retrying in {delay}s: {e}", "WARN")
           await asyncio.sleep(delay)
           delay *= 2
         else:
-          console.log(f"[SEND_RETRY] HTTP transient error failed after {max_retries + 1} attempts", "ERROR")
+          console.log(f"[SEND_RETRY] HTTP 503 failed after {max_retries + 1} attempts", "ERROR")
           raise
       else:
+        # connection reset / aiohttp / ClientConnectorError mid-request are
+        # ambiguous (may have reached Discord already) - don't retry blindly.
         raise
   
   if last_error:
@@ -7098,9 +7106,30 @@ async def on_ready():
     traceback_str = traceback.format_exc()
     console.log(traceback_str, "ERROR")
 
+_recently_processed_message_ids = deque(maxlen=1000)
+_recently_processed_message_id_set = set()
+
+def _is_duplicate_message_dispatch(message_id: int) -> bool:
+  """
+  Discord's gateway can occasionally re-dispatch MESSAGE_CREATE for a message
+  that was already handled (e.g. around reconnects/RESUME). Guard against
+  processing (and replying to) the same message.id twice.
+  """
+  if message_id in _recently_processed_message_id_set:
+    return True
+  _recently_processed_message_ids.append(message_id)
+  _recently_processed_message_id_set.add(message_id)
+  if len(_recently_processed_message_ids) > 1000:
+    oldest = _recently_processed_message_ids.popleft()
+    _recently_processed_message_id_set.discard(oldest)
+  return False
+
 @client.event
 async def on_message(message):
   if message.author.id == client.user.id:
+    return
+  if _is_duplicate_message_dispatch(message.id):
+    console.log(f"[DEDUPE] Ignored duplicate on_message dispatch for message {message.id}", "WARN")
     return
   if message.channel.id in IGNORED_CHANNELS:
     return
