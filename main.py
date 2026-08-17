@@ -7215,7 +7215,7 @@ async def on_message(message):
     permissions = message.channel.permissions_for(message.author)
     
     if not permissions.manage_channels:
-      await send_with_retry(message.channel, "You need the `Manage Channels` permission to use this command.")
+      await message.channel.send(message.channel, "You need the `Manage Channels` permission to use this command.")
       return
     
     console.log(f"User {message.author.display_name} used !arona channel command", "INFO")
@@ -7249,7 +7249,7 @@ async def on_message(message):
     if not is_dm:
       permissions = message.channel.permissions_for(message.author)
       if not permissions.manage_messages:
-        await send_with_retry(message.channel, "You need the `Manage Messages` permission or in DM to use this command.")
+        await message.channel.send("You need the `Manage Messages` permission or in DM to use this command.")
         return
     
     console.log(f"User {message.author.display_name} used !arona clear command", "INFO")
