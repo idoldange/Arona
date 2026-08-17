@@ -4537,7 +4537,16 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           ),
           color=0xe74c3c,
         )
-        await message.channel.send(embed=final_embed)
+        msg_blocked = await message.channel.send(embed=final_embed)
+        # Delete embed after 30s(fire and forget)
+        async def delete_blocked_embed(msg):
+          await asyncio.sleep(30)
+          try:
+            await msg.delete()
+          except Exception:
+            pass
+          
+        asyncio.create_task(delete_blocked_embed(msg_blocked))
         return {"_empty_stop": True}
 
     if "candidates" not in response or not response["candidates"]:
