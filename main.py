@@ -4362,6 +4362,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               key_pos = min(key_pos, len(key_order) - 1)
               await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
               continue
+            #try next key 
+            console.log(f"[403] Key {key_idx} has been suspended, trying next", "WARN")
+            key_pos += 1
+            _same_key_503_retries = 0
+            continue
             
           if resp.status == 401:
             console.log(f"[401] Key {key_idx} unauthorized, trying next", "WARN")
