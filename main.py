@@ -6405,7 +6405,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
       web_history = []
       tasks = []
       console.log("===== [NEW MESSAGE] =====", "INFO")
-      console.log(f"User: {message.author.display_name if message.channel else '***'}", "INFO", is_user_msg=True)
+      console.log(f"User: {message.author.display_name}({message.author.id})", "INFO", is_user_msg=True)
       console.log(f"Guild: {getattr(message.guild, 'name', 'DMs')}{' (' + str(message.guild.id) + ')' if message.guild else ''}", "INFO", is_user_msg=True)
       console.log(f"Channel: {message.channel.name if hasattr(message.channel, 'name') else 'DMs'}{f'({message.channel.id})' if hasattr(message.channel, 'id') else ''}", "INFO", is_user_msg=True)
 
