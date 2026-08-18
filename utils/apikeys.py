@@ -44,8 +44,13 @@ def _enc(keys: list[str]) -> bytes:
     return _fernet.encrypt(json.dumps(keys).encode())
 
 
+def _clean(k: str) -> str:
+    return k.strip().strip('"\'').strip()
+
+
 def _dec(blob: bytes) -> list[str]:
-    return json.loads(_fernet.decrypt(blob).decode())
+    keys = json.loads(_fernet.decrypt(blob).decode())
+    return [_clean(k) for k in keys if _clean(k)]
 
 
 def _today() -> str:
@@ -54,7 +59,7 @@ def _today() -> str:
 
 
 def add_keys(user_id: int, raw: str) -> list[str]:
-    new_keys = [k.strip() for k in raw.split(",") if k.strip()]
+    new_keys = [_clean(k) for k in raw.split(",") if _clean(k)]
     existing = get_keys(user_id) or []
     keys = existing + new_keys
     with _conn() as c:
