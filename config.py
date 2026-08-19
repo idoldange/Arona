@@ -12,11 +12,11 @@ INFLIGHT_DELAY   = 10.0                                           # seconds to c
 
 # ── Gemini API ───────────────────────────────────────────────
 
-DEFAULT_MODEL       = "gemini-3.6-flash"
-FALLBACK_MODEL      = "gemini-3.6-flash"     # 503
-RATE_LIMIT_MODEL    = "gemini-3.7-flash"     # 429
+DEFAULT_MODEL       = "gemini-3.7-flash"
+FALLBACK_MODEL      = "gemini-3.7-flash"     # 503
+RATE_LIMIT_MODEL    = "gemini-3.6-flash"     # 429
 RATE_LIMIT_MODEL_   = "gemini-3.5-flash"     # 429 on RATE_LIMIT_MODEL
-LITE_MODEL          = "gemini-3.1-flash-lite"
+LITE_MODEL          = "gemini-3.5-flash-lite"
 LIVE_MODEL          = "gemini-3.1-flash-live-preview"
 DEFAULT_TEMPERATURE = 1.0
 MAX_RETRIES         = 1        # rounds
