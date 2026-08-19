@@ -143,6 +143,7 @@ if api_keys_json_str:
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 KLIPY_API_KEY = os.getenv("KLIPY_API_KEY")
 GIPHY_API_KEY = os.getenv("GIPHY_API_KEY")
+CF_WORKER_URL = os.getenv("CF_WORKER_URL")  # optional Cloudflare Worker proxy in front of the Gemini API — only used when USE_CF_WORKER_PROXY (config.py) is True
 
 # Cache for resolved GIF/link-attachment fetches (see "§ LINK-BASED MEDIA AUTO-PARSING"
 # below). These should be set in config.py — `from config import *` above already pulled
@@ -3406,6 +3407,108 @@ def _is_tpm_limit(body_text: str) -> bool:
   body_lower = body_text.lower()
   return ("token" in body_lower and "per_minute" in body_lower) or "input_token" in body_lower
 
+
+# How much of a stripped part's original content survives one strip pass. Stripping
+# happens ONE part at a time (biggest bang, smallest change) so a request only loses as
+# much context as actually needed to get under the token/min ceiling — see
+# _strip_largest_history_part, used when ALL keys hit a TPM 429 on the same payload size.
+_CTX_STRIP_KEEP_CHARS = 300
+_CTX_STRIP_MARKER = " …[truncated to fit context]"
+# TPM (token/min) 429s are a property of the PAYLOAD SIZE, not of which key served the
+# request — if key #1 hits it, key #2 almost certainly will too, since it's the same
+# oversized body. Waiting for the ENTIRE key pool to individually confirm this (a "round")
+# can mean hundreds of wasted requests if the pool is large. So strip after only a
+# handful of keys agree it's a size problem — cheap (a few requests) — instead of
+# waiting for a full round.
+_TPM_STRIP_AFTER_KEYS = 2
+
+def _ctx_part_size(part: dict) -> int:
+  """Rough size (characters) of a Gemini content part, used to rank strip candidates."""
+  try:
+    if "functionResponse" in part or "function_response" in part:
+      resp = (part.get("functionResponse") or part.get("function_response") or {}).get("response", {})
+      return len(json.dumps(resp, ensure_ascii=False, default=str))
+    if "inline_data" in part or "inlineData" in part:
+      data = (part.get("inline_data") or part.get("inlineData") or {}).get("data", "")
+      return len(data)
+    if "text" in part and isinstance(part.get("text"), str):
+      return len(part["text"])
+  except Exception:
+    pass
+  return 0
+
+def _strip_largest_history_part(history: list, stripped_ids: set) -> str | None:
+  """
+  Shrink the single biggest strippable part still left in `history` to relieve TPM
+  (token-per-minute) pressure after ALL keys hit a token-quota 429 on the current
+  payload size. Mutates `history` in place (contents is rebuilt from it next turn).
+  Returns a short description of what was stripped, or None if nothing strippable is
+  left — at which point the caller gives up and reports context-too-large to the user.
+
+  Priority order (least destructive to answer quality first):
+    1. functionResponse results (tool output — run_code stdout, web_search/crawl
+       results, view_dir dumps, etc.) — usually the biggest, and the model's own
+       reasoning already summarized around it, so losing the raw output hurts least.
+    2. inline_data attachments (base64 images/files) — dropped entirely.
+    3. Raw text parts (actual conversation turns) — last resort, kept as head+tail
+       so at least some surrounding context survives.
+  Within the same tier, the OLDEST turn is stripped first — old context is generally
+  the least relevant to the current request.
+  """
+  best = None  # (priority, turn_idx, part_idx, part, size)
+  for t_idx, turn in enumerate(history):
+    turn_parts = turn.get("parts", [])
+    if not isinstance(turn_parts, list):
+      continue
+    for p_idx, part in enumerate(turn_parts):
+      if not isinstance(part, dict) or id(part) in stripped_ids:
+        continue
+      size = _ctx_part_size(part)
+      if "functionResponse" in part or "function_response" in part:
+        if size <= _CTX_STRIP_KEEP_CHARS:
+          continue
+        priority = 0
+      elif "inline_data" in part or "inlineData" in part:
+        if size <= 0:
+          continue
+        priority = 1
+      elif "text" in part and isinstance(part.get("text"), str) and size > _CTX_STRIP_KEEP_CHARS * 2:
+        priority = 2
+      else:
+        continue
+      cand = (priority, t_idx, p_idx, part, size)
+      if best is None or (cand[0], cand[1]) < (best[0], best[1]):
+        best = cand
+
+  if best is None:
+    return None
+
+  priority, t_idx, p_idx, part, size = best
+
+  if priority == 0:
+    key = "functionResponse" if "functionResponse" in part else "function_response"
+    resp = part[key].get("response", {})
+    truncated = False
+    for rk, rv in list(resp.items()):
+      if isinstance(rv, str) and len(rv) > _CTX_STRIP_KEEP_CHARS:
+        resp[rk] = rv[:_CTX_STRIP_KEEP_CHARS] + _CTX_STRIP_MARKER
+        truncated = True
+        break
+    if not truncated:
+      part[key]["response"] = {"result": "[tool output truncated to fit context]"}
+    stripped_ids.add(id(part))
+    return f"functionResponse in history turn {t_idx} ({size} chars)"
+
+  if priority == 1:
+    history[t_idx]["parts"][p_idx] = {"text": "[attachment removed to fit context]"}
+    return f"inline attachment in history turn {t_idx} ({size} chars)"
+
+  # priority == 2 — last resort: shrink a raw text part, keep head + tail
+  txt = part["text"]
+  part["text"] = txt[:150] + _CTX_STRIP_MARKER + txt[-150:]
+  stripped_ids.add(id(part))
+  return f"text part in history turn {t_idx} ({size} chars)"
+
 async def ask_gemini(model_name: str = None, text: str = "", attachments: list = None, temperature: float = None, max_retries: int = None, sys_prompt: bool = True, timeout: int = None, custom_sys_prompt:str=None, msg_history="", enable_functions: bool = True, max_function_turns: int = None, level: str = None, message: discord.Message = None, typing_pause_event: asyncio.Event = None, thinking_budget: int | None = None, rules=None, safety_note="") -> dict:
   """
   Send a prompt to the Gemini API with smart key fallback.
@@ -3820,7 +3923,12 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   global GEMINI_API_KEY
 
   keys = GEMINI_API_KEY
-  base_url = "https://generativelanguage.googleapis.com/v1beta"
+  # Direct to Google by default; routed through a Cloudflare Worker reverse proxy
+  # instead when USE_CF_WORKER_PROXY is on and CF_WORKER_URL (.env) is set. The worker
+  # is expected to mirror the real API's path/header contract — see cf_worker.js.
+  base_url = (
+    CF_WORKER_URL.rstrip("/") if (USE_CF_WORKER_PROXY and CF_WORKER_URL) else "https://generativelanguage.googleapis.com"
+  ) + "/v1beta"
   # BYOK gets its own key-rotation identity and its own remembered-index state
   # (_BYOK_LAST_WORKING_KEY_INDEX), kept fully separate from the shared free-key pool's
   # _LAST_WORKING_KEY_INDEX so a BYOK request never resets the free pool's remembered
@@ -3856,6 +3964,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   _safety_block_user_retries = 0     # number of user-triggered retries for safety block
   MAX_SAFETY_BLOCK_USER_RETRIES = 2
   _tpm_limited_keys: set = set()
+  _ctx_stripped_ids: set = set()  # ids of content parts already shrunk to relieve TPM pressure — persists across turn_count rebuilds since `history` is mutated in place, so a part already stripped is never re-selected
   _last_detected_func: str | None = None  # persists detected function across malformed retries
   _disable_thinking = False  # set once a model rejects thinkingConfig (e.g. after fallback to a non-thinking model); persists for rest of call
   _consecutive_tool_rounds = 0  # counts consecutive rounds where the model called at least one function; reset whenever a round has no function call
@@ -4038,6 +4147,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     _429_round_count = 0  # track consecutive rounds where ALL keys returned 429
     _schema_stripped = False  # set when 400 "too much branching" strips tool_config mid-retry
     _thinking_stripped = False  # set when 400 "Thinking level/budget not supported" strips thinkingConfig mid-retry
+    _context_stripped = False  # set when ALL keys hit TPM 429 and we shrank a history part instead of giving up
     _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
     # _overload_msg stored globally keyed by channel so send_reply can delete it
     # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
@@ -4211,10 +4321,23 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               _free_429_count += 1
             if _is_tpm_limit(body_text):
               _tpm_limited_keys.add(key_idx)
-              console.log(f"[429-TPM] Key {key_idx} hit token/min limit ({len(_tpm_limited_keys)}/{len(key_order)} keys)", "WARN")
+              _strip_threshold = min(_TPM_STRIP_AFTER_KEYS, len(key_order))
+              console.log(f"[429-TPM] Key {key_idx} hit token/min limit ({len(_tpm_limited_keys)}/{_strip_threshold} before stripping)", "WARN")
               await asyncio.sleep(1.0 * (round_num + 1))  # back off before next key attempt
-              if len(_tpm_limited_keys) >= len(key_order):
-                return {"error": "context_too_large", "details": "Input token/min limit exceeded on all keys"}
+              if len(_tpm_limited_keys) >= _strip_threshold:
+                # A couple of keys already agree the payload itself is too big for the
+                # token/min ceiling — no point burning through the rest of the (possibly
+                # large) key pool to confirm the same thing. Shrink the single biggest
+                # strippable part (oldest tool output / attachment / text turn first) and
+                # give ALL keys a fresh full round with the smaller payload.
+                stripped_desc = _strip_largest_history_part(history, _ctx_stripped_ids)
+                if stripped_desc:
+                  console.log(f"[429-TPM] {len(_tpm_limited_keys)} keys TPM-limited — stripped {stripped_desc}, retrying fresh round with reduced context", "WARN")
+                  _tpm_limited_keys.clear()
+                  _context_stripped = True
+                  break  # break key loop; round loop checks _context_stripped below
+                console.log("[429-TPM] TPM-limited and nothing left to strip — giving up", "ERROR")
+                return {"error": "context_too_large", "details": "Input token/min limit exceeded, even after stripping context"}
             # this is per ip rate limit, need to wait 10s
             # NOTE: resp is the aiohttp ClientResponse, not the parsed JSON body — must
             # check the already-fetched body_text string instead (was: resp.get(...),
@@ -4379,7 +4502,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           key_pos += 1
           _same_key_503_retries = 0
           continue
-      if response or _schema_stripped or _thinking_stripped:
+      if response or _schema_stripped or _thinking_stripped or _context_stripped:
         break
       # Update consecutive 429-round counter for backoff + early model switch
       # (key_order guard: an empty key_order — e.g. all keys just got suspended out from
@@ -4435,7 +4558,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         _429_round_count = 0
       round_num += 1
 
-    if not response and not _schema_stripped and not _thinking_stripped:
+    if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped:
       if using_own_keys and not byok_free_quota_available:
         # Own key(s) failed for this request AND their free-tier fallback allowance is
         # already used up today — distinct from the normal "hit a transient error" or
@@ -4461,6 +4584,14 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       # tool_config was stripped mid-retry due to 400 branching error; retry outer loop
       console.log("[400-SCHEMA] Retrying without tool_config (AUTO mode)", "INFO")
       _schema_stripped = False
+      turn_count -= 1
+      continue
+
+    if _context_stripped:
+      # A history part was shrunk to relieve TPM pressure; retry outer loop so
+      # contents/payload get rebuilt from the now-smaller `history` on the next pass.
+      console.log("[429-TPM] Retrying with reduced context after stripping", "INFO")
+      _context_stripped = False
       turn_count -= 1
       continue
         

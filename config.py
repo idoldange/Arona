@@ -12,9 +12,9 @@ INFLIGHT_DELAY   = 10.0                                           # seconds to c
 
 # ── Gemini API ───────────────────────────────────────────────
 
-DEFAULT_MODEL       = "gemini-3.7-flash"
-FALLBACK_MODEL      = "gemini-3.7-flash"     # 503
-RATE_LIMIT_MODEL    = "gemini-3.6-flash"     # 429
+DEFAULT_MODEL       = "gemini-3.6-flash"
+FALLBACK_MODEL      = "gemini-3.6-flash"     # 503
+RATE_LIMIT_MODEL    = "gemini-3.7-flash"     # 429
 RATE_LIMIT_MODEL_   = "gemini-3.5-flash"     # 429 on RATE_LIMIT_MODEL
 LITE_MODEL          = "gemini-3.5-flash-lite"
 LIVE_MODEL          = "gemini-3.1-flash-live-preview"
@@ -35,6 +35,10 @@ UNSTICK_MODEL         = DEFAULT_MODEL  # decoy uses the main model to improve ch
 MAX_FUNCTION_TURNS  = 100
 THINKING_MSG_DELAY  = 20       # seconds before sending "thinking deeper" message
 INCLUDE_THOUGHT     = False
+
+# Route Gemini API requests through a Cloudflare Worker acting as a reverse proxy
+USE_CF_WORKER_PROXY = True
+
 SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_HARASSMENT",         "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_HATE_SPEECH",        "threshold": "BLOCK_NONE"},
