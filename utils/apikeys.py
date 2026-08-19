@@ -191,3 +191,42 @@ def delete_all(user_id: int):
     with _conn() as c:
         c.execute("DELETE FROM user_credentials WHERE user_id=?", (user_id,))
         c.execute("DELETE FROM user_quota WHERE user_id=?", (user_id,))
+
+
+import aiohttp
+
+GEMINI_VALIDATE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+_REJECT_STATUSES = (400, 401, 403)
+
+
+async def validate_key(session: aiohttp.ClientSession, key: str) -> tuple[bool, "str | None"]:
+    """Check a Gemini key via models.list (does not touch generation quota).
+
+    Returns (is_valid, reason). is_valid is False only on 400/401/403
+    (bad/revoked/unauthorized key). Anything else — 429, 5xx, timeout,
+    network error — is treated as valid so a transient issue never blocks
+    a working key.
+    """
+    try:
+        async with session.get(
+            GEMINI_VALIDATE_URL,
+            params={"key": key},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status in _REJECT_STATUSES:
+                reason = f"HTTP {resp.status}"
+                try:
+                    data = await resp.json()
+                    msg = data.get("error", {}).get("message")
+                    if msg:
+                        reason = f"{resp.status}: {msg}"
+                except Exception:
+                    pass
+                return False, reason
+            return True, None
+    except Exception:
+        return True, None
+
+
+def split_raw_keys(raw: str) -> list[str]:
+    return [_clean(k) for k in raw.split(",") if _clean(k)]

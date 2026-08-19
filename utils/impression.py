@@ -31,7 +31,6 @@ they mentally right now — focused, impatient, exploratory, low-effort? Then tr
 instruction for Arona's next replies, not a restatement of the user's own style. If your first observation 
 would apply to almost anyone, discard it and look deeper.
 
-The older messages usually have higher weight.
 
 **There may be more than one user in the conversation, but only write the guide for the current user.**
 
