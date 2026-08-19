@@ -4,7 +4,7 @@ import discord
 from utils import apikeys
 from utils.migration_keys import resolve_id
 
-TUTORIAL_URL = "https://youtu.be/PdOuGVz0ZIw?si=MbFpJgD0iy9uHvYU&t=10"
+TUTORIAL_URL = "https://youtu.be/PdOuGVz0ZIw?si=MbFpJgD0iy9uHvYU&t=10" #not my vid
 
 
 class ApiKeyModal(discord.ui.Modal, title="Add Gemini API key(s)"):
