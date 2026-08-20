@@ -4004,1011 +4004,1036 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     except Exception as e:
       console.log(f"Failed to send thought-only attachment: {e}", "WARN")
   
-  async def _delete_func_msg(func_msg):
-    if func_msg:
-      for msg in func_msg:
+  async def _delete_func_msg(func_msg, max_retries: int = 3):
+    """Delete every message in func_msg, retrying individual deletes that fail
+    due to rate limiting (HTTP 429) instead of giving up on the whole batch.
+    Non-rate-limit failures (already deleted, missing perms, etc.) are logged
+    and skipped immediately — no point retrying those."""
+    if not func_msg:
+      return
+    for msg in func_msg:
+      attempt = 0
+      while True:
+        attempt += 1
         try:
           await msg.delete()
-        except Exception as e:
+          break
+        except discord.HTTPException as e:
+          is_rate_limited = getattr(e, "status", None) == 429
+          if is_rate_limited and attempt <= max_retries:
+            retry_after = getattr(e, "retry_after", None) or (1.5 * attempt)
+            console.log(
+              f"[FUNC_MSG_CLEANUP] Rate limited deleting msg {getattr(msg, 'id', '?')}, "
+              f"retry {attempt}/{max_retries} after {retry_after:.1f}s",
+              "WARN"
+            )
+            await asyncio.sleep(retry_after)
+            continue
           console.log(f"Failed deleting func_msg notice: {e}", "WARN")
-      
+          break
+        except Exception as e:
+          # discord.NotFound (already deleted), Forbidden, etc. — not worth retrying
+          console.log(f"Failed deleting func_msg notice: {e}", "WARN")
+          break
+
   tools = get_gemini_tools(message, model_name)
 
-  while turn_count < max_function_turns:
-    turn_count += 1
-    if turn_count > 1:
-      current_attachments = None  # Only send attachments on first turn
-      current_text = None  # Clear text on subsequent turns
-      for tool_group in tools:
-        if "function_declarations" in tool_group:
-          tool_group["function_declarations"] = [
-            t for t in tool_group["function_declarations"]
-            if t.get("name") != "escalate"
-          ]
+  try:
+    while turn_count < max_function_turns:
+      turn_count += 1
+      if turn_count > 1:
+        current_attachments = None  # Only send attachments on first turn
+        current_text = None  # Clear text on subsequent turns
+        for tool_group in tools:
+          if "function_declarations" in tool_group:
+            tool_group["function_declarations"] = [
+              t for t in tool_group["function_declarations"]
+              if t.get("name") != "escalate"
+            ]
     
-    # Build parts
-    parts = []
-    if current_attachments and turn_count == 1:
-        for att in current_attachments:
-            if isinstance(att, list):
-                parts.extend(att)
-            elif isinstance(att, dict) and "inline_data" in att:
-                parts.append(att)
-            elif isinstance(att, tuple):
-                file_path, mime_type = att
-                try:
-                    filename = os.path.basename(file_path) 
-                    with open(file_path, "rb") as f:
-                        base64_data = base64.b64encode(f.read()).decode("utf-8")
-                    
-                    parts.append({"text": f"Input file: {filename}"})
-                    parts.append({"inline_data": {"mime_type": mime_type, "data": base64_data}})
-                except:
-                    pass
-                  
-    if current_text:
-      parts.append({"text": current_text})
-    
-    
-    # Build contents
-    contents = []
-    for hist_item in history:
-      role = hist_item.get("role", "user")
-      hist_parts = hist_item.get("parts", [])
-      if isinstance(hist_parts, list):
-        contents.append({"role": role, "parts": hist_parts})
-      else:
-        contents.append({"role": role, "parts": [{"text": str(hist_parts)}]})
-    
-    if parts:
-      contents.append({"role": "user", "parts": parts})
-      history.append({"role": "user", "parts": parts})
-    
-    # Build payload
-    payload = {
-      "contents": contents,
-      "generationConfig": {"temperature": retry_temperature},
-      "safetySettings": SAFETY_SETTINGS,
-      "tools": tools
-    }
-
-    # On malformed retries, force the model to use structured function calling instead
-    # of free-text output. mode=ANY + specific function name prevents the model from
-    # outputting Python code (print(default_api.xxx(...))) instead of a real function call.
-    if malformed_retries > 0 and _last_detected_func:
-      payload["tool_config"] = {
-        "function_calling_config": {
-          "mode": "ANY",
-          "allowed_function_names": [_last_detected_func]
-        }
-      }
-    elif malformed_retries > 0:
-      # Do NOT add tool_config here — mode=ANY without allowed_function_names forces
-      # Gemini to validate the full schema (~40 tools) against branching constraints,
-      # which triggers HTTP 400 "too much branching". Fall through to AUTO mode instead.
-      pass
-
-    # Enable thought text for thinking models so we can attach thought.md
-    if _disable_thinking:
-      pass  # current model in this call already rejected thinkingConfig; never re-add it
-    elif thinking_budget is not None:
-      payload["generationConfig"]["thinkingConfig"] = {
-        "thinkingBudget": thinking_budget,
-        "includeThoughts": INCLUDE_THOUGHT,
-      }
-    elif level:
-      payload["generationConfig"]["thinkingConfig"] = {
-        "thinkingLevel": level,
-        "includeThoughts": INCLUDE_THOUGHT,
-      }
-    elif model_name == DEFAULT_MODEL:
-      payload["generationConfig"]["thinkingConfig"] = {"includeThoughts": INCLUDE_THOUGHT}
-      
-    if sys_prompt:
-      if custom_sys_prompt and custom_sys_prompt.strip():
-        payload["system_instruction"] = {"parts": [{"text": custom_sys_prompt}]}
-      else:
-        payload["system_instruction"] = {"parts": [{"text": get_arona_prompt(special_rules=rules, safety_rules=safety_note)}]}
-    
-    # Try request
-    await _check_midnight_reset()
-    num_keys = len(keys)
-    num_free_keys = num_keys - num_own_keys
-    # BYOK users only draw against the shared free-tier quota once their own keys have
-    # failed for this request (i.e. only if we actually need to fall back into the free
-    # pool). Check once up front: if their free-tier allowance is already used up too,
-    # exclude the free-pool portion from key_order entirely (no point burning API calls
-    # on keys we're not allowed to use), and surface a distinct error once own keys are
-    # exhausted so the caller can show a message different from the normal quota message.
-    byok_free_quota_available = True
-    if using_own_keys:
-      byok_free_quota_available = apikeys.check_quota(byok_user_id, ignore_own_key=True)
-    usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
-    # If this user's own key(s) already proved fully exhausted (all-429) earlier today,
-    # skip them entirely and go straight to the free pool — no point burning a doomed
-    # round re-trying (and backing off on) keys we already know are dead for today.
-    _skip_own_keys = using_own_keys and _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id, False)
-    # Own keys first (if BYOK and not already known-exhausted), then fall back into the
-    # shared free pool starting from its own remembered index. See _build_key_order.
-    key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
-    # How many own-key slots are actually present in key_order this turn — used below to
-    # tell whether an all-429 round genuinely implicates (and exhausts) this user's own
-    # keys, vs. a round that only ever contained free-pool keys (already-skipped own keys).
-    own_keys_in_order = 0 if _skip_own_keys else num_own_keys
-
-    # Nothing left to try this request: own key(s) already confirmed exhausted today AND
-    # the free-tier fallback allowance is also used up. Bail immediately instead of
-    # looping through empty rounds (key_order would be [] — no key to even attempt).
-    if using_own_keys and _skip_own_keys and not byok_free_quota_available:
-      return {"error": "byok_quota_exhausted", "details": f"User {byok_user_id}'s own key(s) previously confirmed exhausted today, and free-tier fallback allowance is also used up."}
-
-    response = None
-    last_error_detail = None
-    _429_round_count = 0  # track consecutive rounds where ALL keys returned 429
-    _schema_stripped = False  # set when 400 "too much branching" strips tool_config mid-retry
-    _thinking_stripped = False  # set when 400 "Thinking level/budget not supported" strips thinkingConfig mid-retry
-    _context_stripped = False  # set when ALL keys hit TPM 429 and we shrank a history part instead of giving up
-    _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
-    # _overload_msg stored globally keyed by channel so send_reply can delete it
-    # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
-    # rate-limit/backoff windows (and through the free-pool fallback) instead of surfacing
-    # an error after a handful of tries.
-    effective_max_retries = BYOK_MAX_RETRIES if using_own_keys else max_retries
-    round_num = 0
-    # Set True right after an all-429 model switch below, to guarantee the switched-to
-    # model actually gets tried at least once even if the normal retry budget is already
-    # exhausted this call (e.g. MAX_RETRIES=1 would otherwise switch model and immediately
-    # give up in the same round, never actually sending a request with the new model).
-    # Capped so a pathological ping-pong (RATE_LIMIT_MODEL <-> RATE_LIMIT_MODEL_) can't
-    # balloon the round count — at most one bonus round per model tier.
-    _bonus_round_pending = False
-    _bonus_rounds_used = 0
-    _BONUS_ROUND_CAP = 2
-    while round_num < effective_max_retries or _bonus_round_pending:
-      _is_bonus_round = round_num >= effective_max_retries
-      _bonus_round_pending = False
-      if round_num > 0:
-        # Exponential backoff if last round was all-429 (per-IP rate limit)
-        if _429_round_count > 0:
-          delay = min(10.0 * (2 ** (_429_round_count - 1)), 120.0)
-          if _is_bonus_round:
-            console.log(f"[KEY_ROTATE] Bonus round (model just switched) — waiting {delay:.0f}s...", "WARN")
-          else:
-            console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, all-429 last round — waiting {delay:.0f}s...", "WARN")
-          await asyncio.sleep(delay)
-        else:
-          console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, retrying all keys after delay...", "WARN")
-          await asyncio.sleep(2.0 * round_num)
-      _round_429_count = 0  # 429 hits this round
-      _free_429_count = 0   # of the above, how many were free-pool keys (vs own BYOK keys)
-      key_pos = 0
-      attempt_num = 0
-      _same_key_503_retries = 0  # consecutive 503s on the CURRENT key (reset when key changes)
-      while key_pos < len(key_order):
-        key_idx = key_order[key_pos]
-        attempt_num += 1
-        if attempt_num > 1 and _same_key_503_retries == 0:
-          console.log(f"[KEY_ROTATE] Round {round_num + 1}, switching to key {key_idx}", "WARN")
-        _round_label = "Bonus round" if _is_bonus_round else f"Round {round_num + 1}/{effective_max_retries}"
-        console.log(f"[{model_name}] {_round_label}, Attempt {attempt_num}/{len(keys)} (Key {key_idx + 1})", "INFO")
-        API_KEY = keys[key_idx]
-        full_model_name = f"models/{model_name}" if not model_name.startswith("models/") else model_name
-        url = f"{base_url}/{full_model_name}:generateContent"
-        headers = {
-          "Content-Type": "application/json",
-          "x-goog-api-key": API_KEY
-          }
-        
-        
-        try:
-          session = await session_manager.get_session()
-          thinking_msg = None
-          thinking_task = None
-          _think_start = time.time()
-          _thought_text = {"val": ""}
-          # Event-based abort: set this to interrupt the delay early WITHOUT
-          # cancelling the task mid-send, which would cause the Discord message
-          # to be created but thinking_msg to stay None (leak).
-          _thinking_abort = asyncio.Event()
-
-          async def _send_thinking_msg():
-            nonlocal thinking_msg
-            # Interruptible delay: exits early if _thinking_abort is set
-            try:
-              await asyncio.wait_for(_thinking_abort.wait(), timeout=THINKING_MSG_DELAY)
-              return  # aborted before delay elapsed — nothing to send
-            except asyncio.TimeoutError:
-              pass  # normal path: full delay elapsed
-            if message and not gemini_ws.is_voice_session:
-              try:
-                thinking_msg = await message.channel.send("-# Thinking deeper...")
-              except Exception:
-                pass
-
-          thinking_task = asyncio.create_task(_send_thinking_msg())
-          try:
-            resp = await session.post(url, json=payload, headers=headers, timeout=timeout)
-            if debug_enabled:
-              console.log(f"Raw response: {await resp.text()}", "DEBUG")
-          finally:
-            _think_elapsed = time.time() - _think_start
-            # Signal abort first (interrupts sleep phase instantly).
-            # Then wait for the task to finish naturally — if it's already in
-            # message.channel.send(), we let it complete so thinking_msg is set
-            # and we can delete the message. 5s timeout prevents hanging.
-            _thinking_abort.set()
-            try:
-              await asyncio.wait_for(thinking_task, timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-              pass
-            if thinking_msg:
-              # create_task escapes the cancellation scope — awaiting delete()
-              # directly raises CancelledError (BaseException, not caught by
-              # `except Exception`) when the parent task is being cancelled,
-              # leaving the message alive. A detached task runs independently.
-              try:
-                asyncio.get_event_loop().create_task(thinking_msg.delete())
-              except Exception:
-                pass
-            thinking_msg = None
-
-          if resp is None:
-            last_error_detail = f"No response object for key index {key_idx}"
-            console.log(last_error_detail, "WARN")
-            key_pos += 1
-            _same_key_503_retries = 0
-            continue
-
-          if resp.status == 200:
-            try:
-              response = await resp.json()
-            except Exception as e:
-              last_error_detail = f"Failed parsing JSON from response (key {key_idx}): {e}"
-              console.log(last_error_detail, "ERROR")
-              continue
-
-            # extract thought content and send as file if thinking >10s
-            try:
-              parts = response.get("candidates", [])[0].get("content", {}).get("parts", [])
-              thought_parts = [p.get("text", "") for p in parts if p.get("thought") is True]
-              if thought_parts and _think_elapsed >= 10 and message and not gemini_ws.is_voice_session:
-                thought_content = _mark_truncated_thought("\n\n".join(thought_parts).strip())
-                if thought_content:
-                  elapsed_s = int(_think_elapsed)
-                  thought_bytes = thought_content.encode("utf-8")
-                  thought_file = discord.File(
-                    BytesIO(thought_bytes),
-                    filename="thought.md",
-                    description=f"Thought for {elapsed_s}s"
-                  )
+      # Build parts
+      parts = []
+      if current_attachments and turn_count == 1:
+          for att in current_attachments:
+              if isinstance(att, list):
+                  parts.extend(att)
+              elif isinstance(att, dict) and "inline_data" in att:
+                  parts.append(att)
+              elif isinstance(att, tuple):
+                  file_path, mime_type = att
                   try:
-                    # Send the file — the attachment must stay on the message for the preview link to work
-                    sent_thought = None
-                    if elapsed_s > THINKING_MSG_DELAY:
-                      sent_thought = await message.channel.send(
-                        content=f"-# <:rag:1484030895441711284> Thought for {elapsed_s}s",
-                        file=thought_file
-                      )
-                    if sent_thought and sent_thought.attachments:
-                      cdn_url = sent_thought.attachments[0].url
-                      preview_url = "https://arona.hangdongwibu.io/artifact/?url=" + urllib.parse.quote(cdn_url, safe="")
-                      try:
-                        await sent_thought.edit(
-                          content=f"-# <:rag:1484030895441711284> [Thought for {elapsed_s}s →]({preview_url})",
-                        )
-                      except Exception:
-                        pass  # keep plain text version if edit fails
-                  except Exception as te:
-                    console.log(f"Failed to send thought.md: {te}", "WARN")
-            except Exception as te:
-              console.log(f"Thought extraction error: {te}", "WARN")
+                      filename = os.path.basename(file_path) 
+                      with open(file_path, "rb") as f:
+                          base64_data = base64.b64encode(f.read()).decode("utf-8")
+                    
+                      parts.append({"text": f"Input file: {filename}"})
+                      parts.append({"inline_data": {"mime_type": mime_type, "data": base64_data}})
+                  except:
+                      pass
+                  
+      if current_text:
+        parts.append({"text": current_text})
+    
+    
+      # Build contents
+      contents = []
+      for hist_item in history:
+        role = hist_item.get("role", "user")
+        hist_parts = hist_item.get("parts", [])
+        if isinstance(hist_parts, list):
+          contents.append({"role": role, "parts": hist_parts})
+        else:
+          contents.append({"role": role, "parts": [{"text": str(hist_parts)}]})
+    
+      if parts:
+        contents.append({"role": "user", "parts": parts})
+        history.append({"role": "user", "parts": parts})
+    
+      # Build payload
+      payload = {
+        "contents": contents,
+        "generationConfig": {"temperature": retry_temperature},
+        "safetySettings": SAFETY_SETTINGS,
+        "tools": tools
+      }
 
-            await _remember_working_key(num_own_keys, byok_user_id, key_idx)
-            _consecutive_503_count = 0
-            break
+      # On malformed retries, force the model to use structured function calling instead
+      # of free-text output. mode=ANY + specific function name prevents the model from
+      # outputting Python code (print(default_api.xxx(...))) instead of a real function call.
+      if malformed_retries > 0 and _last_detected_func:
+        payload["tool_config"] = {
+          "function_calling_config": {
+            "mode": "ANY",
+            "allowed_function_names": [_last_detected_func]
+          }
+        }
+      elif malformed_retries > 0:
+        # Do NOT add tool_config here — mode=ANY without allowed_function_names forces
+        # Gemini to validate the full schema (~40 tools) against branching constraints,
+        # which triggers HTTP 400 "too much branching". Fall through to AUTO mode instead.
+        pass
 
-          # Non-200 responses: capture body for diagnosis
+      # Enable thought text for thinking models so we can attach thought.md
+      if _disable_thinking:
+        pass  # current model in this call already rejected thinkingConfig; never re-add it
+      elif thinking_budget is not None:
+        payload["generationConfig"]["thinkingConfig"] = {
+          "thinkingBudget": thinking_budget,
+          "includeThoughts": INCLUDE_THOUGHT,
+        }
+      elif level:
+        payload["generationConfig"]["thinkingConfig"] = {
+          "thinkingLevel": level,
+          "includeThoughts": INCLUDE_THOUGHT,
+        }
+      elif model_name == DEFAULT_MODEL:
+        payload["generationConfig"]["thinkingConfig"] = {"includeThoughts": INCLUDE_THOUGHT}
+      
+      if sys_prompt:
+        if custom_sys_prompt and custom_sys_prompt.strip():
+          payload["system_instruction"] = {"parts": [{"text": custom_sys_prompt}]}
+        else:
+          payload["system_instruction"] = {"parts": [{"text": get_arona_prompt(special_rules=rules, safety_rules=safety_note)}]}
+    
+      # Try request
+      await _check_midnight_reset()
+      num_keys = len(keys)
+      num_free_keys = num_keys - num_own_keys
+      # BYOK users only draw against the shared free-tier quota once their own keys have
+      # failed for this request (i.e. only if we actually need to fall back into the free
+      # pool). Check once up front: if their free-tier allowance is already used up too,
+      # exclude the free-pool portion from key_order entirely (no point burning API calls
+      # on keys we're not allowed to use), and surface a distinct error once own keys are
+      # exhausted so the caller can show a message different from the normal quota message.
+      byok_free_quota_available = True
+      if using_own_keys:
+        byok_free_quota_available = apikeys.check_quota(byok_user_id, ignore_own_key=True)
+      usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
+      # If this user's own key(s) already proved fully exhausted (all-429) earlier today,
+      # skip them entirely and go straight to the free pool — no point burning a doomed
+      # round re-trying (and backing off on) keys we already know are dead for today.
+      _skip_own_keys = using_own_keys and _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id, False)
+      # Own keys first (if BYOK and not already known-exhausted), then fall back into the
+      # shared free pool starting from its own remembered index. See _build_key_order.
+      key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
+      # How many own-key slots are actually present in key_order this turn — used below to
+      # tell whether an all-429 round genuinely implicates (and exhausts) this user's own
+      # keys, vs. a round that only ever contained free-pool keys (already-skipped own keys).
+      own_keys_in_order = 0 if _skip_own_keys else num_own_keys
+
+      # Nothing left to try this request: own key(s) already confirmed exhausted today AND
+      # the free-tier fallback allowance is also used up. Bail immediately instead of
+      # looping through empty rounds (key_order would be [] — no key to even attempt).
+      if using_own_keys and _skip_own_keys and not byok_free_quota_available:
+        return {"error": "byok_quota_exhausted", "details": f"User {byok_user_id}'s own key(s) previously confirmed exhausted today, and free-tier fallback allowance is also used up."}
+
+      response = None
+      last_error_detail = None
+      _429_round_count = 0  # track consecutive rounds where ALL keys returned 429
+      _schema_stripped = False  # set when 400 "too much branching" strips tool_config mid-retry
+      _thinking_stripped = False  # set when 400 "Thinking level/budget not supported" strips thinkingConfig mid-retry
+      _context_stripped = False  # set when ALL keys hit TPM 429 and we shrank a history part instead of giving up
+      _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
+      # _overload_msg stored globally keyed by channel so send_reply can delete it
+      # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
+      # rate-limit/backoff windows (and through the free-pool fallback) instead of surfacing
+      # an error after a handful of tries.
+      effective_max_retries = BYOK_MAX_RETRIES if using_own_keys else max_retries
+      round_num = 0
+      # Set True right after an all-429 model switch below, to guarantee the switched-to
+      # model actually gets tried at least once even if the normal retry budget is already
+      # exhausted this call (e.g. MAX_RETRIES=1 would otherwise switch model and immediately
+      # give up in the same round, never actually sending a request with the new model).
+      # Capped so a pathological ping-pong (RATE_LIMIT_MODEL <-> RATE_LIMIT_MODEL_) can't
+      # balloon the round count — at most one bonus round per model tier.
+      _bonus_round_pending = False
+      _bonus_rounds_used = 0
+      _BONUS_ROUND_CAP = 2
+      while round_num < effective_max_retries or _bonus_round_pending:
+        _is_bonus_round = round_num >= effective_max_retries
+        _bonus_round_pending = False
+        if round_num > 0:
+          # Exponential backoff if last round was all-429 (per-IP rate limit)
+          if _429_round_count > 0:
+            delay = min(10.0 * (2 ** (_429_round_count - 1)), 120.0)
+            if _is_bonus_round:
+              console.log(f"[KEY_ROTATE] Bonus round (model just switched) — waiting {delay:.0f}s...", "WARN")
+            else:
+              console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, all-429 last round — waiting {delay:.0f}s...", "WARN")
+            await asyncio.sleep(delay)
+          else:
+            console.log(f"[KEY_ROTATE] Round {round_num + 1}/{effective_max_retries}, retrying all keys after delay...", "WARN")
+            await asyncio.sleep(2.0 * round_num)
+        _round_429_count = 0  # 429 hits this round
+        _free_429_count = 0   # of the above, how many were free-pool keys (vs own BYOK keys)
+        key_pos = 0
+        attempt_num = 0
+        _same_key_503_retries = 0  # consecutive 503s on the CURRENT key (reset when key changes)
+        while key_pos < len(key_order):
+          key_idx = key_order[key_pos]
+          attempt_num += 1
+          if attempt_num > 1 and _same_key_503_retries == 0:
+            console.log(f"[KEY_ROTATE] Round {round_num + 1}, switching to key {key_idx}", "WARN")
+          _round_label = "Bonus round" if _is_bonus_round else f"Round {round_num + 1}/{effective_max_retries}"
+          console.log(f"[{model_name}] {_round_label}, Attempt {attempt_num}/{len(keys)} (Key {key_idx + 1})", "INFO")
+          API_KEY = keys[key_idx]
+          full_model_name = f"models/{model_name}" if not model_name.startswith("models/") else model_name
+          url = f"{base_url}/{full_model_name}:generateContent"
+          headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": API_KEY
+            }
+        
+        
           try:
-            body_text = await resp.text()
-          except Exception:
-            body_text = "<unreadable body>"
-          last_error_detail = f"HTTP {resp.status} from model (key {key_idx}): {body_text}"
-          console.log(last_error_detail, "WARN")
+            session = await session_manager.get_session()
+            thinking_msg = None
+            thinking_task = None
+            _think_start = time.time()
+            _thought_text = {"val": ""}
+            # Event-based abort: set this to interrupt the delay early WITHOUT
+            # cancelling the task mid-send, which would cause the Discord message
+            # to be created but thinking_msg to stay None (leak).
+            _thinking_abort = asyncio.Event()
 
-          if resp.status == 429:
-            _round_429_count += 1
-            if key_idx >= num_own_keys:
-              _free_429_count += 1
-            if _is_tpm_limit(body_text):
-              _tpm_limited_keys.add(key_idx)
-              _strip_threshold = min(_TPM_STRIP_AFTER_KEYS, len(key_order))
-              console.log(f"[429-TPM] Key {key_idx} hit token/min limit ({len(_tpm_limited_keys)}/{_strip_threshold} before stripping)", "WARN")
-              await asyncio.sleep(1.0 * (round_num + 1))  # back off before next key attempt
-              if len(_tpm_limited_keys) >= _strip_threshold:
-                # A couple of keys already agree the payload itself is too big for the
-                # token/min ceiling — no point burning through the rest of the (possibly
-                # large) key pool to confirm the same thing. Shrink the single biggest
-                # strippable part (oldest tool output / attachment / text turn first) and
-                # give ALL keys a fresh full round with the smaller payload.
-                stripped_desc = _strip_largest_history_part(history, _ctx_stripped_ids)
-                if stripped_desc:
-                  console.log(f"[429-TPM] {len(_tpm_limited_keys)} keys TPM-limited — stripped {stripped_desc}, retrying fresh round with reduced context", "WARN")
-                  _tpm_limited_keys.clear()
-                  _context_stripped = True
-                  break  # break key loop; round loop checks _context_stripped below
-                console.log("[429-TPM] TPM-limited and nothing left to strip — giving up", "ERROR")
-                return {"error": "context_too_large", "details": "Input token/min limit exceeded, even after stripping context"}
-            # this is per ip rate limit, need to wait 10s
-            # NOTE: resp is the aiohttp ClientResponse, not the parsed JSON body — must
-            # check the already-fetched body_text string instead (was: resp.get(...),
-            # which crashes with AttributeError since ClientResponse has no .get()).
-            if "Resource has been exhausted" in body_text:
-              await asyncio.sleep(30.0)
-            # this is per key rate limit, need to wait 1.5s    
-            await asyncio.sleep(1.5 * (attempt_num ** 0.5))  # gradual per-key delay
-            
-            key_pos += 1  # 429 still rotates to the next key
-            _same_key_503_retries = 0
-            continue
-          if resp.status == 503:
-            _consecutive_503_count += 1
-            if UNSTICK_ON_503 and _consecutive_503_count >= UNSTICK_503_THRESHOLD:
-              console.log(f"[UNSTICK] {_consecutive_503_count} consecutive 503s, firing decoy request with different context", "WARN")
-              asyncio.create_task(fire_unstick_request())
-              _consecutive_503_count = 0  # reset so it can fire again after N more consecutive 503s
-            if round_num == 0 and model_name != RATE_LIMIT_MODEL:
-              console.log(f"503 on round 1, falling back to {FALLBACK_MODEL}", "WARN")
-              model_name = FALLBACK_MODEL
-              if FALLBACK_MODEL == "gemini-2.5-flash":
-                payload["generationConfig"].pop("thinkingConfig", None)
-                _disable_thinking = True
-            if message is not None and message.channel.id not in _overload_status_msgs:
+            async def _send_thinking_msg():
+              nonlocal thinking_msg
+              # Interruptible delay: exits early if _thinking_abort is set
               try:
-                _overload_status_msgs[message.channel.id] = await message.channel.send("-# Shittim chest overloaded, retrying...")
-              except Exception:
-                pass
-            # Bust Google prompt cache so next key routes to a different backend node
-            # ZWS alone may be normalized; append a random invisible token to guarantee cache miss
-            if "system_instruction" in payload:
-              import copy, os
-              payload = copy.deepcopy(payload)
-              _parts = payload["system_instruction"].get("parts", [])
-              if _parts and "text" in _parts[0]:
-                _bust_token = os.urandom(8).hex()  # e.g. "a3f7c21b9e4d0582"
-                _base = _parts[0]["text"].split("\n<!-- bust:")[0]  # strip previous bust comment
-                _parts[0]["text"] = _base + f"\n<!-- bust:{_bust_token} -->"
-            await asyncio.sleep(1.0 * (round_num + 1))  # back off before retrying
-            # Retry the SAME key on 503 instead of rotating to the next one.
-            # Only move on to the next key after MAX_SAME_KEY_503_RETRIES failed
-            # attempts on this key, to avoid looping forever on a dead backend.
-            #_same_key_503_retries += 1
-            #if _same_key_503_retries >= MAX_SAME_KEY_503_RETRIES:
-            #  console.log(f"[503-RETRY] Key {key_idx} hit 503 {_same_key_503_retries}x in a row, giving up on this key", "WARN")
-            #  key_pos += 1
-            #  _same_key_503_retries = 0
-            continue
-          
-          if resp.status == 400:
-            if "thinking" in body_text.lower() and "not supported" in body_text.lower():
-              # Happens right after a 429/503 fallback switches model_name to a model
-              # (e.g. RATE_LIMIT_MODEL) that doesn't support thinkingLevel/thinkingBudget.
-              # The payload was built before the switch and still carries the old
-              # model's thinkingConfig — strip it and retry instead of erroring out.
-              console.log(f"[400-THINKING] {model_name} rejected thinkingConfig, stripping and retrying", "WARN")
-              payload["generationConfig"].pop("thinkingConfig", None)
-              _disable_thinking = True
-              _thinking_stripped = True
-              break  # break key loop; round loop checks _thinking_stripped below
-            if malformed_retries > 0 and "too much branching" in body_text:
-              # mode=ANY without allowed_function_names causes Gemini to validate the full
-              # schema — strip tool_config and let the outer loop retry in AUTO mode.
-              console.log("[400-SCHEMA] tool_config mode=ANY triggered schema branching error, stripping and retrying", "WARN")
-              payload.pop("tool_config", None)
-              _last_detected_func = None
-              _schema_stripped = True
-              break  # break key loop; round loop checks _schema_stripped below
-            #log payload for 400 errors to help diagnose malformed requests
-            #console.log(f"400 Bad Request for key {key_idx}. Payload: {json.dumps(payload)}", "DEBUG")
+                await asyncio.wait_for(_thinking_abort.wait(), timeout=THINKING_MSG_DELAY)
+                return  # aborted before delay elapsed — nothing to send
+              except asyncio.TimeoutError:
+                pass  # normal path: full delay elapsed
+              if message and not gemini_ws.is_voice_session:
+                try:
+                  thinking_msg = await message.channel.send("-# Thinking deeper...")
+                except Exception:
+                  pass
 
-            if "API key not valid" in body_text:
-              console.log(f"[400] Key {key_idx+1} invalid, trying next", "WARN")
-              key_pos += 1 
+            thinking_task = asyncio.create_task(_send_thinking_msg())
+            try:
+              resp = await session.post(url, json=payload, headers=headers, timeout=timeout)
+              if debug_enabled:
+                console.log(f"Raw response: {await resp.text()}", "DEBUG")
+            finally:
+              _think_elapsed = time.time() - _think_start
+              # Signal abort first (interrupts sleep phase instantly).
+              # Then wait for the task to finish naturally — if it's already in
+              # message.channel.send(), we let it complete so thinking_msg is set
+              # and we can delete the message. 5s timeout prevents hanging.
+              _thinking_abort.set()
+              try:
+                await asyncio.wait_for(thinking_task, timeout=5.0)
+              except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass
+              if thinking_msg:
+                # create_task escapes the cancellation scope — awaiting delete()
+                # directly raises CancelledError (BaseException, not caught by
+                # `except Exception`) when the parent task is being cancelled,
+                # leaving the message alive. A detached task runs independently.
+                try:
+                  asyncio.get_event_loop().create_task(thinking_msg.delete())
+                except Exception:
+                  pass
+              thinking_msg = None
+
+            if resp is None:
+              last_error_detail = f"No response object for key index {key_idx}"
+              console.log(last_error_detail, "WARN")
+              key_pos += 1
               _same_key_503_retries = 0
               continue
 
-            return {"error": "400", "details": last_error_detail}
-          if resp.status == 403:
-            # check for msg "message": "Permission denied: Consumer 'api_key:AIzaSyB2U1dd1W97cNtVZAfbFksPoElnNUeY5sY' has been suspended.",
-            # if true, the remove the key from .env file and the list
-            #use regrex, not just if ... in
-            if re.search(r"Permission denied: Consumer 'api_key:[^']+' has been suspended", body_text):
-              console.log(f"[403] Key {key_idx} has been suspended, removing from key list", "ERROR")
-              suspended_key = keys[key_idx]
+            if resp.status == 200:
+              try:
+                response = await resp.json()
+              except Exception as e:
+                last_error_detail = f"Failed parsing JSON from response (key {key_idx}): {e}"
+                console.log(last_error_detail, "ERROR")
+                continue
 
-              if key_idx < num_own_keys:
-                # Suspended key belongs to this user's own BYOK list, not the shared pool.
-                # own_keys is the actual list object returned by apikeys.get_keys(), so
-                # mutating it in place removes the key from that user's stored key set.
-                own_keys[:] = [k for k in own_keys if k != suspended_key]
-                num_own_keys = len(own_keys)
-              elif suspended_key in GEMINI_API_KEY:
-                # mutate in-place so any other reference to GEMINI_API_KEY (e.g. stale `keys`
-                # aliases held by other concurrent calls) also sees the removal
-                GEMINI_API_KEY[:] = [k for k in GEMINI_API_KEY if k != suspended_key]
+              # extract thought content and send as file if thinking >10s
+              try:
+                parts = response.get("candidates", [])[0].get("content", {}).get("parts", [])
+                thought_parts = [p.get("text", "") for p in parts if p.get("thought") is True]
+                if thought_parts and _think_elapsed >= 10 and message and not gemini_ws.is_voice_session:
+                  thought_content = _mark_truncated_thought("\n\n".join(thought_parts).strip())
+                  if thought_content:
+                    elapsed_s = int(_think_elapsed)
+                    thought_bytes = thought_content.encode("utf-8")
+                    thought_file = discord.File(
+                      BytesIO(thought_bytes),
+                      filename="thought.md",
+                      description=f"Thought for {elapsed_s}s"
+                    )
+                    try:
+                      # Send the file — the attachment must stay on the message for the preview link to work
+                      sent_thought = None
+                      if elapsed_s > THINKING_MSG_DELAY:
+                        sent_thought = await message.channel.send(
+                          content=f"-# <:rag:1484030895441711284> Thought for {elapsed_s}s",
+                          file=thought_file
+                        )
+                      if sent_thought and sent_thought.attachments:
+                        cdn_url = sent_thought.attachments[0].url
+                        preview_url = "https://arona.hangdongwibu.io/artifact/?url=" + urllib.parse.quote(cdn_url, safe="")
+                        try:
+                          await sent_thought.edit(
+                            content=f"-# <:rag:1484030895441711284> [Thought for {elapsed_s}s →]({preview_url})",
+                          )
+                        except Exception:
+                          pass  # keep plain text version if edit fails
+                    except Exception as te:
+                      console.log(f"Failed to send thought.md: {te}", "WARN")
+              except Exception as te:
+                console.log(f"Thought extraction error: {te}", "WARN")
 
-                env_file = ".env"
-                try:
-                  with open(env_file, "r") as f:
-                    lines = f.readlines()
+              await _remember_working_key(num_own_keys, byok_user_id, key_idx)
+              _consecutive_503_count = 0
+              break
 
-                  new_value_json = json.dumps(GEMINI_API_KEY)
-                  updated = False
-                  for i, line in enumerate(lines):
-                    stripped = line.lstrip()
-                    leading_ws = line[: len(line) - len(stripped)]
-                    # Must be exactly "GEMINI_API_KEY" followed by optional space then "=",
-                    # NOT a look-alike name like "MY_GEMINI_API_KEY" or "GEMINI_API_KEY_OLD".
-                    if not stripped.startswith("GEMINI_API_KEY"):
-                      continue
-                    after_name = stripped[len("GEMINI_API_KEY"):]
-                    after_name_stripped = after_name.lstrip(" \t")
-                    if not after_name_stripped.startswith("="):
-                      continue  # e.g. GEMINI_API_KEY_OLD=... -> reject
+            # Non-200 responses: capture body for diagnosis
+            try:
+              body_text = await resp.text()
+            except Exception:
+              body_text = "<unreadable body>"
+            last_error_detail = f"HTTP {resp.status} from model (key {key_idx}): {body_text}"
+            console.log(last_error_detail, "WARN")
 
-                    after_eq = after_name_stripped[1:].lstrip(" \t")
-                    quote = after_eq[0] if after_eq[:1] in ("'", '"') else ""
-                    newline_suffix = "\n" if line.endswith("\n") else ""
-                    lines[i] = f"{leading_ws}GEMINI_API_KEY = {quote}{new_value_json}{quote}{newline_suffix}"
-                    updated = True
-                    break  # only ever one GEMINI_API_KEY line, stop after first match
-
-                  if not updated:
-                    console.log("GEMINI_API_KEY line not found in .env, skipped write", "WARN")
-                  else:
-                    with open(env_file, "w") as f:
-                      f.writelines(lines)
-                except Exception as e:
-                  console.log(f"Failed to update .env file: {e}", "ERROR")
-
-              # Rebuild the combined keys list fresh (own_keys and/or GEMINI_API_KEY may have
-              # just shrunk above), then rebuild the attempt order against the new key count
-              # (still respecting the free-quota gate computed at the top of this call).
-              keys = (own_keys + GEMINI_API_KEY) if using_own_keys else GEMINI_API_KEY
-              num_free_keys = len(keys) - num_own_keys
-              usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
-
-              if not keys:
-                return {"error": "403", "details": "All API keys have been suspended."}
-
-              key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
-              own_keys_in_order = 0 if _skip_own_keys else num_own_keys
-              key_pos = min(key_pos, len(key_order) - 1)
-              await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
-              continue
-            #try next key 
-            console.log(f"[403] Key {key_idx} has been suspended, trying next", "WARN")
-            key_pos += 1
-            _same_key_503_retries = 0
-            continue
+            if resp.status == 429:
+              _round_429_count += 1
+              if key_idx >= num_own_keys:
+                _free_429_count += 1
+              if _is_tpm_limit(body_text):
+                _tpm_limited_keys.add(key_idx)
+                _strip_threshold = min(_TPM_STRIP_AFTER_KEYS, len(key_order))
+                console.log(f"[429-TPM] Key {key_idx} hit token/min limit ({len(_tpm_limited_keys)}/{_strip_threshold} before stripping)", "WARN")
+                await asyncio.sleep(1.0 * (round_num + 1))  # back off before next key attempt
+                if len(_tpm_limited_keys) >= _strip_threshold:
+                  # A couple of keys already agree the payload itself is too big for the
+                  # token/min ceiling — no point burning through the rest of the (possibly
+                  # large) key pool to confirm the same thing. Shrink the single biggest
+                  # strippable part (oldest tool output / attachment / text turn first) and
+                  # give ALL keys a fresh full round with the smaller payload.
+                  stripped_desc = _strip_largest_history_part(history, _ctx_stripped_ids)
+                  if stripped_desc:
+                    console.log(f"[429-TPM] {len(_tpm_limited_keys)} keys TPM-limited — stripped {stripped_desc}, retrying fresh round with reduced context", "WARN")
+                    _tpm_limited_keys.clear()
+                    _context_stripped = True
+                    break  # break key loop; round loop checks _context_stripped below
+                  console.log("[429-TPM] TPM-limited and nothing left to strip — giving up", "ERROR")
+                  return {"error": "context_too_large", "details": "Input token/min limit exceeded, even after stripping context"}
+              # this is per ip rate limit, need to wait 10s
+              # NOTE: resp is the aiohttp ClientResponse, not the parsed JSON body — must
+              # check the already-fetched body_text string instead (was: resp.get(...),
+              # which crashes with AttributeError since ClientResponse has no .get()).
+              if "Resource has been exhausted" in body_text:
+                await asyncio.sleep(30.0)
+              # this is per key rate limit, need to wait 1.5s    
+              await asyncio.sleep(1.5 * (attempt_num ** 0.5))  # gradual per-key delay
             
-          if resp.status == 401:
-            console.log(f"[401] Key {key_idx} unauthorized, trying next", "WARN")
+              key_pos += 1  # 429 still rotates to the next key
+              _same_key_503_retries = 0
+              continue
+            if resp.status == 503:
+              _consecutive_503_count += 1
+              if UNSTICK_ON_503 and _consecutive_503_count >= UNSTICK_503_THRESHOLD:
+                console.log(f"[UNSTICK] {_consecutive_503_count} consecutive 503s, firing decoy request with different context", "WARN")
+                asyncio.create_task(fire_unstick_request())
+                _consecutive_503_count = 0  # reset so it can fire again after N more consecutive 503s
+              if round_num == 0 and model_name != RATE_LIMIT_MODEL:
+                console.log(f"503 on round 1, falling back to {FALLBACK_MODEL}", "WARN")
+                model_name = FALLBACK_MODEL
+                if FALLBACK_MODEL == "gemini-2.5-flash":
+                  payload["generationConfig"].pop("thinkingConfig", None)
+                  _disable_thinking = True
+              if message is not None and message.channel.id not in _overload_status_msgs:
+                try:
+                  _overload_status_msgs[message.channel.id] = await message.channel.send("-# Shittim chest overloaded, retrying...")
+                except Exception:
+                  pass
+              # Bust Google prompt cache so next key routes to a different backend node
+              # ZWS alone may be normalized; append a random invisible token to guarantee cache miss
+              if "system_instruction" in payload:
+                import copy, os
+                payload = copy.deepcopy(payload)
+                _parts = payload["system_instruction"].get("parts", [])
+                if _parts and "text" in _parts[0]:
+                  _bust_token = os.urandom(8).hex()  # e.g. "a3f7c21b9e4d0582"
+                  _base = _parts[0]["text"].split("\n<!-- bust:")[0]  # strip previous bust comment
+                  _parts[0]["text"] = _base + f"\n<!-- bust:{_bust_token} -->"
+              await asyncio.sleep(1.0 * (round_num + 1))  # back off before retrying
+              # Retry the SAME key on 503 instead of rotating to the next one.
+              # Only move on to the next key after MAX_SAME_KEY_503_RETRIES failed
+              # attempts on this key, to avoid looping forever on a dead backend.
+              #_same_key_503_retries += 1
+              #if _same_key_503_retries >= MAX_SAME_KEY_503_RETRIES:
+              #  console.log(f"[503-RETRY] Key {key_idx} hit 503 {_same_key_503_retries}x in a row, giving up on this key", "WARN")
+              #  key_pos += 1
+              #  _same_key_503_retries = 0
+              continue
+          
+            if resp.status == 400:
+              if "thinking" in body_text.lower() and "not supported" in body_text.lower():
+                # Happens right after a 429/503 fallback switches model_name to a model
+                # (e.g. RATE_LIMIT_MODEL) that doesn't support thinkingLevel/thinkingBudget.
+                # The payload was built before the switch and still carries the old
+                # model's thinkingConfig — strip it and retry instead of erroring out.
+                console.log(f"[400-THINKING] {model_name} rejected thinkingConfig, stripping and retrying", "WARN")
+                payload["generationConfig"].pop("thinkingConfig", None)
+                _disable_thinking = True
+                _thinking_stripped = True
+                break  # break key loop; round loop checks _thinking_stripped below
+              if malformed_retries > 0 and "too much branching" in body_text:
+                # mode=ANY without allowed_function_names causes Gemini to validate the full
+                # schema — strip tool_config and let the outer loop retry in AUTO mode.
+                console.log("[400-SCHEMA] tool_config mode=ANY triggered schema branching error, stripping and retrying", "WARN")
+                payload.pop("tool_config", None)
+                _last_detected_func = None
+                _schema_stripped = True
+                break  # break key loop; round loop checks _schema_stripped below
+              #log payload for 400 errors to help diagnose malformed requests
+              #console.log(f"400 Bad Request for key {key_idx}. Payload: {json.dumps(payload)}", "DEBUG")
+
+              if "API key not valid" in body_text:
+                console.log(f"[400] Key {key_idx+1} invalid, trying next", "WARN")
+                key_pos += 1 
+                _same_key_503_retries = 0
+                continue
+
+              return {"error": "400", "details": last_error_detail}
+            if resp.status == 403:
+              # check for msg "message": "Permission denied: Consumer 'api_key:AIzaSyB2U1dd1W97cNtVZAfbFksPoElnNUeY5sY' has been suspended.",
+              # if true, the remove the key from .env file and the list
+              #use regrex, not just if ... in
+              if re.search(r"Permission denied: Consumer 'api_key:[^']+' has been suspended", body_text):
+                console.log(f"[403] Key {key_idx} has been suspended, removing from key list", "ERROR")
+                suspended_key = keys[key_idx]
+
+                if key_idx < num_own_keys:
+                  # Suspended key belongs to this user's own BYOK list, not the shared pool.
+                  # own_keys is the actual list object returned by apikeys.get_keys(), so
+                  # mutating it in place removes the key from that user's stored key set.
+                  own_keys[:] = [k for k in own_keys if k != suspended_key]
+                  num_own_keys = len(own_keys)
+                elif suspended_key in GEMINI_API_KEY:
+                  # mutate in-place so any other reference to GEMINI_API_KEY (e.g. stale `keys`
+                  # aliases held by other concurrent calls) also sees the removal
+                  GEMINI_API_KEY[:] = [k for k in GEMINI_API_KEY if k != suspended_key]
+
+                  env_file = ".env"
+                  try:
+                    with open(env_file, "r") as f:
+                      lines = f.readlines()
+
+                    new_value_json = json.dumps(GEMINI_API_KEY)
+                    updated = False
+                    for i, line in enumerate(lines):
+                      stripped = line.lstrip()
+                      leading_ws = line[: len(line) - len(stripped)]
+                      # Must be exactly "GEMINI_API_KEY" followed by optional space then "=",
+                      # NOT a look-alike name like "MY_GEMINI_API_KEY" or "GEMINI_API_KEY_OLD".
+                      if not stripped.startswith("GEMINI_API_KEY"):
+                        continue
+                      after_name = stripped[len("GEMINI_API_KEY"):]
+                      after_name_stripped = after_name.lstrip(" \t")
+                      if not after_name_stripped.startswith("="):
+                        continue  # e.g. GEMINI_API_KEY_OLD=... -> reject
+
+                      after_eq = after_name_stripped[1:].lstrip(" \t")
+                      quote = after_eq[0] if after_eq[:1] in ("'", '"') else ""
+                      newline_suffix = "\n" if line.endswith("\n") else ""
+                      lines[i] = f"{leading_ws}GEMINI_API_KEY = {quote}{new_value_json}{quote}{newline_suffix}"
+                      updated = True
+                      break  # only ever one GEMINI_API_KEY line, stop after first match
+
+                    if not updated:
+                      console.log("GEMINI_API_KEY line not found in .env, skipped write", "WARN")
+                    else:
+                      with open(env_file, "w") as f:
+                        f.writelines(lines)
+                  except Exception as e:
+                    console.log(f"Failed to update .env file: {e}", "ERROR")
+
+                # Rebuild the combined keys list fresh (own_keys and/or GEMINI_API_KEY may have
+                # just shrunk above), then rebuild the attempt order against the new key count
+                # (still respecting the free-quota gate computed at the top of this call).
+                keys = (own_keys + GEMINI_API_KEY) if using_own_keys else GEMINI_API_KEY
+                num_free_keys = len(keys) - num_own_keys
+                usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
+
+                if not keys:
+                  return {"error": "403", "details": "All API keys have been suspended."}
+
+                key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
+                own_keys_in_order = 0 if _skip_own_keys else num_own_keys
+                key_pos = min(key_pos, len(key_order) - 1)
+                await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
+                continue
+              #try next key 
+              console.log(f"[403] Key {key_idx} has been suspended, trying next", "WARN")
+              key_pos += 1
+              _same_key_503_retries = 0
+              continue
+            
+            if resp.status == 401:
+              console.log(f"[401] Key {key_idx} unauthorized, trying next", "WARN")
+              key_pos += 1
+              _same_key_503_retries = 0
+              continue
+          except Exception as e:
+            last_error_detail = f"Exception for key {key_idx}: {e}\n{traceback.format_exc()}"
+            console.log(last_error_detail, "ERROR")
             key_pos += 1
             _same_key_503_retries = 0
             continue
-        except Exception as e:
-          last_error_detail = f"Exception for key {key_idx}: {e}\n{traceback.format_exc()}"
-          console.log(last_error_detail, "ERROR")
-          key_pos += 1
-          _same_key_503_retries = 0
-          continue
-      if response or _schema_stripped or _thinking_stripped or _context_stripped:
-        break
-      # Update consecutive 429-round counter for backoff + early model switch
-      # (key_order guard: an empty key_order — e.g. all keys just got suspended out from
-      # under this round — must never look like a "genuine all-429" round)
-      if key_order and _round_429_count == len(key_order):
-        _429_round_count += 1
-        # All keys hit non-TPM 429 → switch to RATE_LIMIT_MODEL immediately on first all-429 round
-        # (RPD / RPM exhausted — no point retrying same model with same keys)
-        #
-        # Whether to PERSIST this switch globally (via _update_last_working_model, which
-        # every future call — BYOK or free-tier — reads at startup) depends on whether the
-        # free key pool was actually implicated. If usable_free_keys == 0 this round, key_order
-        # was own-keys-only (e.g. a BYOK user whose free-tier fallback allowance is already
-        # used up today), so an all-429 round here only proves THEIR own key(s) are rate
-        # limited — it says nothing about the shared free pool's health and must not leak
-        # into global state. Only a round where the free-pool portion of key_order was
-        # present AND itself fully 429'd counts as genuine free-pool exhaustion.
-        _free_pool_exhausted_this_round = usable_free_keys > 0 and _free_429_count == usable_free_keys
-        _should_persist = (not using_own_keys) or _free_pool_exhausted_this_round
-        _scope_note = "" if _should_persist else " (BYOK own-key only — switching locally for this user, NOT persisted globally)"
-        # If this user's own key(s) were actually part of key_order this round (i.e. not
-        # already skipped as known-exhausted) and the round still all-429'd, their own
-        # key(s) are exhausted for today too — remember it so their NEXT request skips
-        # straight to the free pool instead of re-discovering the same thing from scratch.
-        if using_own_keys and own_keys_in_order > 0 and not _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id):
-          console.log(f"[BYOK] User {byok_user_id}'s own key(s) exhausted (all-429 this round) — will route straight to free pool for the rest of today", "WARN")
-          _BYOK_OWN_KEYS_EXHAUSTED[byok_user_id] = True
-        if model_name != RATE_LIMIT_MODEL:
-          console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL} early{_scope_note}", "WARN")
-          model_name = RATE_LIMIT_MODEL
-          _tpm_limited_keys.clear()
-          if _should_persist:
-            await _update_last_working_model(RATE_LIMIT_MODEL)  # persist so next session starts on fallback
-          if using_own_keys:
-            # Per-user fallback, independent of the global override — read back on this
-            # same user's next request even when the global state stays untouched.
-            _BYOK_LAST_WORKING_MODEL[byok_user_id] = RATE_LIMIT_MODEL
-          if _bonus_rounds_used < _BONUS_ROUND_CAP:
-            _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
-            _bonus_rounds_used += 1
-        elif model_name == RATE_LIMIT_MODEL:
-          console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL_} early{_scope_note}", "WARN")
-          model_name = RATE_LIMIT_MODEL_
-          _tpm_limited_keys.clear()
-          if _should_persist:
-            await _update_last_working_model(RATE_LIMIT_MODEL_)  # persist so next session starts on fallback
-          if using_own_keys:
-            _BYOK_LAST_WORKING_MODEL[byok_user_id] = RATE_LIMIT_MODEL_
-          if _bonus_rounds_used < _BONUS_ROUND_CAP:
-            _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
-            _bonus_rounds_used += 1
-      else:
-        _429_round_count = 0
-      round_num += 1
+        if response or _schema_stripped or _thinking_stripped or _context_stripped:
+          break
+        # Update consecutive 429-round counter for backoff + early model switch
+        # (key_order guard: an empty key_order — e.g. all keys just got suspended out from
+        # under this round — must never look like a "genuine all-429" round)
+        if key_order and _round_429_count == len(key_order):
+          _429_round_count += 1
+          # All keys hit non-TPM 429 → switch to RATE_LIMIT_MODEL immediately on first all-429 round
+          # (RPD / RPM exhausted — no point retrying same model with same keys)
+          #
+          # Whether to PERSIST this switch globally (via _update_last_working_model, which
+          # every future call — BYOK or free-tier — reads at startup) depends on whether the
+          # free key pool was actually implicated. If usable_free_keys == 0 this round, key_order
+          # was own-keys-only (e.g. a BYOK user whose free-tier fallback allowance is already
+          # used up today), so an all-429 round here only proves THEIR own key(s) are rate
+          # limited — it says nothing about the shared free pool's health and must not leak
+          # into global state. Only a round where the free-pool portion of key_order was
+          # present AND itself fully 429'd counts as genuine free-pool exhaustion.
+          _free_pool_exhausted_this_round = usable_free_keys > 0 and _free_429_count == usable_free_keys
+          _should_persist = (not using_own_keys) or _free_pool_exhausted_this_round
+          _scope_note = "" if _should_persist else " (BYOK own-key only — switching locally for this user, NOT persisted globally)"
+          # If this user's own key(s) were actually part of key_order this round (i.e. not
+          # already skipped as known-exhausted) and the round still all-429'd, their own
+          # key(s) are exhausted for today too — remember it so their NEXT request skips
+          # straight to the free pool instead of re-discovering the same thing from scratch.
+          if using_own_keys and own_keys_in_order > 0 and not _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id):
+            console.log(f"[BYOK] User {byok_user_id}'s own key(s) exhausted (all-429 this round) — will route straight to free pool for the rest of today", "WARN")
+            _BYOK_OWN_KEYS_EXHAUSTED[byok_user_id] = True
+          if model_name != RATE_LIMIT_MODEL:
+            console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL} early{_scope_note}", "WARN")
+            model_name = RATE_LIMIT_MODEL
+            _tpm_limited_keys.clear()
+            if _should_persist:
+              await _update_last_working_model(RATE_LIMIT_MODEL)  # persist so next session starts on fallback
+            if using_own_keys:
+              # Per-user fallback, independent of the global override — read back on this
+              # same user's next request even when the global state stays untouched.
+              _BYOK_LAST_WORKING_MODEL[byok_user_id] = RATE_LIMIT_MODEL
+            if _bonus_rounds_used < _BONUS_ROUND_CAP:
+              _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
+              _bonus_rounds_used += 1
+          elif model_name == RATE_LIMIT_MODEL:
+            console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL_} early{_scope_note}", "WARN")
+            model_name = RATE_LIMIT_MODEL_
+            _tpm_limited_keys.clear()
+            if _should_persist:
+              await _update_last_working_model(RATE_LIMIT_MODEL_)  # persist so next session starts on fallback
+            if using_own_keys:
+              _BYOK_LAST_WORKING_MODEL[byok_user_id] = RATE_LIMIT_MODEL_
+            if _bonus_rounds_used < _BONUS_ROUND_CAP:
+              _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
+              _bonus_rounds_used += 1
+        else:
+          _429_round_count = 0
+        round_num += 1
 
-    if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped:
-      if using_own_keys and not byok_free_quota_available:
-        # Own key(s) failed for this request AND their free-tier fallback allowance is
-        # already used up today — distinct from the normal "hit a transient error" or
-        # "normal free-tier user out of messages" cases, so the caller can show a
-        # message that's actually about their own key(s), not the generic free-tier one.
-        return {"error": "byok_quota_exhausted", "details": last_error_detail}
-      if last_error_detail and "HTTP 503" in last_error_detail:
-        return {"error": "503", "details": last_error_detail}
-      if last_error_detail and "HTTP 429" in last_error_detail:
-        return {"error": "429", "details": last_error_detail}
-      return {"error": "No response from model", "details": last_error_detail}
+      if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped:
+        if using_own_keys and not byok_free_quota_available:
+          # Own key(s) failed for this request AND their free-tier fallback allowance is
+          # already used up today — distinct from the normal "hit a transient error" or
+          # "normal free-tier user out of messages" cases, so the caller can show a
+          # message that's actually about their own key(s), not the generic free-tier one.
+          return {"error": "byok_quota_exhausted", "details": last_error_detail}
+        if last_error_detail and "HTTP 503" in last_error_detail:
+          return {"error": "503", "details": last_error_detail}
+        if last_error_detail and "HTTP 429" in last_error_detail:
+          return {"error": "429", "details": last_error_detail}
+        return {"error": "No response from model", "details": last_error_detail}
 
-    if _thinking_stripped:
-      # thinkingConfig was stripped mid-retry because the (post-fallback) model doesn't
-      # support it; retry the outer loop — _disable_thinking keeps it stripped for
-      # the rest of this call, even across further model switches.
-      console.log("[400-THINKING] Retrying without thinkingConfig", "INFO")
-      _thinking_stripped = False
-      turn_count -= 1
-      continue
-
-    if _schema_stripped:
-      # tool_config was stripped mid-retry due to 400 branching error; retry outer loop
-      console.log("[400-SCHEMA] Retrying without tool_config (AUTO mode)", "INFO")
-      _schema_stripped = False
-      turn_count -= 1
-      continue
-
-    if _context_stripped:
-      # A history part was shrunk to relieve TPM pressure; retry outer loop so
-      # contents/payload get rebuilt from the now-smaller `history` on the next pass.
-      console.log("[429-TPM] Retrying with reduced context after stripping", "INFO")
-      _context_stripped = False
-      turn_count -= 1
-      continue
-        
-    # Process response
-
-    # Safety block — promptFeedback.blockReason is set. This must be checked BEFORE the
-    # "no candidates" guard below: a PROHIBITED_CONTENT-style block has no "candidates"
-    # key at all, so if that guard ran first it would short-circuit with a bare
-    # `return response`, silently skipping the retry flow entirely.
-    # Flow: 1× silent auto-retry → user embed (max 2 retries) → cancel/timeout deletes embed silently.
-    _pf = response.get("promptFeedback", {})
-    if isinstance(_pf, dict) and _pf.get("blockReason"):
-      block_reason = _pf["blockReason"]
-      console.log(f"[SAFETY_BLOCK] blockReason={block_reason!r} | auto_retried={_safety_block_auto_retried} | user_retries={_safety_block_user_retries}", "WARN")
-
-      def _rollback_user_turn():
-        nonlocal turn_count
-        if history and history[-1].get("role") == "user":
-          history.pop()
+      if _thinking_stripped:
+        # thinkingConfig was stripped mid-retry because the (post-fallback) model doesn't
+        # support it; retry the outer loop — _disable_thinking keeps it stripped for
+        # the rest of this call, even across further model switches.
+        console.log("[400-THINKING] Retrying without thinkingConfig", "INFO")
+        _thinking_stripped = False
         turn_count -= 1
-
-      # Step 1 — silent auto-retry (once)
-      if not _safety_block_auto_retried:
-        _safety_block_auto_retried = True
-        console.log("[SAFETY_BLOCK] Auto-retrying once silently...", "WARN")
-        _rollback_user_turn()
-        await asyncio.sleep(1.0)
         continue
 
-      # Step 2 — user-triggered retry embed (up to MAX_SAFETY_BLOCK_USER_RETRIES)
-      if not message or not hasattr(message, "channel") or gemini_ws.is_voice_session:
-        return {"_empty_stop": True}
+      if _schema_stripped:
+        # tool_config was stripped mid-retry due to 400 branching error; retry outer loop
+        console.log("[400-SCHEMA] Retrying without tool_config (AUTO mode)", "INFO")
+        _schema_stripped = False
+        turn_count -= 1
+        continue
 
-      if _safety_block_user_retries < MAX_SAFETY_BLOCK_USER_RETRIES:
-        retry_future = asyncio.get_event_loop().create_future()
-        embed = discord.Embed(
-          title="Request blocked",
-          description=(
-            "Request blocked due to [our policy](https://ai.google.dev/gemini-api/terms). "
-            "This may be a false positive. Do you want to retry?"
-          ),
-          color=0xe74c3c,
-        )
-        view = MalformedRetryView(retry_future, author_id=message.author.id)
-        sent_block_msg = await message.channel.send(embed=embed, view=view)
-        view._sent_message = sent_block_msg
+      if _context_stripped:
+        # A history part was shrunk to relieve TPM pressure; retry outer loop so
+        # contents/payload get rebuilt from the now-smaller `history` on the next pass.
+        console.log("[429-TPM] Retrying with reduced context after stripping", "INFO")
+        _context_stripped = False
+        turn_count -= 1
+        continue
+        
+      # Process response
 
-        should_retry = False
-        try:
-          should_retry = await asyncio.wait_for(retry_future, timeout=120)
-        except asyncio.TimeoutError:
-          pass
+      # Safety block — promptFeedback.blockReason is set. This must be checked BEFORE the
+      # "no candidates" guard below: a PROHIBITED_CONTENT-style block has no "candidates"
+      # key at all, so if that guard ran first it would short-circuit with a bare
+      # `return response`, silently skipping the retry flow entirely.
+      # Flow: 1× silent auto-retry → user embed (max 2 retries) → cancel/timeout deletes embed silently.
+      _pf = response.get("promptFeedback", {})
+      if isinstance(_pf, dict) and _pf.get("blockReason"):
+        block_reason = _pf["blockReason"]
+        console.log(f"[SAFETY_BLOCK] blockReason={block_reason!r} | auto_retried={_safety_block_auto_retried} | user_retries={_safety_block_user_retries}", "WARN")
 
-        if not should_retry:
-          # Cancel or timeout — delete embed, leave no trace
+        def _rollback_user_turn():
+          nonlocal turn_count
+          if history and history[-1].get("role") == "user":
+            history.pop()
+          turn_count -= 1
+
+        # Step 1 — silent auto-retry (once)
+        if not _safety_block_auto_retried:
+          _safety_block_auto_retried = True
+          console.log("[SAFETY_BLOCK] Auto-retrying once silently...", "WARN")
+          _rollback_user_turn()
+          await asyncio.sleep(1.0)
+          continue
+
+        # Step 2 — user-triggered retry embed (up to MAX_SAFETY_BLOCK_USER_RETRIES)
+        if not message or not hasattr(message, "channel") or gemini_ws.is_voice_session:
+          return {"_empty_stop": True}
+
+        if _safety_block_user_retries < MAX_SAFETY_BLOCK_USER_RETRIES:
+          retry_future = asyncio.get_event_loop().create_future()
+          embed = discord.Embed(
+            title="Request blocked",
+            description=(
+              "Request blocked due to [our policy](https://ai.google.dev/gemini-api/terms). "
+              "This may be a false positive. Do you want to retry?"
+            ),
+            color=0xe74c3c,
+          )
+          view = MalformedRetryView(retry_future, author_id=message.author.id)
+          sent_block_msg = await message.channel.send(embed=embed, view=view)
+          view._sent_message = sent_block_msg
+
+          should_retry = False
+          try:
+            should_retry = await asyncio.wait_for(retry_future, timeout=120)
+          except asyncio.TimeoutError:
+            pass
+
+          if not should_retry:
+            # Cancel or timeout — delete embed, leave no trace
+            try:
+              await sent_block_msg.delete()
+            except Exception:
+              pass
+            return {"_empty_stop": True}
+
+          # User chose retry
+          _safety_block_user_retries += 1
           try:
             await sent_block_msg.delete()
           except Exception:
             pass
+          _rollback_user_turn()
+          continue
+
+        else:
+          # All user retries exhausted — send final blocked embed (no buttons) and exit
+          console.log(f"[SAFETY_BLOCK] All {MAX_SAFETY_BLOCK_USER_RETRIES} user retries exhausted", "ERROR")
+          final_embed = discord.Embed(
+            title="Request blocked",
+            description=(
+              "Request blocked due to [our policy](https://ai.google.dev/gemini-api/terms). "
+              "This may be a false positive."
+              "\n This message will be deleted in 30 seconds."
+            ),
+            color=0xe74c3c,
+          )
+          msg_blocked = await message.channel.send(embed=final_embed)
+          # Delete embed after 30s(fire and forget)
+          async def delete_blocked_embed(msg):
+            await asyncio.sleep(30)
+            try:
+              await msg.delete()
+            except Exception:
+              pass
+          
+          asyncio.create_task(delete_blocked_embed(msg_blocked))
           return {"_empty_stop": True}
 
-        # User chose retry
-        _safety_block_user_retries += 1
-        try:
-          await sent_block_msg.delete()
-        except Exception:
-          pass
-        _rollback_user_turn()
-        continue
+      if "candidates" not in response or not response["candidates"]:
+        return response
 
-      else:
-        # All user retries exhausted — send final blocked embed (no buttons) and exit
-        console.log(f"[SAFETY_BLOCK] All {MAX_SAFETY_BLOCK_USER_RETRIES} user retries exhausted", "ERROR")
-        final_embed = discord.Embed(
-          title="Request blocked",
-          description=(
-            "Request blocked due to [our policy](https://ai.google.dev/gemini-api/terms). "
-            "This may be a false positive."
-            "\n This message will be deleted in 30 seconds."
-          ),
-          color=0xe74c3c,
-        )
-        msg_blocked = await message.channel.send(embed=final_embed)
-        # Delete embed after 30s(fire and forget)
-        async def delete_blocked_embed(msg):
-          await asyncio.sleep(30)
-          try:
-            await msg.delete()
-          except Exception:
-            pass
-          
-        asyncio.create_task(delete_blocked_embed(msg_blocked))
-        return {"_empty_stop": True}
+      finish_reason = response["candidates"][0].get("finishReason", "")
+      if finish_reason == "MALFORMED_FUNCTION_CALL":
+        malformed_retries += 1
+        finish_message = response["candidates"][0].get("finishMessage", "")
+        parts_so_far   = response["candidates"][0].get("content", {}).get("parts", [])
 
-    if "candidates" not in response or not response["candidates"]:
-      return response
-
-    finish_reason = response["candidates"][0].get("finishReason", "")
-    if finish_reason == "MALFORMED_FUNCTION_CALL":
-      malformed_retries += 1
-      finish_message = response["candidates"][0].get("finishMessage", "")
-      parts_so_far   = response["candidates"][0].get("content", {}).get("parts", [])
-
-      if malformed_retries <= MAX_MALFORMED_RETRIES:
-        # Detect which function was malformed
-        detected_func = detect_malformed_function(finish_message, parts_so_far)
-        _last_detected_func = detected_func  # persist for tool_config on next retry
-        console.log(
-          f"[MALFORMED] attempt {malformed_retries}/{MAX_MALFORMED_RETRIES} "
-          f"| detected_func={detected_func!r} | msg={finish_message[:120]!r}",
-          "WARN"
-        )
-        
-        console.log(f"Full respone: {response}", "DEBUG")
-
-        # Roll back history — remove bad user turn and any partial model turn
-        turn_count -= 1
-        if history and history[-1].get("role") == "user":
-          history.pop()
-        if history and history[-1].get("role") == "model":
-          history.pop()
-
-        # Build a targeted correction message
-        correction = build_malformed_retry_message(finish_message, detected_func, malformed_retries)
-        history.append({"role": "user", "parts": [{"text": correction}]})
-
-        # Lower temperature so model is less "creative" and sticks to schema
-        retry_temperature = get_retry_temperature(temperature, malformed_retries)
-
-        await asyncio.sleep(1.0 * malformed_retries)
-        continue
-      else:
-        console.log("[MALFORMED] Max retries reached, prompting user", "ERROR")
-        if message and hasattr(message, 'channel'):
-          retry_future = asyncio.get_event_loop().create_future()
-          embed = discord.Embed(
-            title="Arona ran into an issue",
-            description="Arona ran into an issue generating this response after several attempts. Would you like to retry?",
-            color=0xe74c3c
+        if malformed_retries <= MAX_MALFORMED_RETRIES:
+          # Detect which function was malformed
+          detected_func = detect_malformed_function(finish_message, parts_so_far)
+          _last_detected_func = detected_func  # persist for tool_config on next retry
+          console.log(
+            f"[MALFORMED] attempt {malformed_retries}/{MAX_MALFORMED_RETRIES} "
+            f"| detected_func={detected_func!r} | msg={finish_message[:120]!r}",
+            "WARN"
           )
-          view = MalformedRetryView(retry_future, author_id=message.author.id)
-          view._sent_message = await message.channel.send(embed=embed, view=view)
-          try:
-            should_retry = await asyncio.wait_for(retry_future, timeout=120)
-          except asyncio.TimeoutError:
-            should_retry = False
-          if should_retry:
-            malformed_retries = 0
-            retry_temperature  = temperature  # reset temperature on manual retry
-            turn_count -= 1
-            continue
-        return {"_malformed_exhausted": True}
+        
+          console.log(f"Full respone: {response}", "DEBUG")
 
-    malformed_retries = 0  # Reset on successful response
-    retry_temperature  = temperature  # Restore temperature after malformed streak
-    _last_detected_func = None  # Clear forced function target after successful call
-    parts_list = response["candidates"][0].get("content", {}).get("parts", [])
-    # NOTE: empty_response_retries is reset below, after the empty-response guard passes
-
-    # Empty response — model returned no text parts and no function call parts at all
-    # (regardless of finish_reason). Retry up to MAX_MALFORMED_RETRIES times by
-    # re-sending the same user payload, then prompt user like malformed exhaustion.
-    _has_text = any(
-      p.get("text", "").strip() and not p.get("thought", False)
-      for p in parts_list
-    )
-    _has_func = any("functionCall" in p for p in parts_list)
-    if not _has_text and not _has_func:
-      empty_response_retries += 1
-      if empty_response_retries <= MAX_MALFORMED_RETRIES:
-        _thought_only = any(p.get("thought", False) for p in parts_list)
-        console.log(
-          f"[EMPTY_RESPONSE] attempt {empty_response_retries}/{MAX_MALFORMED_RETRIES} "
-          f"| finish_reason={finish_reason!r} | turn={turn_count} | thought_only={_thought_only} | parts={len(parts_list)}",
-          "WARN"
-        )
-        if _thought_only:
-          # Model is mid-chain-of-thought — preserve thought parts and show it to users
-          history.append({"role": "model", "parts": parts_list})
-          thought_parts = [p.get("text", "").strip() for p in parts_list if p.get("thought", False)]
-          thought_content = _mark_truncated_thought("\n\n".join([t for t in thought_parts if t]).strip())
-          if thought_content:
-            await _send_thought_attachment(thought_content)
-        else:
-          # Truly empty — roll back and retry the same user turn
+          # Roll back history — remove bad user turn and any partial model turn
+          turn_count -= 1
           if history and history[-1].get("role") == "user":
             history.pop()
-          turn_count -= 1
-        await asyncio.sleep(1.0 * empty_response_retries)
-        continue
-      else:
-        # Exhausted all retries — prompt user just like MALFORMED_FUNCTION_CALL
-        console.log(f"[EMPTY_RESPONSE] Max retries reached, prompting user", "ERROR")
-        empty_response_retries = 0
-        if message and hasattr(message, "channel") and not gemini_ws.is_voice_session:
-          retry_future = asyncio.get_event_loop().create_future()
-          embed = discord.Embed(
-            title="Arona returned an empty response",
-            description="Arona returned an empty response after several attempts. Would you like to retry?",
-            color=0xe67e22
+          if history and history[-1].get("role") == "model":
+            history.pop()
+
+          # Build a targeted correction message
+          correction = build_malformed_retry_message(finish_message, detected_func, malformed_retries)
+          history.append({"role": "user", "parts": [{"text": correction}]})
+
+          # Lower temperature so model is less "creative" and sticks to schema
+          retry_temperature = get_retry_temperature(temperature, malformed_retries)
+
+          await asyncio.sleep(1.0 * malformed_retries)
+          continue
+        else:
+          console.log("[MALFORMED] Max retries reached, prompting user", "ERROR")
+          if message and hasattr(message, 'channel'):
+            retry_future = asyncio.get_event_loop().create_future()
+            embed = discord.Embed(
+              title="Arona ran into an issue",
+              description="Arona ran into an issue generating this response after several attempts. Would you like to retry?",
+              color=0xe74c3c
+            )
+            view = MalformedRetryView(retry_future, author_id=message.author.id)
+            view._sent_message = await message.channel.send(embed=embed, view=view)
+            try:
+              should_retry = await asyncio.wait_for(retry_future, timeout=120)
+            except asyncio.TimeoutError:
+              should_retry = False
+            if should_retry:
+              malformed_retries = 0
+              retry_temperature  = temperature  # reset temperature on manual retry
+              turn_count -= 1
+              continue
+          return {"_malformed_exhausted": True}
+
+      malformed_retries = 0  # Reset on successful response
+      retry_temperature  = temperature  # Restore temperature after malformed streak
+      _last_detected_func = None  # Clear forced function target after successful call
+      parts_list = response["candidates"][0].get("content", {}).get("parts", [])
+      # NOTE: empty_response_retries is reset below, after the empty-response guard passes
+
+      # Empty response — model returned no text parts and no function call parts at all
+      # (regardless of finish_reason). Retry up to MAX_MALFORMED_RETRIES times by
+      # re-sending the same user payload, then prompt user like malformed exhaustion.
+      _has_text = any(
+        p.get("text", "").strip() and not p.get("thought", False)
+        for p in parts_list
+      )
+      _has_func = any("functionCall" in p for p in parts_list)
+      if not _has_text and not _has_func:
+        empty_response_retries += 1
+        if empty_response_retries <= MAX_MALFORMED_RETRIES:
+          _thought_only = any(p.get("thought", False) for p in parts_list)
+          console.log(
+            f"[EMPTY_RESPONSE] attempt {empty_response_retries}/{MAX_MALFORMED_RETRIES} "
+            f"| finish_reason={finish_reason!r} | turn={turn_count} | thought_only={_thought_only} | parts={len(parts_list)}",
+            "WARN"
           )
-          view = MalformedRetryView(retry_future, author_id=message.author.id)
-          view._sent_message = await message.channel.send(embed=embed, view=view)
-          try:
-            should_retry = await asyncio.wait_for(retry_future, timeout=120)
-          except asyncio.TimeoutError:
-            should_retry = False
-          if should_retry:
-            empty_response_retries = 0
+          if _thought_only:
+            # Model is mid-chain-of-thought — preserve thought parts and show it to users
+            history.append({"role": "model", "parts": parts_list})
+            thought_parts = [p.get("text", "").strip() for p in parts_list if p.get("thought", False)]
+            thought_content = _mark_truncated_thought("\n\n".join([t for t in thought_parts if t]).strip())
+            if thought_content:
+              await _send_thought_attachment(thought_content)
+          else:
+            # Truly empty — roll back and retry the same user turn
             if history and history[-1].get("role") == "user":
               history.pop()
             turn_count -= 1
-            continue
-        return {"_empty_stop": True}
+          await asyncio.sleep(1.0 * empty_response_retries)
+          continue
+        else:
+          # Exhausted all retries — prompt user just like MALFORMED_FUNCTION_CALL
+          console.log(f"[EMPTY_RESPONSE] Max retries reached, prompting user", "ERROR")
+          empty_response_retries = 0
+          if message and hasattr(message, "channel") and not gemini_ws.is_voice_session:
+            retry_future = asyncio.get_event_loop().create_future()
+            embed = discord.Embed(
+              title="Arona returned an empty response",
+              description="Arona returned an empty response after several attempts. Would you like to retry?",
+              color=0xe67e22
+            )
+            view = MalformedRetryView(retry_future, author_id=message.author.id)
+            view._sent_message = await message.channel.send(embed=embed, view=view)
+            try:
+              should_retry = await asyncio.wait_for(retry_future, timeout=120)
+            except asyncio.TimeoutError:
+              should_retry = False
+            if should_retry:
+              empty_response_retries = 0
+              if history and history[-1].get("role") == "user":
+                history.pop()
+              turn_count -= 1
+              continue
+          return {"_empty_stop": True}
 
-    empty_response_retries = 0  # Reset — this turn has actual content
+      empty_response_retries = 0  # Reset — this turn has actual content
 
-    history.append({
-      "role": "model",
-      "parts": parts_list
-    })
-
-    # Send any textual parts immediately to channel (before executing functions) ONLY if the model called a function
-    text_parts = [clean_gemini_response(p.get("text", ""), history) for p in parts_list if p.get("text", "").strip() and not p.get("thought", False)]
-    text_parts = [t for t in text_parts if t]  # drop empty after cleaning
-    has_func_call = any("functionCall" in p for p in parts_list)
-    if has_func_call and text_parts and message and not gemini_ws.is_voice_session:
-      combined_text = "\n".join(text_parts).strip()
-      combined_text = affection.parse_and_apply_mood_tag(combined_text)
-      try:
-        await send_content_or_file(channel=message.channel, content=combined_text, message=message)
-      except Exception as e:
-        console.log(f"Failed sending model text to channel: {e}", "ERROR")
-
-    # Check for function calls
-    all_texts = [p.get("text", "") for p in parts_list if p.get("text", "").strip()]
-    combined_msg = "\n".join(all_texts).strip()
-
-    has_calls = False
-    escalate_thinking_level = None  # replaces old escalate_to_flash (model switch)
-    search_blocked = False
-    # NOTE: func_msg is NOT reset here — it accumulates across every round of this
-    # tool-calling loop and is only flushed once, after the final (non-tool) reply.
-    
-    for part in parts_list:
-      if "functionCall" in part:
-        func_call = part["functionCall"]
-        func_name = func_call.get("name", "")
-        func_args = func_call.get("args", {})
-        
-        # Notify that the function is running (no need to check msg here anymore)
-        if not gemini_ws.is_voice_session and message:
-          func_msg_text = get_function_execution_message(func_name, func_args)
-          try:
-            func_msg.append(await message.channel.send(func_msg_text))
-          except Exception as e:
-            console.log(f"Failed sending func_msg notice for {func_name}: {e}", "WARN")
-        
-        console.log(f"[MODEL_CALLED_FUNCTION] {func_name} with args: {func_args}", "INFO")
-        
-        # Check if model wants to escalate thinking level
-        if func_name == "escalate":
-          # OLD: model escalation (commented out — already on best model, switching model is no longer the mechanism)
-          # if func_args.get("model", "") == "gemini-3-flash-preview":
-          #   escalated_to = "gemini-3-flash-preview"
-          # else:
-          #   console.log(f"[ESCALATE] Unknown model requested: {func_args.get('model','')}, defaulting to {FALLBACK_MODEL}", "WARN")
-          #   escalated_to = FALLBACK_MODEL
-          # console.log(f"[ESCALATE] Using model: {escalated_to}", "INFO")
-
-          # NEW: boost thinking level, keep same model
-          requested_level = func_args.get("level", "medium")
-          if requested_level not in ("medium", "high"):
-            console.log(f"[ESCALATE] Unknown level requested: {requested_level!r}, defaulting to medium", "WARN")
-            requested_level = "medium"
-          console.log(f"[ESCALATE] Boosting thinking level to: {requested_level}", "INFO")
-          
-
-          # Append the escalation notice to history, as a functionResponse
-          history.append({
-            "role": "user",
-            "parts": [{"functionResponse": {"name": "escalate", "response": {"result": f"Boosted thinking level to {requested_level}"}}}]
-          })
-
-          escalate_thinking_level = requested_level
-          has_calls = False
-          
-          #if func_msg:
-          #   for msg in func_msg:
-          #      await msg.delete()
-          #   func_msg = []
-          #break
-        
-        console.log(f"[FUNCTION] {func_name} {func_args}", "INFO")
-        
-        # Stash this call's thoughtSignature (if any) so the run_code handler can stamp
-        # it onto the "-# Code Execution Output" message it sends — see _pending_call_sig.
-        if func_name == "run_code" and message:
-          _call_sig = part.get("thoughtSignature")
-          if _call_sig:
-            _pending_call_sig[str(message.id)] = _call_sig
-        
-        if typing_pause_event is not None:
-          typing_pause_event.set()
-        try:
-          func_result = await execute_function(func_name, func_args, message)
-        finally:
-          if typing_pause_event is not None:
-            typing_pause_event.clear()
-        
-        # Special: load_more_context replaces initial context window with larger batch
-        if func_name == "load_more_context":
-          try:
-            import json as _json
-            _parsed = _json.loads(func_result)
-            if isinstance(_parsed, dict) and "__load_context__" in _parsed:
-              new_entries = list(reversed(_parsed["__load_context__"]))
-              history[0:_initial_ctx_len] = new_entries
-              _initial_ctx_len = len(new_entries)
-              func_result = f"Loaded {len(new_entries)} messages into context."
-          except Exception as _e:
-            func_result = f"Failed to load context: {_e}"
-
-        # Special: load_tools/unload_tools change which groups are available — rebuild the
-        # declared tool list immediately so the NEXT turn in this same loop can actually call them
-        # (without this, the model would get a function-not-found error one turn after loading it).
-        if func_name in ("load_tools", "unload_tools"):
-          tools = get_gemini_tools(message, model_name)
-
-        # Check if search was blocked
-        if "Search service temporarily unavailable" in func_result:
-          console.log(f"[FUNCTION] Search blocked or failed, will skip further searches", "WARN")
-          search_blocked = True
-        
-        history.append({
-          "role": "user",
-          "parts": [{"functionResponse": {"name": func_name, "response": {"result": func_result}}}] + (_pending_view_parts.pop(str(message.id), []) if message else [])
-        })
-        
-        has_calls = True
-        
-        #try:
-        #  if func_msg and func_msg.author.id == client.user.id:
-        #    await func_msg.delete()
-        #except Exception:
-        #  pass
-        
-        #func_msg = None
-    
-    if has_calls:
-      _consecutive_tool_rounds += 1
-    else:
-      _consecutive_tool_rounds = 0
-
-    if has_calls and _consecutive_tool_rounds > 0 and _consecutive_tool_rounds % TOOL_LOOP_NUDGE_EVERY == 0:
-      console.log(f"[TOOL_LOOP] {_consecutive_tool_rounds} consecutive tool-calling rounds, injecting stop-and-think nudge", "WARN")
       history.append({
-        "role": "user",
-        "parts": [{"text": (
-          "[SYSTEM NOTE — not from Sensei] You have called tools for "
-          f"{_consecutive_tool_rounds} rounds in a row without stopping. If this is not producing "
-          "a useful result, STOP calling tools now. Carefully think about what you want to do next, and only call a tool if it is truly necessary. If you are unsure, STOP, and ask the sensei for clarification or state a conclusion.\n"
-          "If you are performing a multi-turn agent task, and everything is working as expected, you may ignore this message and continue."
-        )}]
+        "role": "model",
+        "parts": parts_list
       })
 
-    if escalate_thinking_level:
-      # Clean up any "Executing function..." notices before recursing — this branch
-      # returns early and would otherwise skip the cleanup block below, leaking messages.
-      if func_msg:
-        for msg in func_msg:
+      # Send any textual parts immediately to channel (before executing functions) ONLY if the model called a function
+      text_parts = [clean_gemini_response(p.get("text", ""), history) for p in parts_list if p.get("text", "").strip() and not p.get("thought", False)]
+      text_parts = [t for t in text_parts if t]  # drop empty after cleaning
+      has_func_call = any("functionCall" in p for p in parts_list)
+      if has_func_call and text_parts and message and not gemini_ws.is_voice_session:
+        combined_text = "\n".join(text_parts).strip()
+        combined_text = affection.parse_and_apply_mood_tag(combined_text)
+        try:
+          await send_content_or_file(channel=message.channel, content=combined_text, message=message)
+        except Exception as e:
+          console.log(f"Failed sending model text to channel: {e}", "ERROR")
+
+      # Check for function calls
+      all_texts = [p.get("text", "") for p in parts_list if p.get("text", "").strip()]
+      combined_msg = "\n".join(all_texts).strip()
+
+      has_calls = False
+      escalate_thinking_level = None  # replaces old escalate_to_flash (model switch)
+      search_blocked = False
+      # NOTE: func_msg is NOT reset here — it accumulates across every round of this
+      # tool-calling loop and is only flushed once, after the final (non-tool) reply.
+    
+      for part in parts_list:
+        if "functionCall" in part:
+          func_call = part["functionCall"]
+          func_name = func_call.get("name", "")
+          func_args = func_call.get("args", {})
+        
+          # Notify that the function is running (no need to check msg here anymore)
+          if not gemini_ws.is_voice_session and message:
+            func_msg_text = get_function_execution_message(func_name, func_args)
+            try:
+              func_msg.append(await message.channel.send(func_msg_text))
+            except Exception as e:
+              console.log(f"Failed sending func_msg notice for {func_name}: {e}", "WARN")
+        
+          console.log(f"[MODEL_CALLED_FUNCTION] {func_name} with args: {func_args}", "INFO")
+        
+          # Check if model wants to escalate thinking level
+          if func_name == "escalate":
+            # OLD: model escalation (commented out — already on best model, switching model is no longer the mechanism)
+            # if func_args.get("model", "") == "gemini-3-flash-preview":
+            #   escalated_to = "gemini-3-flash-preview"
+            # else:
+            #   console.log(f"[ESCALATE] Unknown model requested: {func_args.get('model','')}, defaulting to {FALLBACK_MODEL}", "WARN")
+            #   escalated_to = FALLBACK_MODEL
+            # console.log(f"[ESCALATE] Using model: {escalated_to}", "INFO")
+
+            # NEW: boost thinking level, keep same model
+            requested_level = func_args.get("level", "medium")
+            if requested_level not in ("medium", "high"):
+              console.log(f"[ESCALATE] Unknown level requested: {requested_level!r}, defaulting to medium", "WARN")
+              requested_level = "medium"
+            console.log(f"[ESCALATE] Boosting thinking level to: {requested_level}", "INFO")
+          
+
+            # Append the escalation notice to history, as a functionResponse
+            history.append({
+              "role": "user",
+              "parts": [{"functionResponse": {"name": "escalate", "response": {"result": f"Boosted thinking level to {requested_level}"}}}]
+            })
+
+            escalate_thinking_level = requested_level
+            has_calls = False
+          
+            #if func_msg:
+            #   for msg in func_msg:
+            #      await msg.delete()
+            #   func_msg = []
+            #break
+        
+          console.log(f"[FUNCTION] {func_name} {func_args}", "INFO")
+        
+          # Stash this call's thoughtSignature (if any) so the run_code handler can stamp
+          # it onto the "-# Code Execution Output" message it sends — see _pending_call_sig.
+          if func_name == "run_code" and message:
+            _call_sig = part.get("thoughtSignature")
+            if _call_sig:
+              _pending_call_sig[str(message.id)] = _call_sig
+        
+          if typing_pause_event is not None:
+            typing_pause_event.set()
           try:
-            await msg.delete()
-          except Exception:
-            pass
-        func_msg = []
-      return await ask_gemini(
-        model_name=model_name,  # same model, only thinking level changes
-        text="",
-        attachments=attachments,
-        temperature=temperature,
-        max_retries=max_retries,
-        sys_prompt=sys_prompt,
-        timeout=timeout,
-        custom_sys_prompt=custom_sys_prompt,
-        msg_history=history,
-        enable_functions=True,
-        message=message,
-        typing_pause_event=typing_pause_event,
-        level=escalate_thinking_level,
-      )
+            func_result = await execute_function(func_name, func_args, message)
+          finally:
+            if typing_pause_event is not None:
+              typing_pause_event.clear()
+        
+          # Special: load_more_context replaces initial context window with larger batch
+          if func_name == "load_more_context":
+            try:
+              import json as _json
+              _parsed = _json.loads(func_result)
+              if isinstance(_parsed, dict) and "__load_context__" in _parsed:
+                new_entries = list(reversed(_parsed["__load_context__"]))
+                history[0:_initial_ctx_len] = new_entries
+                _initial_ctx_len = len(new_entries)
+                func_result = f"Loaded {len(new_entries)} messages into context."
+            except Exception as _e:
+              func_result = f"Failed to load context: {_e}"
+
+          # Special: load_tools/unload_tools change which groups are available — rebuild the
+          # declared tool list immediately so the NEXT turn in this same loop can actually call them
+          # (without this, the model would get a function-not-found error one turn after loading it).
+          if func_name in ("load_tools", "unload_tools"):
+            tools = get_gemini_tools(message, model_name)
+
+          # Check if search was blocked
+          if "Search service temporarily unavailable" in func_result:
+            console.log(f"[FUNCTION] Search blocked or failed, will skip further searches", "WARN")
+            search_blocked = True
+        
+          history.append({
+            "role": "user",
+            "parts": [{"functionResponse": {"name": func_name, "response": {"result": func_result}}}] + (_pending_view_parts.pop(str(message.id), []) if message else [])
+          })
+        
+          has_calls = True
+        
+          #try:
+          #  if func_msg and func_msg.author.id == client.user.id:
+          #    await func_msg.delete()
+          #except Exception:
+          #  pass
+        
+          #func_msg = None
+    
+      if has_calls:
+        _consecutive_tool_rounds += 1
+      else:
+        _consecutive_tool_rounds = 0
+
+      if has_calls and _consecutive_tool_rounds > 0 and _consecutive_tool_rounds % TOOL_LOOP_NUDGE_EVERY == 0:
+        console.log(f"[TOOL_LOOP] {_consecutive_tool_rounds} consecutive tool-calling rounds, injecting stop-and-think nudge", "WARN")
+        history.append({
+          "role": "user",
+          "parts": [{"text": (
+            "[SYSTEM NOTE — not from Sensei] You have called tools for "
+            f"{_consecutive_tool_rounds} rounds in a row without stopping. If this is not producing "
+            "a useful result, STOP calling tools now. Carefully think about what you want to do next, and only call a tool if it is truly necessary. If you are unsure, STOP, and ask the sensei for clarification or state a conclusion.\n"
+            "If you are performing a multi-turn agent task, and everything is working as expected, you may ignore this message and continue."
+          )}]
+        })
+
+      if escalate_thinking_level:
+        # Clean up any "Executing function..." notices before recursing — this branch
+        # returns early and would otherwise skip the cleanup block below, leaking messages.
+        if func_msg:
+          await _delete_func_msg(func_msg)
+          func_msg = []
+        return await ask_gemini(
+          model_name=model_name,  # same model, only thinking level changes
+          text="",
+          attachments=attachments,
+          temperature=temperature,
+          max_retries=max_retries,
+          sys_prompt=sys_prompt,
+          timeout=timeout,
+          custom_sys_prompt=custom_sys_prompt,
+          msg_history=history,
+          enable_functions=True,
+          message=message,
+          typing_pause_event=typing_pause_event,
+          level=escalate_thinking_level,
+        )
   
             
-    if search_blocked and has_calls:
-      console.log("[FUNCTION] Search blocked, asking model to provide answer without search", "INFO")
-      current_text = "Search service is temporarily unavailable. Please provide your best answer without web search."
-      current_attachments = None
-      # Force exit after next turn
-      # max_function_turns = turn_count + 1 no need
-    elif not has_calls:
-      # clean up and exit
-      if 'func_msg' in locals() and func_msg:
-        asyncio.create_task(_delete_func_msg(func_msg))
-      return response
-    else:
-      current_text = None
-      current_attachments = None
+      if search_blocked and has_calls:
+        console.log("[FUNCTION] Search blocked, asking model to provide answer without search", "INFO")
+        current_text = "Search service is temporarily unavailable. Please provide your best answer without web search."
+        current_attachments = None
+        # Force exit after next turn
+        # max_function_turns = turn_count + 1 no need
+      elif not has_calls:
+        # clean up and exit
+        if 'func_msg' in locals() and func_msg:
+          asyncio.create_task(_delete_func_msg(func_msg))
+          func_msg = []  # already scheduled — don't let `finally` re-schedule it
+        return response
+      else:
+        current_text = None
+        current_attachments = None
       
-  if 'func_msg' in locals() and func_msg:
-          #for msg in func_msg:
-          #  try:
-          #    await msg.delete()
-          #  except Exception as e:
-          #    console.log(f"Failed deleting func_msg notice: {e}", "WARN")
+    if 'func_msg' in locals() and func_msg:
+        asyncio.create_task(_delete_func_msg(func_msg))
+        func_msg = []  # already scheduled — don't let `finally` re-schedule it
+
+    return response
+  finally:
+    # Guaranteed cleanup: no matter which path we exit through (normal
+    # completion, early `return {...}` on error/safety-block, or an
+    # uncaught exception from execute_function/the API call), any
+    # leftover "Executing function..." notices get removed.
+    if 'func_msg' in locals() and func_msg:
       asyncio.create_task(_delete_func_msg(func_msg))
-          
-  return response
 
 
 async def fetch_image_as_base64(url):
