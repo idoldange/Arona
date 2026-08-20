@@ -7145,7 +7145,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
               message_bank=bank,
               attachments=gemini_attachments,
               msg_history=history,
-              message=None,
+              message=message,
           )
           # Cleanup any leftover overload status message from the lite model call
           if message.channel.id in _overload_status_msgs:
