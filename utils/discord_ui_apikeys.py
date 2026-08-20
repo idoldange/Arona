@@ -29,12 +29,16 @@ class ApiKeyModal(discord.ui.Modal, title="Add Gemini API key(s)"):
             results = await asyncio.gather(*[apikeys.validate_key(session, k) for k in candidates])
 
         valid_keys = []
-        invalid_entries = []  # (masked_key, reason)
+        invalid_entries = []  # (key, reason)
         for k, (ok, reason) in zip(candidates, results):
             if ok:
                 valid_keys.append(k)
             else:
-                invalid_entries.append((apikeys.mask_key(k), reason))
+                # validate_key now only returns ok=False on 400/401/403 (a genuinely
+                # bad/revoked key), never on transient errors (429/5xx/timeout) — so
+                # showing the full key here is safe, it's already dead and the user
+                # is the only one who can see this ephemeral message anyway.
+                invalid_entries.append((k, reason))
 
         total_keys = None
         if valid_keys:
@@ -59,8 +63,8 @@ class ApiKeyModal(discord.ui.Modal, title="Add Gemini API key(s)"):
             lines.append(f"Added {len(valid_keys)} key(s). Total: {len(total_keys)}.")
         if invalid_entries:
             lines.append("Rejected (invalid key):")
-            for masked, reason in invalid_entries:
-                lines.append(f"{masked} - {reason}")
+            for k, reason in invalid_entries:
+                lines.append(f"`{k}` - {reason}")
 
         embed = discord.Embed(
             title="Add key result",
