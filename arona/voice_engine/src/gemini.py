@@ -231,50 +231,86 @@ class GeminiWebSocket:
         except Exception as e:
             console.log(f"[Gemini] Send audio error: {e}", "ERROR")
 
+    @staticmethod
+    def _load_ref_audio_pcm16(path: str) -> tuple[bytes, int]:
+        """Reads a WAV file and returns (raw mono 16-bit PCM bytes, sample_rate).
+        Only converts bit-depth/channel count if needed — the Live API resamples
+        on its own as long as the real sample rate is declared in the mime type
+        (e.g. "audio/pcm;rate=<actual_rate>"), so no manual resampling here."""
+        import wave
+        with wave.open(path, "rb") as wf:
+            n_channels = wf.getnchannels()
+            sampwidth = wf.getsampwidth()
+            framerate = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
+
+        try:
+            import audioop
+            if sampwidth != 2:
+                frames = audioop.lin2lin(frames, sampwidth, 2)
+                sampwidth = 2
+            if n_channels != 1:
+                frames = audioop.tomono(frames, sampwidth, 0.5, 0.5)
+        except ImportError:
+            console.log("[Gemini Live] audioop unavailable, sending reference audio as-is (mono/16-bit not verified)", "WARN")
+
+        return frames, framerate
+
     async def send_voice_reference(self) -> None:
-        """Sends the reference audio clip as the first user turn so Gemini mimics
-        its tone, pitch and rhythm for the rest of the voice session."""
+        """Primes the session with a short reference clip so Gemini mimics its
+        tone/rhythm for the rest of the voice call.
+
+        NOTE: the Live API only accepts raw 16-bit PCM audio (mono, little-endian)
+        — no WAV/MP3/etc. containers, and not as inline_data in client_content
+        turns either (that closes the socket with 1008 "Operation is not
+        implemented"). Audio must go through realtime_input, so the instruction
+        text is sent as a normal client_content turn and the whole reference
+        clip is then sent in one realtime_input message right after, letting
+        VAD treat it as a single turn. The real sample rate is declared in the
+        mime type so the API resamples it server-side — no local resampling needed.
+        """
         if not self.ws:
             return
 
         try:
-            with open(config.VOICE_CALL_REF_AUD, "rb") as f:
-                audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+            pcm_data, sample_rate = self._load_ref_audio_pcm16(config.VOICE_CALL_REF_AUD)
         except Exception as e:
             console.log(f"[Gemini Live] Failed to load voice reference audio: {e}", "ERROR")
             return
 
         prompt_text = (
-            "Listen to the attached audio clip closely and mimic its exact tone, pitch, "
-            "and speaking rhythm/cadence for the rest of this conversation. "
-            f"Here is the transcript of the clip: \"{config.VOICE_CALL_REF_TEXT}\". "
-            "From now on, keep speaking with that same voice vibe consistently, "
-            "no matter what topic comes up."
+            "Before we begin, you'll hear a short reference audio clip. Mimic its exact tone, "
+            "pitch, and speaking rhythm/cadence for the rest of this conversation. "
+            f"Its transcript is: \"{config.VOICE_CALL_REF_TEXT}\". "
+            "Don't respond to what's said in the clip and don't treat it as part of the "
+            "conversation — it's only a voice sample to match. Just silently adopt the vibe "
+            "and wait for Sensei's real first message."
         )
 
-        msg = {
-            "client_content": {
-                "turns": [{
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt_text},
-                        {
-                            "inline_data": {
-                                "mime_type": "audio/wav",
-                                "data": audio_b64
-                            }
-                        }
-                    ]
-                }],
-                "turn_complete": True
-            }
-        }
-
         try:
-            await self.ws.send(json.dumps(msg))
-            console.log("[Gemini Live] Sent voice reference audio + mimic prompt", "INFO")
+            await self.ws.send(json.dumps({
+                "client_content": {
+                    "turns": [{"role": "user", "parts": [{"text": prompt_text}]}],
+                    "turn_complete": True
+                }
+            }))
         except Exception as e:
-            console.log(f"[Gemini Live] Failed to send voice reference: {e}", "ERROR")
+            console.log(f"[Gemini Live] Failed to send voice reference prompt: {e}", "ERROR")
+            return
+
+        mime_type = f"audio/pcm;rate={sample_rate}"
+        try:
+            await self.ws.send(json.dumps({
+                "realtime_input": {
+                    "media_chunks": [{
+                        "mime_type": mime_type,
+                        "data": base64.b64encode(pcm_data).decode("utf-8")
+                    }]
+                }
+            }))
+            console.log(f"[Gemini Live] Sent voice reference audio ({mime_type})", "INFO")
+        except Exception as e:
+            console.log(f"[Gemini Live] Failed to stream voice reference audio: {e}", "ERROR")
 
     async def send_message(self, text: str) -> None:
         """Sends a text message (context or system info) without blocking for audio response immediately."""
