@@ -19,18 +19,8 @@ async def cmd_reload():
     modules_to_reload = [
       "config",
       "debug",
-      "attachment",
       "arona.prompt",
-      "arona.tts.tts",
-      "arona.voice_engine.src.gemini",
-      "arona.voice_engine.src.record",
-      "console.console",
       "console.command",
-      "utils.memory",
-      "utils.schale_db",
-      "utils.vector_database",
-      "utils.msg_bank",
-      "games.chess",
     ]
 
     for module_name in modules_to_reload:

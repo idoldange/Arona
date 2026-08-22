@@ -35,7 +35,7 @@ class GeminiWebSocket:
                     }
                 },
                 #"enable_affective_dialog": True
-                "thinking_level": "LOW"
+                #"thinking_level": "LOW"
             }
         }
     
@@ -80,6 +80,7 @@ class GeminiWebSocket:
                     console.log(f"Connected to Gemini WebSocket (Key {i+1})", "INFO")
                     await self.setup()
                     self.receive_task = asyncio.create_task(self.listen())
+                    await self.send_voice_reference()
                     
                     return
                 except Exception as e:
@@ -229,6 +230,51 @@ class GeminiWebSocket:
             await self.ws.send(json.dumps(msg))
         except Exception as e:
             console.log(f"[Gemini] Send audio error: {e}", "ERROR")
+
+    async def send_voice_reference(self) -> None:
+        """Sends the reference audio clip as the first user turn so Gemini mimics
+        its tone, pitch and rhythm for the rest of the voice session."""
+        if not self.ws:
+            return
+
+        try:
+            with open(config.VOICE_CALL_REF_AUD, "rb") as f:
+                audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+        except Exception as e:
+            console.log(f"[Gemini Live] Failed to load voice reference audio: {e}", "ERROR")
+            return
+
+        prompt_text = (
+            "Listen to the attached audio clip closely and mimic its exact tone, pitch, "
+            "and speaking rhythm/cadence for the rest of this conversation. "
+            f"Here is the transcript of the clip: \"{config.VOICE_CALL_REF_TEXT}\". "
+            "From now on, keep speaking with that same voice vibe consistently, "
+            "no matter what topic comes up."
+        )
+
+        msg = {
+            "client_content": {
+                "turns": [{
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt_text},
+                        {
+                            "inline_data": {
+                                "mime_type": "audio/wav",
+                                "data": audio_b64
+                            }
+                        }
+                    ]
+                }],
+                "turn_complete": True
+            }
+        }
+
+        try:
+            await self.ws.send(json.dumps(msg))
+            console.log("[Gemini Live] Sent voice reference audio + mimic prompt", "INFO")
+        except Exception as e:
+            console.log(f"[Gemini Live] Failed to send voice reference: {e}", "ERROR")
 
     async def send_message(self, text: str) -> None:
         """Sends a text message (context or system info) without blocking for audio response immediately."""

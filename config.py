@@ -5,35 +5,40 @@
 
 # ── Discord ──────────────────────────────────────────────────
 
-ADMINS           = [1048484561966866462]                          # User IDs with admin access
-IGNORE           = []                                             # Ignore messages mentioning these role IDs
-IGNORED_CHANNELS = [1464446185493499965]                          # Ignore all messages in these channels
-INFLIGHT_DELAY   = 10.0                                           # seconds to consider a follow-up message as part of the same request
+ADMINS           = [1048484561966866462]     # User IDs with admin access
+IGNORE           = []                        # Ignore messages mentioning these role IDs
+IGNORED_CHANNELS = [1464446185493499965]     # Ignore all messages in these channels
+INFLIGHT_DELAY   = 10.0                      # seconds to consider a follow-up message as part of the same request
 
 # ── Gemini API ───────────────────────────────────────────────
 
-DEFAULT_MODEL       = "gemini-3.5-flash"
-FALLBACK_MODEL      = "gemini-3.5-flash"     # 503
+DEFAULT_MODEL       = "gemini-3.6-flash"
+FALLBACK_MODEL      = "gemini-3.6-flash"     # 503
 RATE_LIMIT_MODEL    = "gemini-3.7-flash"     # 429
-RATE_LIMIT_MODEL_   = "gemini-3.6-flash"     # 429 on RATE_LIMIT_MODEL
+RATE_LIMIT_MODEL_   = "gemini-3.5-flash"     # 429 on RATE_LIMIT_MODEL
 LITE_MODEL          = "gemini-3.1-flash-lite"
 LIVE_MODEL          = "gemini-3.1-flash-live-preview"
 DEFAULT_TEMPERATURE = 1.0
-MAX_RETRIES         = 1        # rounds
-DEFAULT_TIMEOUT     = 600      # seconds
+MAX_RETRIES         = 1                      # rounds
+DEFAULT_TIMEOUT     = 600                    # seconds
 ENABLE_FUNCTIONS    = True
 
+# Reference audio for voice call for gemini to mimic the "vibe"
+VOICE_CALL_REF_AUD  = "./arona/voice_engine/ref/tts.wav"  
+# Transcript of the reference audio for gemini to mimic the "vibe"
+VOICE_CALL_REF_TEXT = "せんせい、おつかれさまです！シロコせんぱいたちからのほうこくをまとめましたよ。えへへ、きょうもいちにち、いっしょにがんばりましょうね！じゅんびはいいですか、せんせい？"
+
 # Quotas and limits for free-tier users
-FREE_TIER_DAILY_LIMIT   = 30   # messages/day per user without own key(just use your own free key bro)
-GLOBAL_DAILY_SOFT_LIMIT = 0    # total messages/day across all free-tier users, 0 = disabled
+FREE_TIER_DAILY_LIMIT   = 30                 # messages/day per user without own key(just use your own free key bro)
+GLOBAL_DAILY_SOFT_LIMIT = 0                  # total messages/day across all free-tier users, 0 = disabled
 
 # Send decoy requests to break 503 loops
-UNSTICK_ON_503        = True           # enable/disable the whole mechanism
-UNSTICK_503_THRESHOLD = 3              # consecutive 503s (across rounds/keys) before firing
-UNSTICK_MODEL         = DEFAULT_MODEL  # decoy uses the main model to improve chances of recovery
+UNSTICK_ON_503        = True                 # enable/disable the whole mechanism
+UNSTICK_503_THRESHOLD = 3                    # consecutive 503s (across rounds/keys) before firing
+UNSTICK_MODEL         = DEFAULT_MODEL        # decoy uses the main model to improve chances of recovery
 
 MAX_FUNCTION_TURNS  = 100
-THINKING_MSG_DELAY  = 20       # seconds before sending "thinking deeper" message
+THINKING_MSG_DELAY  = 20                     # seconds before sending "thinking deeper" message
 INCLUDE_THOUGHT     = False
 
 # Route Gemini API requests through a Cloudflare Worker acting as a reverse proxy
