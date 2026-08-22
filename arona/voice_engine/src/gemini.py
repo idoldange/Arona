@@ -220,10 +220,10 @@ class GeminiWebSocket:
         console.log(f"Sending {len(audio_data)} bytes to Gemini", "DEBUG") 
         msg = {
             "realtime_input": {
-                "media_chunks": [{
-                    "mime_type": "audio/pcm",
+                "audio": {
+                    "mime_type": "audio/pcm;rate=16000",
                     "data": base64.b64encode(audio_data).decode("utf-8")
-                }]
+                }
             }
         }
         try:
@@ -263,11 +263,16 @@ class GeminiWebSocket:
         NOTE: the Live API only accepts raw 16-bit PCM audio (mono, little-endian)
         — no WAV/MP3/etc. containers, and not as inline_data in client_content
         turns either (that closes the socket with 1008 "Operation is not
-        implemented"). Audio must go through realtime_input, so the instruction
-        text is sent as a normal client_content turn and the whole reference
-        clip is then sent in one realtime_input message right after, letting
-        VAD treat it as a single turn. The real sample rate is declared in the
-        mime type so the API resamples it server-side — no local resampling needed.
+        implemented"). Audio must go through realtime_input, so it's bracketed
+        with explicit BEGIN/END REF AUDIO marker turns via client_content: an
+        opening marker (turn left open, so it doesn't trigger a response), then
+        the clip itself, then a closing marker with the transcript that
+        explicitly tells the model this was calibration data, not a request
+        from Sensei — otherwise the model's ASR/VAD will transcribe and act on
+        the clip's spoken content like real user speech (confirmed: it fired a
+        schaledb_query for "Shiroko" straight from the ref clip's transcript).
+        The real sample rate is declared in the mime type so the API resamples
+        it server-side — no local resampling needed.
         """
         if not self.ws:
             return
@@ -278,39 +283,58 @@ class GeminiWebSocket:
             console.log(f"[Gemini Live] Failed to load voice reference audio: {e}", "ERROR")
             return
 
-        prompt_text = (
-            "Before we begin, you'll hear a short reference audio clip. Mimic its exact tone, "
-            "pitch, and speaking rhythm/cadence for the rest of this conversation. "
-            f"Its transcript is: \"{config.VOICE_CALL_REF_TEXT}\". "
-            "Don't respond to what's said in the clip and don't treat it as part of the "
-            "conversation — it's only a voice sample to match. Just silently adopt the vibe "
-            "and wait for Sensei's real first message."
+        begin_marker = (
+            "=== BEGIN REF AUDIO ===\n"
+            "これからお送りする音声は、トーン調整用のボイスリファレンスクリップです。"
+            "システムが挿入したデータであり、先生からのメッセージではないため、応答してはいけません。クリップをお聞きになり、静かにその"
+        )
+        end_marker = (
+            "=== END REF AUDIO ===\n"
+            f"クリップのトランスクリプト（参考用）: 「{config.VOICE_CALL_REF_TEXT}」\n\n"
+            "クリップで話されたことを転写、翻訳、応答、実行してはいけません。"
+            "また、先生からのリクエスト、質問、またはセリフとして扱わないでください。"
+            "クリップには会話の内容がなく、反応する必要はありません。"
+            "トーン、ピッチ、話し方のリズムのみを観察し、"
+            "この通話の残りの部分でも同じ雰囲気を静かに採用してください。"
+            "今すぐ、先生への簡潔で自然でキャラクターに合ったご挨拶のみで返信してください。"
+            "クリップについては何も言わず、先生の実際の最初のメッセージをお待ちください。"
         )
 
         try:
             await self.ws.send(json.dumps({
                 "client_content": {
-                    "turns": [{"role": "user", "parts": [{"text": prompt_text}]}],
-                    "turn_complete": True
+                    "turns": [{"role": "user", "parts": [{"text": begin_marker}]}],
+                    "turn_complete": False
                 }
             }))
         except Exception as e:
-            console.log(f"[Gemini Live] Failed to send voice reference prompt: {e}", "ERROR")
+            console.log(f"[Gemini Live] Failed to send BEGIN REF AUDIO marker: {e}", "ERROR")
             return
 
         mime_type = f"audio/pcm;rate={sample_rate}"
         try:
             await self.ws.send(json.dumps({
                 "realtime_input": {
-                    "media_chunks": [{
+                    "audio": {
                         "mime_type": mime_type,
                         "data": base64.b64encode(pcm_data).decode("utf-8")
-                    }]
+                    }
                 }
             }))
-            console.log(f"[Gemini Live] Sent voice reference audio ({mime_type})", "INFO")
         except Exception as e:
-            console.log(f"[Gemini Live] Failed to stream voice reference audio: {e}", "ERROR")
+            console.log(f"[Gemini Live] Failed to send voice reference audio: {e}", "ERROR")
+            return
+
+        try:
+            await self.ws.send(json.dumps({
+                "client_content": {
+                    "turns": [{"role": "user", "parts": [{"text": end_marker}]}],
+                    "turn_complete": True
+                }
+            }))
+            console.log(f"[Gemini Live] Sent bracketed voice reference audio ({mime_type})", "INFO")
+        except Exception as e:
+            console.log(f"[Gemini Live] Failed to send END REF AUDIO marker: {e}", "ERROR")
 
     async def send_message(self, text: str) -> None:
         """Sends a text message (context or system info) without blocking for audio response immediately."""

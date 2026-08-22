@@ -167,7 +167,7 @@ INFERENCE_DEVICE = "cpu"                                           # Device for 
 # Generation config
 RVC_ENABLED        = True
 RVC_MODEL_PATH     = "rvc/models/pretraineds/custom/arona.pth"          
-RVC_F0_UP_KEY      = 0         # int
+RVC_F0_UP_KEY      = 3         # int
 RVC_POST_PROCESS   = False
 RVC_PITCH_SHIFT    = 0         # post-processing pitch shift in semitones, applied after F0 modification
 RVC_F0_METHOD      = "rmvpe"   # fcpe | rmvpe | crepe
