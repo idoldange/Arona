@@ -464,6 +464,18 @@ async def process_single_attachment(att: discord.Attachment, text: bool = True) 
     """
     async with attachment_semaphore:  # Giới hạn concurrent processing
         try:
+            # 0. Pre-check size trước khi download (att.size có sẵn từ Discord metadata,
+            #    khỏi tốn băng thông + thời gian tải file chắc chắn sẽ bị reject)
+            _MAX_POSSIBLE_LIMIT = 256 * 1024 * 1024  # limit lớn nhất trong _SIZE_LIMITS (PDF)
+            if getattr(att, 'size', None) and att.size > _MAX_POSSIBLE_LIMIT:
+                console.log(
+                    f"Skip download, file too large: {att.filename} "
+                    f"({att.size/1024/1024:.1f}MB)", "WARN"
+                )
+                return _unsupported_attachment_part(
+                    att, f"file too large ({att.size/1024/1024:.1f}MB) to process"
+                )
+
             # 1. Download với retry
             max_retries = 3
             raw_data = None
@@ -493,8 +505,9 @@ async def process_single_attachment(att: discord.Attachment, text: bool = True) 
                 console.log(f"Blocked unsupported file type: {att.filename} ({ext})", "WARN")
                 return _unsupported_attachment_part(att, f"unsupported file type: {ext}")
             
-            # 2. Detect MIME type
-            mime_type = get_mime_type_from_magic(raw_data, att.filename)
+            # 2. Detect MIME type (offload sang thread — magic.from_buffer là blocking C call,
+            #    chạy trực tiếp trong event loop sẽ đóng băng cả bot trong lúc detect)
+            mime_type = await asyncio.to_thread(get_mime_type_from_magic, raw_data, att.filename)
 
             # 2b. Audio-misidentified-as-video intercept
             #     Một số format audio dùng container video (M4A/M4B/M4R = MPEG-4,
@@ -637,8 +650,14 @@ async def process_single_attachment(att: discord.Attachment, text: bool = True) 
                     wrapped += hint
                 final_data = wrapped.encode('utf-8')
 
-            # 7. Encode to base64
-            base64_data = base64.b64encode(final_data).decode("utf-8")
+            # 7. Encode to base64 (offload sang thread nếu file đủ lớn — encode đồng bộ
+            #    file video/audio hàng chục MB có thể block event loop cả giây)
+            if len(final_data) > 2 * 1024 * 1024:
+                base64_data = await asyncio.to_thread(
+                    lambda d: base64.b64encode(d).decode("utf-8"), final_data
+                )
+            else:
+                base64_data = base64.b64encode(final_data).decode("utf-8")
             
             # 8. Log preview for images
             if "image" in final_mime:
