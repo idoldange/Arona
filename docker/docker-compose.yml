@@ -21,7 +21,7 @@ services:
       - ./warp-killswitch.sh:/usr/local/bin/warp-killswitch.sh:ro
     command: >
       sh -c "warp-cli --accept-tos registration new && 
-             warp-cli --accept-tos mode proxy && 
+             warp-cli --accept-tos mode warp && 
              warp-cli --accept-tos dns set-protocol https && 
              warp-cli --accept-tos tunnel endpoint set engage.cloudflareclient.com:443 &&
              warp-cli --accept-tos connect &&
