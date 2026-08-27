@@ -51,7 +51,7 @@ bash scripts/bundle-artifact.sh
 cp bundle.html "$OUTPUT_DIR/bundle.html"
 ```
 
-Run both commands together in one `run_code(action="run_shell", send_output=true)` call.
+Run both commands together in one `run_code(action="run_shell")` call.
 
 **What the script does**:
 - Installs bundling dependencies (parcel, @parcel/config-default, parcel-resolver-tspaths, html-inline)
@@ -61,7 +61,7 @@ Run both commands together in one `run_code(action="run_shell", send_output=true
 
 ### Step 4: Share with Sensei
 
-The `bundle.html` in `OUTPUT_DIR` is automatically sent to Discord by `send_output=true`. A preview link is auto-appended to the message.
+The `bundle.html` in `OUTPUT_DIR` is automatically sent to Discord A preview link is auto-appended to the message.
 
 Alternatively, if the file already exists in temp storage (e.g. from a prior step), use `send_files([file_id])`.
 

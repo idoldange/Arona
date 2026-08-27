@@ -16,10 +16,7 @@ _FUNC_HINTS: dict[str, str] = {
     "run_code": (
         "Call `run_code` with params: "
         "`action` (\"run_code\"|\"run_shell\"), "
-        "`code` (Python string), "
-        "`send_output` (bool), "
-        "`send_code` (bool), "
-        "`send_logs` (bool). "
+        "`code` (Python string). "
         "Do NOT output raw ``` code blocks — put the code inside the `code` parameter."
     ),
     "create_files": (

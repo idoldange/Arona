@@ -7,7 +7,7 @@ description: Create animated GIFs optimized for Discord. Use when Sensei request
 
 ## Overview
 
-Create animated GIFs using **Pillow** (PIL) via `run_code`. Write output to `OUTPUT_DIR`, set `send_output: "true"`.
+Create animated GIFs using **Pillow** (PIL) via `run_code`. Write output to `OUTPUT_DIR`.
 
 ---
 
@@ -188,7 +188,6 @@ for i in range(NUM_FRAMES):
 ## Rules
 
 - Write output to `OUTPUT_DIR`.
-- Use `send_output: "true"` in `run_code`.
 - `Pillow` is pre-installed in the sandbox.
 - JetBrains Mono Nerd Font is at `/usr/share/fonts/truetype/jetbrains/`.
 - Always wrap `ImageFont.truetype` in try/except with `load_default()` fallback.

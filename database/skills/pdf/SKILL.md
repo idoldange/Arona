@@ -7,7 +7,7 @@ description: "Use this skill whenever Sensei wants to do anything with PDF files
 
 ## Overview
 
-Use **pypdf** (reading/merging/splitting) and **reportlab** (creating new PDFs) via `run_code`. Always write to `OUTPUT_DIR` and set `send_output: "true"`.
+Use **pypdf** (reading/merging/splitting) and **reportlab** (creating new PDFs) via `run_code`. Always write to `OUTPUT_DIR`.
 
 ---
 
@@ -189,6 +189,5 @@ if reader.is_encrypted:
 ## Rules
 
 - Write all output files to `OUTPUT_DIR`.
-- Use `send_output: "true"` in `run_code`.
 - `pypdf` and `reportlab` are pre-installed in the sandbox.
 - Uploaded PDFs from Sensei are in the working directory — reference by filename only.

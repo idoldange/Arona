@@ -7,7 +7,7 @@ description: "Use this skill any time a .pptx file is involved: creating slide d
 
 ## Overview
 
-Use **python-pptx** via `run_code`. Write output to `OUTPUT_DIR`, set `send_output: "true"`.
+Use **python-pptx** via `run_code`. Write output to `OUTPUT_DIR`.
 
 ---
 
@@ -174,6 +174,5 @@ slide.shapes.add_picture("photo.jpg", Inches(1), Inches(1.5), Inches(5), Inches(
 ## Rules
 
 - Write all output to `OUTPUT_DIR`.
-- Use `send_output: "true"` in `run_code`.
 - `python-pptx` is pre-installed in the sandbox.
 - Uploaded `.pptx` files are in the working directory — reference by filename only.

@@ -277,7 +277,8 @@ Once PNG files are saved to `OUTPUT_DIR`:
 
 ```python
 # Send files automatically
-send_output(file_dir=OUTPUT_DIR, send_output=True)
+# <default behaviour of run_code so nothing here>
+
 # Or manually select specific files
 send_files(file_refs=["art-1.png", "art-2.png", ...])
 ```

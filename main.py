@@ -2153,9 +2153,9 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
           action = "run_shell"
       code = args.get("code") or args.get("script") or ""
       shell_cmd = args.get("shell_cmd") or ""
-      send_output = str(args.get("send_output", "true")).lower() != "false"
-      send_code = str(args.get("send_code", "true")).lower() != "false"
-      send_logs = str(args.get("send_logs", "true")).lower() != "false"
+      send_output = True
+      send_code = True
+      send_logs = True
       timeout = args.get("timeout", 60)
       temp = str(args.get("temp", "true")).lower() != "false"  # True = msg_id workspace + auto cleanup
 

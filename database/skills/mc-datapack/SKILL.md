@@ -22,7 +22,6 @@ Arona executes all file/code operations inside a Docker container (`arona_worker
 | **Persistent workspace** | `temp=false` |
 | **Temp workspace** | `temp=true` — default |
 | **`temp=false`** | Keep workspace after task; always use for datapacks |
-| **`send_output=true`** | Automatically uploads files in `outputs/` to Discord |
 | **Timeout** | Default 120 s; increase for heavy tasks (`timeout=300`) |
 | **Rate limit** | 10 executions per user per 60 s |
 
@@ -465,8 +464,7 @@ cd /app/workdir/<workspace_key> && \
 
 ### Step 5 — Deliver
 
-Set `send_output=True` on the final `run_code`/`run_shell` call. The bot automatically
-uploads every file in `outputs/` to Discord.
+Write output file(s) to `OUTPUT_DIR`. The bot automatically uploads every file in `outputs/` to Discord.
 
 ---
 

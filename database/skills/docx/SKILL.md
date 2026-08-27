@@ -7,7 +7,7 @@ description: "Use this skill whenever Sensei wants to create, read, edit, or man
 
 ## Overview
 
-Use **python-docx** via `run_code` to create or edit `.docx` files. Always write files to `OUTPUT_DIR` and set `send_output: "true"` so they're sent to Discord automatically.
+Use **python-docx** via `run_code` to create or edit `.docx` files. Always write files to `OUTPUT_DIR` will be sent to Discord automatically. 
 
 ## Quick Reference
 
@@ -78,7 +78,7 @@ print(f"Saved: {out_path}")
 
 Run with:
 ```
-run_code(action="run_code", code=<above>, send_output="true")
+run_code(action="run_code", code=<above>)
 ```
 
 ---
@@ -169,6 +169,5 @@ print("Done")
 ## Rules
 
 - Always write output to `OUTPUT_DIR` (set by environment automatically).
-- Always use `send_output: "true"` in `run_code` so the file is sent to Discord.
 - Uploaded files from Sensei are in the workspace directory — reference by filename only (not full path).
 - `python-docx` is pre-installed in the sandbox.

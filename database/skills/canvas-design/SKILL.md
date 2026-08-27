@@ -7,7 +7,7 @@ description: Create beautiful visual art as .png or .pdf files using design phil
 
 ## Overview
 
-Create high-quality visual art using **matplotlib** and **Pillow** via `run_code`. Write output to `OUTPUT_DIR`, set `send_output: "true"`.
+Create high-quality visual art using **matplotlib** and **Pillow** via `run_code`. Write output to `OUTPUT_DIR`.
 
 This skill works in **two steps**:
 1. **Design Philosophy** — define the aesthetic movement.
@@ -185,7 +185,6 @@ Ask: "How can I make what's already here more of a piece of art?" — avoid addi
 ## Rules
 
 - Write output to `OUTPUT_DIR`.
-- Use `send_output: "true"` in `run_code`.
 - `matplotlib` and `Pillow` (PIL) are pre-installed.
 - JetBrains Mono Nerd Font is available at `/usr/share/fonts/truetype/jetbrains/`.
 - Always wrap ImageFont.truetype in try/except with a fallback.

@@ -7,7 +7,7 @@ description: "Use this skill any time a spreadsheet is the primary input or outp
 
 ## Overview
 
-Use **openpyxl** (Excel) and **pandas** (data manipulation/CSV) via `run_code`. Write output to `OUTPUT_DIR`, set `send_output: "true"`.
+Use **openpyxl** (Excel) and **pandas** (data manipulation/CSV) via `run_code`. Write output to `OUTPUT_DIR`.
 
 ---
 
@@ -195,7 +195,6 @@ cell.number_format = "0.0x"          # Multiples
 ## Rules
 
 - Always write output to `OUTPUT_DIR`.
-- Always use `send_output: "true"` in `run_code`.
 - `openpyxl` and `pandas` are pre-installed in the sandbox.
 - Zero formula errors (`#REF!`, `#DIV/0!`, etc.) — verify all references before saving.
 - Use `Arial` as default font unless otherwise specified.
