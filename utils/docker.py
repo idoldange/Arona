@@ -746,7 +746,10 @@ class AronaDocker:
             safe_filename = self._sanitize_filename(filename)
 
             # Save code to file to run
-            with open(os.path.join(host_w, safe_filename), "w", encoding="utf-8") as f:
+            # NOTE: same CRLF fix as run_shell — force LF line endings so the
+            # file behaves consistently when the container's python3 reads it,
+            # regardless of the host OS's default newline translation.
+            with open(os.path.join(host_w, safe_filename), "w", encoding="utf-8", newline='\n') as f:
                 f.write(final_code)
                 
             # Execute via Docker Exec
@@ -848,8 +851,14 @@ class AronaDocker:
                     console.log(f"Saved attachments for shell run {msg_id}: {saved}", "INFO")
 
             # Save the command to a file for logging/auditing
-            with open(os.path.join(host_w, "command.sh"), "w", encoding="utf-8") as f:
-                f.write(shell_cmd)
+            # NOTE: normalize \r\n/\r -> \n first (in case CR sneaks in from the
+            # model output or Discord paste), and use newline='\n' on open so
+            # Python's text-mode translation doesn't reintroduce \r\n on Windows
+            # hosts. A stray \r surviving into the container's sh invocation
+            # corrupts arguments (e.g. "tail -n 20" -> "tail -n 20\r" -> error).
+            shell_cmd_normalized = shell_cmd.replace('\r\n', '\n').replace('\r', '\n')
+            with open(os.path.join(host_w, "command.sh"), "w", encoding="utf-8", newline='\n') as f:
+                f.write(shell_cmd_normalized)
 
             # Lock workdir to sandbox UID (must be after all host-side writes)
             await self._prepare_sandbox_workdir(host_w, docker_cwd, uid)
