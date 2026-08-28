@@ -124,6 +124,7 @@ from affection import affection
 load_dotenv(dotenv_path=".env")
 api_keys_json_str = os.getenv("GEMINI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
+SAUCENAO_API_KEY = os.getenv("SAUCENAO_API_KEY")
 DISCORD_TOKEN=os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = [] # Initialize as empty list
 github_tool = GithubRepo(token=os.getenv("GITHUB_TOKEN"))
@@ -1134,7 +1135,57 @@ async def get_image_hash(image_url: str) -> str:
       return f"404::{image_url}"
     return f"url::{image_url}"
 
-async def image_search(image_url: str, crawl_full_pages: int = 3, max_chars_per_page: int = 10000):
+async def saucenao_search(image_url: str, crawl_full_pages: int = 3, max_chars_per_page: int = 10000):
+  """Simple SauceNAO lookup, best for anime/manga/illustration art source."""
+  try:
+    session = await session_manager.get_session()
+    params = {
+      "api_key": SAUCENAO_API_KEY,
+      "output_type": 2,
+      "numres": crawl_full_pages,
+      "url": image_url,
+    }
+    async with session.get("https://saucenao.com/search.php", params=params, timeout=20) as resp:
+      if resp.status != 200:
+        body = await resp.text()
+        raise Exception(f"SauceNAO HTTP {resp.status}: {body[:300]}")
+      data = await resp.json()
+
+    if data.get("header", {}).get("status", 0) != 0:
+      raise Exception(f"SauceNAO returned error: {data.get('header')}")
+
+    results = []
+    for item in data.get("results", [])[:crawl_full_pages]:
+      h = item.get("header", {})
+      d = item.get("data", {})
+      urls = d.get("ext_urls", [])
+      results.append({
+        "title": d.get("title") or d.get("source") or h.get("index_name", "Unknown"),
+        "url": urls[0] if urls else "",
+        "snippet": f"similarity={h.get('similarity', '?')}% | source={d.get('source', '')} | author={d.get('member_name') or d.get('creator', '')}",
+      })
+    if not results:
+      console.log(f"SauceNAO returned 0 results for {image_url}", "WARN")
+    return results
+  except Exception as e:
+    console.log(f"SauceNAO error: {e}", "WARN")
+    return []
+
+
+async def image_search(image_url: str, crawl_full_pages: int = 3, max_chars_per_page: int = 10000, backend: str = "googlelens"):
+  if backend == "saucenao":
+    key = f"saucenao::{await get_image_hash(image_url)}"
+    now = time.time()
+    if key in _image_search_cache:
+      cached = _image_search_cache[key]
+      if now - cached["time"] < CACHE_TTL:
+        console.log(f"[CACHE] Hit for key={key[:20]}...", "INFO")
+        return cached["data"]
+      del _image_search_cache[key]
+    results = await saucenao_search(image_url, crawl_full_pages, max_chars_per_page)
+    _image_search_cache[key] = {"time": now, "data": results}
+    return results
+
   now = time.time()
   key = await get_image_hash(image_url)
   if key.startswith("404::"):
@@ -1161,10 +1212,17 @@ async def image_search(image_url: str, crawl_full_pages: int = 3, max_chars_per_
     }
     async with session.get(SEARCH_URL, params=params, timeout=20) as resp:
       if resp.status != 200:
-        raise Exception(f"SerpAPI HTTP {resp.status}")
+        body = await resp.text()
+        raise Exception(f"SerpAPI HTTP {resp.status}: {body[:300]}")
       data = await resp.json()
 
+    if data.get("error"):
+      raise Exception(f"SerpAPI returned error: {data['error']}")
+
     google_results = parse_serpapi_results(data, max_results=crawl_full_pages)
+
+    if not google_results:
+      console.log(f"SerpAPI returned 0 visual_matches for {image_url}. Raw response keys: {list(data.keys())}", "WARN")
 
     if google_results:
       crawl_tasks, crawl_urls = [], []
@@ -2122,8 +2180,12 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
         max_chars_per_page = 10000
       max_chars_per_page = max(1000, min(40000, max_chars_per_page))
 
-      console.log(f"Executing reverse_image_search for: {image_url} (crawl_per_query={crawl_per_query}, max_chars_per_page={max_chars_per_page})", "INFO")
-      results = await image_search(image_url, crawl_full_pages=crawl_per_query, max_chars_per_page=max_chars_per_page)
+      backend = args.get("backend", "googlelens")
+      if backend not in ("googlelens", "saucenao"):
+        backend = "googlelens"
+
+      console.log(f"Executing reverse_image_search for: {image_url} (backend={backend}, crawl_per_query={crawl_per_query}, max_chars_per_page={max_chars_per_page})", "INFO")
+      results = await image_search(image_url, crawl_full_pages=crawl_per_query, max_chars_per_page=max_chars_per_page, backend=backend)
       if not results:
         return "No results found from reverse image search"
       output = "Reverse Image Search Results:\n"
