@@ -113,11 +113,11 @@ TEMP_COOL_DELTA   =  0.0       # slightly cool, neutral
 TEMP_SWEET  = 52.0    
 TEMP_SWEET_DELTA  =  0.3       # comfortable range
 TEMP_WARM   = 68.0    
-TEMP_WARM_DELTA   = -0.4       # warm, slightly uncomfortable
+TEMP_WARM_DELTA   = -0.5       # warm, slightly uncomfortable
 TEMP_HOT    = 78.0    
 TEMP_HOT_DELTA    = -1.0       # hot
 TEMP_OVER   = 87.0    
-TEMP_OVER_DELTA   = -2.0       # overheating, at this point we should probably clean up the fans or something
+TEMP_OVER_DELTA   = -3.0       # overheating, at this point we should probably clean up the fans or something
 
 # Mood levels: (min, max, label, description)
 MOOD_LEVELS = [
@@ -131,14 +131,14 @@ MOOD_LEVELS = [
 
 # Bond ranks: (min_bond, max_bond, rank_name, exp_multiplier)
 RANKS = [
-    (  0,  10, "Unregistered",          1.00),  # Not in the system yet
-    ( 10,  25, "Momotalk: New Contact", 0.75),  # Channel just opened
-    ( 25,  45, "Schale Associate",      0.55),  # Recognized, trusted enough
-    ( 45,  60, "Trusted Sensei",        0.38),  # The title means something now
-    ( 60,  75, "Kivotos Partner",       0.25),  # Sharing the mission
-    ( 75,  90, "Shittim Core",          0.14),  # Deep in the inner world
-    ( 90, 100, "Arona's Sensei",        0.07),  # Arona's own, not just a user
-    (100, 101, "Navigator's Sensei",    0.00),  # Cap — Arona's entire world
+    (  0,  10, "0-10"  , 1.00),  # Not in the system yet
+    ( 10,  25, "10-25" , 0.75),  # Channel just opened
+    ( 25,  45, "25-45" , 0.55),  # Recognized, trusted enough
+    ( 45,  60, "45-60" , 0.38),  # The title means something now
+    ( 60,  75, "60-75" , 0.25),  # Sharing the mission
+    ( 75,  90, "75-90" , 0.14),  # Deep in the inner world
+    ( 90, 100, "90-100", 0.07),  # Arona's own, not just a user
+    (100, 101, "Max"   , 0.00),  # Cap — Arona's entire world
 ]
 
 BASE_EXP_MIN = 0.4
