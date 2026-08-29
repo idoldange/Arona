@@ -197,6 +197,48 @@ def _bootstrap_active_channels() -> list[int]:
 
 ACTIVE_CHANNELS: list[int] = _bootstrap_active_channels()
 
+# § IGNORED_CHANNELS — persisted to database/ignored_channel.json
+# On first run: auto-migrates from config.py (if present) then strips it from config.
+_IGNORED_CHANNELS_PATH = os.path.join("database", "ignored_channel.json")
+
+def _bootstrap_ignored_channels() -> list[int]:
+    """
+    Load IGNORED_CHANNELS for runtime.
+    - If JSON file exists → use it (already migrated).
+    - Else if config has IGNORED_CHANNELS → migrate: save to JSON, strip from config.
+    - Else → empty list.
+    """
+    os.makedirs("database", exist_ok=True)
+    # Try JSON file first
+    try:
+        with open(_IGNORED_CHANNELS_PATH, "r", encoding="utf-8") as _f:
+            _data = json.load(_f)
+            if isinstance(_data, list):
+                return [int(x) for x in _data]
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        pass
+    # JSON missing — check if config still has IGNORED_CHANNELS
+    import config as _cfg
+    _from_config = getattr(_cfg, "IGNORED_CHANNELS", None)
+    if _from_config is not None:
+        console.log("[MIGRATE] IGNORED_CHANNELS found in config.py — migrating to database/ignored_channel.json", "INFO")
+        with open(_IGNORED_CHANNELS_PATH, "w", encoding="utf-8") as _f:
+            json.dump(_from_config, _f)
+        # Strip IGNORED_CHANNELS line from config.py
+        try:
+            with open("config.py", "r", encoding="utf-8") as _f:
+                _cfg_text = _f.read()
+            _cfg_text = re.sub(r"^IGNORED_CHANNELS\s*=.*$\n?", "", _cfg_text, flags=re.MULTILINE)
+            with open("config.py", "w", encoding="utf-8") as _f:
+                _f.write(_cfg_text)
+            console.log("[MIGRATE] Removed IGNORED_CHANNELS from config.py", "INFO")
+        except Exception as _e:
+            console.log(f"[MIGRATE] Could not clean config.py: {_e}", "WARN")
+        return list(_from_config)
+    return []
+
+IGNORED_CHANNELS: list[int] = _bootstrap_ignored_channels()
+
 _CRAWL_CACHE: Dict[Tuple[str, int], str] = {}
 _CRAWL_CACHE_ORDER = [] 
 _CRAWL_CACHE_LOCK = asyncio.Lock()
@@ -642,6 +684,12 @@ def save_active_channels(channel_ids: list[int]):
     os.makedirs("database", exist_ok=True)
     globals()["ACTIVE_CHANNELS"] = channel_ids
     with open(_ACTIVE_CHANNELS_PATH, "w", encoding="utf-8") as f:
+        json.dump(channel_ids, f)
+
+def save_ignored_channels(channel_ids: list[int]):
+    os.makedirs("database", exist_ok=True)
+    globals()["IGNORED_CHANNELS"] = channel_ids
+    with open(_IGNORED_CHANNELS_PATH, "w", encoding="utf-8") as f:
         json.dump(channel_ids, f)
         
 async def get_browser():
@@ -7373,7 +7421,7 @@ async def on_message(message):
 
   if message.content.lower().startswith("!arona help"):
     console.log(f"User {message.author.display_name} used !arona help", "INFO")
-    await send_with_retry(message.channel, "**Arona Commands:**\n- `!arona help`: Show this message\n- `!arona base64 encode <text>`: Encode text\n- `!arona base64 decode <text>`: Decode text\n- `!arona channel add/remove`: Manage auto-respond channels (requires `Manage Channels` permission)\n- `!arona clear`: Clear Arona's memory in this channel — messages before this point will be ignored (requires `Manage Messages` permission or DM)\n- `!arona forgetme`: Permanently delete all data Arona has stored about you (saved info, message history, account key)\n- `!arona addkey`: Add your own Gemini API key(s) via an embed/modal, no daily limit\n- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n- `!arona quota`: Check your remaining daily messages\n\n**Usage:**\n- You can mention Arona in any message to get a response.\n- You can also set specific channels for Arona to respond in using the channel commands.\n- Referencing to a message will provide context to Arona for a more informed response.\n**For more information, please visit [the GitHub repository](https://github.com/idoldange/arona-ai)**")
+    await send_with_retry(message.channel, "**Arona Commands:**\n- `!arona help`: Show this message\n- `!arona base64 encode <text>`: Encode text\n- `!arona base64 decode <text>`: Decode text\n- `!arona channel add/remove`: Manage auto-respond channels (requires `Manage Channels` permission)\n- `!arona ignoredchannel add/remove [id]`: Manage ignored channels — Arona won't process any messages there; defaults to the current channel if no id is given (requires `Manage Channels` permission)\n- `!arona clear`: Clear Arona's memory in this channel — messages before this point will be ignored (requires `Manage Messages` permission or DM)\n- `!arona forgetme`: Permanently delete all data Arona has stored about you (saved info, message history, account key)\n- `!arona addkey`: Add your own Gemini API key(s) via an embed/modal, no daily limit\n- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n- `!arona quota`: Check your remaining daily messages\n\n**Usage:**\n- You can mention Arona in any message to get a response.\n- You can also set specific channels for Arona to respond in using the channel commands.\n- Referencing to a message will provide context to Arona for a more informed response.\n**For more information, please visit [the GitHub repository](https://github.com/idoldange/arona-ai)**")
     return
 
   base64_match = re.match(r"^!arona\s+base64", message.content, re.IGNORECASE)
@@ -7437,6 +7485,48 @@ async def on_message(message):
       await send_with_retry(message.channel, "Usage:\n`!arona sudo channel add`\n`!arona sudo channel remove`")
     return
 
+  if message.content.lower().startswith("!sudo arona ignoredchannel"):
+    if message.author.id not in ADMINS:
+      await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      return
+    console.log(f"Admin {message.author.display_name} used !sudo arona ignoredchannel command", "INFO")
+
+    args = message.content[len("!sudo arona ignoredchannel"):].strip().split()
+    subcommand = args[0].lower() if args else ""
+    raw_target = args[1] if len(args) > 1 else None
+
+    if subcommand not in ("add", "remove"):
+      await send_with_retry(message.channel, "Usage:\n`!sudo arona ignoredchannel add [id]`\n`!sudo arona ignoredchannel remove [id]`")
+      return
+
+    if raw_target:
+      target_str = raw_target.strip()
+      channel_mention_match = re.match(r"^<#(\d+)>$", target_str)
+      if channel_mention_match:
+        target_str = channel_mention_match.group(1)
+      if not target_str.isdigit():
+        await send_with_retry(message.channel, "Invalid channel id. Use a channel ID or a `#channel` mention.")
+        return
+      channel_id = int(target_str)
+    else:
+      channel_id = message.channel.id
+
+    if subcommand == "add":
+      if channel_id not in IGNORED_CHANNELS:
+        IGNORED_CHANNELS.append(channel_id)
+        save_ignored_channels(IGNORED_CHANNELS)
+        await send_with_retry(message.channel, f"Added <#{channel_id}> to ignored channels.")
+      else:
+        await send_with_retry(message.channel, f"<#{channel_id}> is already in the ignored channels list.")
+    elif subcommand == "remove":
+      if channel_id in IGNORED_CHANNELS:
+        IGNORED_CHANNELS.remove(channel_id)
+        save_ignored_channels(IGNORED_CHANNELS)
+        await send_with_retry(message.channel, f"Removed <#{channel_id}> from ignored channels.")
+      else:
+        await send_with_retry(message.channel, f"<#{channel_id}> is not in the ignored channels list.")
+    return
+
   if message.content.lower() == "!sudo arona clear":
     if message.author.id not in ADMINS:
       await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
@@ -7476,7 +7566,52 @@ async def on_message(message):
     else:
       await send_with_retry(message.channel, "Usage:\n`!arona channel add` — add this channel\n`!arona channel remove` — remove this channel")
     return
-  
+
+  if message.content.lower().startswith("!arona ignoredchannel"):
+    permissions = message.channel.permissions_for(message.author)
+
+    if not permissions.manage_channels:
+      await send_with_retry(message.channel, "You need the `Manage Channels` permission to use this command.")
+      return
+
+    console.log(f"User {message.author.display_name} used !arona ignoredchannel command", "INFO")
+
+    args = message.content[len("!arona ignoredchannel"):].strip().split()
+    subcommand = args[0].lower() if args else ""
+    raw_target = args[1] if len(args) > 1 else None
+
+    if subcommand not in ("add", "remove"):
+      await send_with_retry(message.channel, "Usage:\n`!arona ignoredchannel add [id]` — ignore a channel (defaults to this channel)\n`!arona ignoredchannel remove [id]` — stop ignoring a channel (defaults to this channel)")
+      return
+
+    if raw_target:
+      target_str = raw_target.strip()
+      channel_mention_match = re.match(r"^<#(\d+)>$", target_str)
+      if channel_mention_match:
+        target_str = channel_mention_match.group(1)
+      if not target_str.isdigit():
+        await send_with_retry(message.channel, "Invalid channel id. Use a channel ID or a `#channel` mention.")
+        return
+      channel_id = int(target_str)
+    else:
+      channel_id = message.channel.id
+
+    if subcommand == "add":
+      if channel_id not in IGNORED_CHANNELS:
+        IGNORED_CHANNELS.append(channel_id)
+        save_ignored_channels(IGNORED_CHANNELS)
+        await send_with_retry(message.channel, f"Added <#{channel_id}> to ignored channels.")
+      else:
+        await send_with_retry(message.channel, f"<#{channel_id}> is already in the ignored channels list.")
+    elif subcommand == "remove":
+      if channel_id in IGNORED_CHANNELS:
+        IGNORED_CHANNELS.remove(channel_id)
+        save_ignored_channels(IGNORED_CHANNELS)
+        await send_with_retry(message.channel, f"Removed <#{channel_id}> from ignored channels.")
+      else:
+        await send_with_retry(message.channel, f"<#{channel_id}> is not in the ignored channels list.")
+    return
+
   #!arona clear, to clear bot memory in this channel(bot can't read msg older than this)
   if message.content.lower() =="!arona clear":
     
