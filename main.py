@@ -7421,7 +7421,27 @@ async def on_message(message):
 
   if message.content.lower().startswith("!arona help"):
     console.log(f"User {message.author.display_name} used !arona help", "INFO")
-    await send_with_retry(message.channel, "**Arona Commands:**\n- `!arona help`: Show this message\n- `!arona base64 encode <text>`: Encode text\n- `!arona base64 decode <text>`: Decode text\n- `!arona channel add/remove`: Manage auto-respond channels (requires `Manage Channels` permission)\n- `!arona ignoredchannel add/remove [id]`: Manage ignored channels — Arona won't process any messages there; defaults to the current channel if no id is given (requires `Manage Channels` permission)\n- `!arona clear`: Clear Arona's memory in this channel — messages before this point will be ignored (requires `Manage Messages` permission or DM)\n- `!arona forgetme`: Permanently delete all data Arona has stored about you (saved info, message history, account key)\n- `!arona addkey`: Add your own Gemini API key(s) via an embed/modal, no daily limit\n- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n- `!arona quota`: Check your remaining daily messages\n\n**Usage:**\n- You can mention Arona in any message to get a response.\n- You can also set specific channels for Arona to respond in using the channel commands.\n- Referencing to a message will provide context to Arona for a more informed response.\n**For more information, please visit [the GitHub repository](https://github.com/idoldange/arona-ai)**")
+    help_message = (
+      "**Arona Commands**:\n"
+      "- `!arona help`: Show this message\n"
+      "- `!arona base64 encode <text>`: Encode text\n"
+      "- `!arona base64 decode <text>`: Decode text\n"
+      "- `!arona channel add/remove`: Manage auto-respond channels (requires `Manage Channels` permission)\n"
+      "- `!arona ignoredchannel add/remove [id]`: Manage ignored channels — Arona won't process any messages there; defaults to the current channel if no id is given (requires `Manage Channels` permission)\n"
+      "- `!arona clear`: Clear Arona's memory in this channel — messages before this point will be ignored (requires `Manage Messages` permission or DM)\n"
+      "- `!arona forgetme`: Permanently delete all data Arona has stored about you (saved info, message history, account key)\n"
+      "- `!arona addkey`: Add your own Gemini API key(s) via an embed/modal, no daily limit\n"
+      "- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n"
+      "- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n"
+      "- `!arona quota`: Check your remaining daily messages\n"
+      "\n"
+      "**Usage**:\n"
+      "- You can mention Arona in any message to get a response.\n"
+      "- You can also set specific channels for Arona to respond in using the channel commands.\n"
+      "- Referencing to a message will provide context to Arona for a more informed response.\n"
+      "**For more information, please visit [the GitHub repository](https://github.com/idoldange/arona-ai)**"
+    )
+    await send_with_retry(message.channel, help_message)
     return
 
   base64_match = re.match(r"^!arona\s+base64", message.content, re.IGNORECASE)

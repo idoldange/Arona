@@ -7,7 +7,6 @@
 
 ADMINS           = [1048484561966866462]     # User IDs with admin access
 IGNORE           = []                        # Ignore messages mentioning these role IDs
-IGNORED_CHANNELS = [1464446185493499965]     # Ignore all messages in these channels
 INFLIGHT_DELAY   = 10.0                      # seconds to consider a follow-up message as part of the same request
 
 # ── Gemini API ───────────────────────────────────────────────
