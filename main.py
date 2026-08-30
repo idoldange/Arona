@@ -6975,7 +6975,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
       try:
         results = await asyncio.wait_for(
         asyncio.gather(*tasks, return_exceptions=True),
-        timeout=15
+        timeout=60
         )
       except asyncio.TimeoutError:
         console.log("Gather timeout", "WARN")
