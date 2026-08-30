@@ -100,6 +100,9 @@ WAKE_DISPLAY_WINDOW  = 30      # seconds to show "just woke" state
 SLEEP_REGEN_PER_TICK = 1.0
 HAPPY_CAP            = 40.0    # mood cap while sleeping/regenerating
 
+# "Shocked" overlay state duration
+SHOCKED_DURATION_SECONDS = 60.0
+
 # Mood drift & decay
 DRIFT_STD      = 0.75
 DECAY_PER_TICK = 0.25

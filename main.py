@@ -3619,6 +3619,71 @@ def _strip_largest_history_part(history: list, stripped_ids: set) -> str | None:
   stripped_ids.add(id(part))
   return f"text part in history turn {t_idx} ({size} chars)"
 
+def _patch_missing_function_responses(history: list) -> str | None:
+  """
+  Gemini requires every functionCall part to be immediately followed by a matching
+  functionResponse turn. If `history` ends up with a dangling functionCall (e.g.
+  reconstructed from Discord channel history, or a functionResponse append got lost
+  mid-turn), the API rejects the whole request with:
+    400 "Please ensure that function response turn comes immediately after a
+    function call turn."
+  This scans `history`, finds functionCall(s) with no matching functionResponse in
+  the turn(s) that follow, and inserts a placeholder functionResponse turn right
+  after so the conversation becomes Gemini-valid again. Mutates `history` in place.
+  Returns a short description of what was patched, or None if nothing needed fixing.
+  """
+  patched_desc = []
+  i = 0
+  while i < len(history):
+    parts = history[i].get("parts", [])
+    if not isinstance(parts, list):
+      i += 1
+      continue
+    call_names = [
+      (p.get("functionCall") or p.get("function_call") or {}).get("name", "unknown")
+      for p in parts
+      if isinstance(p, dict) and ("functionCall" in p or "function_call" in p)
+    ]
+    if not call_names:
+      i += 1
+      continue
+
+    # Function responses to this codebase's own calls are appended as one or more
+    # consecutive turns right after the model turn (see history.append(...) after
+    # execute_function). Walk forward collecting response names until we hit the
+    # next functionCall turn, a non-response turn, or the end of history.
+    matched = []
+    j = i + 1
+    while j < len(history):
+      nxt_parts = history[j].get("parts", [])
+      if not isinstance(nxt_parts, list):
+        break
+      if any(isinstance(p, dict) and ("functionCall" in p or "function_call" in p) for p in nxt_parts):
+        break
+      nxt_resp_names = [
+        (p.get("functionResponse") or p.get("function_response") or {}).get("name", "unknown")
+        for p in nxt_parts
+        if isinstance(p, dict) and ("functionResponse" in p or "function_response" in p)
+      ]
+      if not nxt_resp_names:
+        break
+      matched.extend(nxt_resp_names)
+      j += 1
+
+    missing = call_names[len(matched):]
+    if missing:
+      placeholder_parts = [
+        {"functionResponse": {"name": name, "response": {"result": "Function response not available."}}}
+        for name in missing
+      ]
+      history.insert(j, {"role": "user", "parts": placeholder_parts})
+      patched_desc.append(f"turn {i}: {', '.join(missing)}")
+      i = j + 1
+    else:
+      i = j if j > i + 1 else i + 1
+
+  return "; ".join(patched_desc) if patched_desc else None
+
 async def ask_gemini(model_name: str = None, text: str = "", attachments: list = None, temperature: float = None, max_retries: int = None, sys_prompt: bool = True, timeout: int = None, custom_sys_prompt:str=None, msg_history="", enable_functions: bool = True, max_function_turns: int = None, level: str = None, message: discord.Message = None, typing_pause_event: asyncio.Event = None, thinking_budget: int | None = None, rules=None, safety_note="") -> dict:
   """
   Send a prompt to the Gemini API with smart key fallback.
@@ -4283,6 +4348,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       _schema_stripped = False  # set when 400 "too much branching" strips tool_config mid-retry
       _thinking_stripped = False  # set when 400 "Thinking level/budget not supported" strips thinkingConfig mid-retry
       _context_stripped = False  # set when ALL keys hit TPM 429 and we shrank a history part instead of giving up
+      _func_resp_patched = False  # set when 400 "function response must follow function call" gets auto-patched mid-retry
+      _func_resp_patch_attempts = 0  # cap patch retries so a genuinely unfixable payload doesn't loop forever
       _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
       # _overload_msg stored globally keyed by channel so send_reply can delete it
       # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
@@ -4542,6 +4609,21 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 _last_detected_func = None
                 _schema_stripped = True
                 break  # break key loop; round loop checks _schema_stripped below
+
+              if ("function response turn" in body_text.lower() and "function call turn" in body_text.lower()
+                  and _func_resp_patch_attempts < 3):
+                # history has a functionCall with no matching functionResponse right after it
+                # (e.g. history reconstructed from Discord messages, or a response append got
+                # lost). Patch a placeholder functionResponse in and retry instead of failing
+                # the whole request outright.
+                _func_resp_patch_attempts += 1
+                patch_desc = _patch_missing_function_responses(history)
+                if patch_desc:
+                  console.log(f"[400-FUNCRESP] Patched missing functionResponse(s) ({patch_desc}), retrying", "WARN")
+                  _func_resp_patched = True
+                  break  # break key loop; round loop checks _func_resp_patched below
+                else:
+                  console.log("[400-FUNCRESP] Gemini reported a missing functionResponse but none was found to patch — giving up", "ERROR")
               #log payload for 400 errors to help diagnose malformed requests
               #console.log(f"400 Bad Request for key {key_idx}. Payload: {json.dumps(payload)}", "DEBUG")
 
@@ -4637,7 +4719,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             key_pos += 1
             _same_key_503_retries = 0
             continue
-        if response or _schema_stripped or _thinking_stripped or _context_stripped:
+        if response or _schema_stripped or _thinking_stripped or _context_stripped or _func_resp_patched:
           break
         # Update consecutive 429-round counter for backoff + early model switch
         # (key_order guard: an empty key_order — e.g. all keys just got suspended out from
@@ -4693,7 +4775,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           _429_round_count = 0
         round_num += 1
 
-      if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped:
+      if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped and not _func_resp_patched:
         if using_own_keys and not byok_free_quota_available:
           # Own key(s) failed for this request AND their free-tier fallback allowance is
           # already used up today — distinct from the normal "hit a transient error" or
@@ -4729,7 +4811,15 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         _context_stripped = False
         turn_count -= 1
         continue
-        
+
+      if _func_resp_patched:
+        # A placeholder functionResponse was inserted for a dangling functionCall; retry
+        # outer loop so contents/payload get rebuilt from the patched `history`.
+        console.log("[400-FUNCRESP] Retrying with patched function response", "INFO")
+        _func_resp_patched = False
+        turn_count -= 1
+        continue
+
       # Process response
 
       # Safety block — promptFeedback.blockReason is set. This must be checked BEFORE the

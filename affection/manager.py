@@ -33,6 +33,11 @@ _MOOD_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 
+_SHOCKED_TAG_RE = re.compile(
+    r"<shocked>\s*(?P<reason>.+?)\s*</shocked>",   # canonical:  <shocked>Sensei confessed out of nowhere</shocked>
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 class AffectionManager:
 
@@ -69,14 +74,15 @@ class AffectionManager:
 
     def parse_and_apply_mood_tag(self, text: str) -> str:
         """
-        Scan model response for <mood>+12</mood> or <mood>-8</mood> tags.
-        Applies the delta to global mood, then strips all mood tags from the text.
-        Returns the cleaned text to send to the user.
+        Scan model response for <mood>+12</mood> or <mood>-8</mood> tags, and for
+        the separate <shocked>reason</shocked> overlay tag. Applies both, then
+        strips all tags from the text. Returns the cleaned text to send to the user.
 
-        The model should be instructed (in system prompt) to use this tag
-        whenever the conversation warrants a mood change, e.g.:
-            <mood>-15</mood>  when the user is rude
-            <mood>+8</mood>   when something nice happens
+        The model should be instructed (in system prompt) to use these tags
+        whenever the conversation warrants it, e.g.:
+            <mood>-15</mood>              when the user is rude
+            <mood>+8</mood>               when something nice happens
+            <shocked>reason here</shocked>  when something genuinely shocks her
         Tags are invisible to the user after stripping.
         """
         for match in _MOOD_TAG_RE.finditer(text):
@@ -87,7 +93,14 @@ class AffectionManager:
                 _mood.nudge(delta)
             except ValueError:
                 pass
-        return _MOOD_TAG_RE.sub("", text).strip()
+        text = _MOOD_TAG_RE.sub("", text)
+
+        shocked_match = _SHOCKED_TAG_RE.search(text)
+        if shocked_match:
+            _mood.trigger_shocked(shocked_match.group("reason"))
+        text = _SHOCKED_TAG_RE.sub("", text)
+
+        return text.strip()
 
     # Bond (async — DB)
 
