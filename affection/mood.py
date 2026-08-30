@@ -34,6 +34,10 @@ _last_message_time: float = 0.0
 _is_sleeping: bool = False
 _wake_time: float = -9999.0   # monotonic timestamp of last wake-up
 
+# "Shocked" overlay — global, RAM-only, auto-expires. Never touches DB.
+_shocked_reason: str = ""
+_shocked_until: float = -9999.0   # monotonic timestamp; expired once now() passes this
+
 # DB
 
 async def _init_db():
@@ -122,6 +126,8 @@ def get() -> float:
 
 
 def label() -> tuple[str, str]:
+    if is_shocked():
+        return "shocked", f"Arona is genuinely shocked right now — {_shocked_reason}"
     for lo, hi, lbl, desc in MOOD_LEVELS:
         if lo <= _mood < hi:
             return lbl, desc
@@ -158,6 +164,35 @@ def just_woke(window: float = WAKE_DISPLAY_WINDOW) -> bool:
     """True for WAKE_DISPLAY_WINDOW seconds after waking from sleep."""
     import time
     return (time.monotonic() - _wake_time) < window
+
+
+def trigger_shocked(reason: str, duration: float = SHOCKED_DURATION_SECONDS):
+    """
+    Flip Arona into a temporary "shocked" overlay state. Global (not per-user),
+    RAM-only — never persisted to DB. Overrides label()/desc for `duration`
+    seconds, then auto-expires on its own (lazy check, no background task needed).
+    Requires a non-empty reason; silently no-ops without one.
+    """
+    global _shocked_reason, _shocked_until
+    import time
+    reason = (reason or "").strip()
+    if not reason:
+        console.log("[mood] trigger_shocked() called with empty reason, ignoring", "WARN")
+        return
+    _shocked_reason = reason
+    _shocked_until = time.monotonic() + duration
+    console.log(f"[mood] shocked triggered: reason={reason!r} duration={duration:.0f}s", "DEBUG")
+
+
+def is_shocked() -> bool:
+    """True while the shocked overlay is active (lazily expires past its window)."""
+    import time
+    return time.monotonic() < _shocked_until
+
+
+def shocked_reason() -> str:
+    """Current shocked reason, or "" if not currently shocked."""
+    return _shocked_reason if is_shocked() else ""
 
 # Background tick loop
 
