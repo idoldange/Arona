@@ -1452,6 +1452,7 @@ def clean_gemini_response(text: str, history: list = None) -> str:
   _strip_referencing_blocks for why.
   """
   console.log(f"Original Gemini text: {text}...", "DEBUG")
+  text = re.sub(r'^\s*<thought>.*?</thought>\s*', '', text, count=1, flags=re.DOTALL | re.IGNORECASE)
   text = re.sub(r'\[Attachment:\s*.*?\]', '', text)
   text = re.sub(r'\[[^\]]+?\s*\|\s*(?:URL:\s*)?https?://[^\]]+?\]', '', text)
   text = _strip_referencing_blocks(text, history)
