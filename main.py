@@ -1458,6 +1458,7 @@ def clean_gemini_response(text: str, history: list = None) -> str:
   text = re.sub(r'-#\s*<:rag:\d+>\s*\[Thought for \d+s\s*→\]\(https?://arona\.hangdongwibu\.io/[^)]+?\)', '', text)
   text = re.sub(r'\[[^\]]+?\s*—\s*Preview\]\(https?://arona-ai\.github\.io/[^)]+?\)', '', text)
   text = re.sub(r'!\[mood\]\(\d+\)', '', text)
+  text = re.sub(r'-#\s*File\(s\)\s*\n\s*\[[^\]]+?\s*—\s*Preview\]\(https?://arona\.hangdongwibu\.io/artifact/[^)]+?\)\s*\n\s*\(Note for Arona: This message is auto-generated when you use the `send_files` tool\. Do not reproduce this format in your response\.\)', '', text)
   return text.strip()
 
 def extract_gemini_text(result: dict, history: list = None) -> str:
