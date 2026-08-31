@@ -3684,6 +3684,25 @@ def _patch_missing_function_responses(history: list) -> str | None:
 
   return "; ".join(patched_desc) if patched_desc else None
 
+def _patch_trailing_model_turn(history: list) -> str | None:
+  """
+  Gemini rejects requests whose final turn has role "model":
+    400 "Requests ending with a model turn are not supported."
+  This happens when a round is sent with nothing new to add to `contents` (e.g.
+  turn_count > 1 cleared current_text/current_attachments and no function call/
+  response was pending), so contents/history still ends on the previous model
+  turn. Appends a minimal placeholder user turn right after so the conversation
+  becomes Gemini-valid again. Mutates `history` in place. Returns a short
+  description of what was patched, or None if nothing needed fixing (i.e.
+  history is already empty or already ends on a user turn).
+  """
+  if not history:
+    return None
+  if history[-1].get("role") != "model":
+    return None
+  history.append({"role": "user", "parts": [{"text": "(continue)"}]})
+  return "appended placeholder user turn after trailing model turn"
+
 async def ask_gemini(model_name: str = None, text: str = "", attachments: list = None, temperature: float = None, max_retries: int = None, sys_prompt: bool = True, timeout: int = None, custom_sys_prompt:str=None, msg_history="", enable_functions: bool = True, max_function_turns: int = None, level: str = None, message: discord.Message = None, typing_pause_event: asyncio.Event = None, thinking_budget: int | None = None, rules=None, safety_note="") -> dict:
   """
   Send a prompt to the Gemini API with smart key fallback.
@@ -4350,6 +4369,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       _context_stripped = False  # set when ALL keys hit TPM 429 and we shrank a history part instead of giving up
       _func_resp_patched = False  # set when 400 "function response must follow function call" gets auto-patched mid-retry
       _func_resp_patch_attempts = 0  # cap patch retries so a genuinely unfixable payload doesn't loop forever
+      _trailing_model_patched = False  # set when 400 "Requests ending with a model turn" gets auto-patched mid-retry
+      _trailing_model_patch_attempts = 0  # cap patch retries so a genuinely unfixable payload doesn't loop forever
       _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
       # _overload_msg stored globally keyed by channel so send_reply can delete it
       # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
@@ -4624,6 +4645,21 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                   break  # break key loop; round loop checks _func_resp_patched below
                 else:
                   console.log("[400-FUNCRESP] Gemini reported a missing functionResponse but none was found to patch — giving up", "ERROR")
+
+              if ("ending with a model turn" in body_text.lower()
+                  and _trailing_model_patch_attempts < 3):
+                # contents/history ended on a "model" turn with nothing new queued up for
+                # this round (e.g. turn_count > 1 cleared current_text/current_attachments
+                # and there was no pending function call/response). Patch a placeholder user
+                # turn onto history and retry instead of failing the whole request outright.
+                _trailing_model_patch_attempts += 1
+                patch_desc = _patch_trailing_model_turn(history)
+                if patch_desc:
+                  console.log(f"[400-TRAILMODEL] Patched trailing model turn ({patch_desc}), retrying", "WARN")
+                  _trailing_model_patched = True
+                  break  # break key loop; round loop checks _trailing_model_patched below
+                else:
+                  console.log("[400-TRAILMODEL] Gemini reported a trailing model turn but history didn't end on one — giving up", "ERROR")
               #log payload for 400 errors to help diagnose malformed requests
               #console.log(f"400 Bad Request for key {key_idx}. Payload: {json.dumps(payload)}", "DEBUG")
 
@@ -4719,7 +4755,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             key_pos += 1
             _same_key_503_retries = 0
             continue
-        if response or _schema_stripped or _thinking_stripped or _context_stripped or _func_resp_patched:
+        if response or _schema_stripped or _thinking_stripped or _context_stripped or _func_resp_patched or _trailing_model_patched:
           break
         # Update consecutive 429-round counter for backoff + early model switch
         # (key_order guard: an empty key_order — e.g. all keys just got suspended out from
@@ -4775,7 +4811,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           _429_round_count = 0
         round_num += 1
 
-      if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped and not _func_resp_patched:
+      if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped and not _func_resp_patched and not _trailing_model_patched:
         if using_own_keys and not byok_free_quota_available:
           # Own key(s) failed for this request AND their free-tier fallback allowance is
           # already used up today — distinct from the normal "hit a transient error" or
@@ -4817,6 +4853,14 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         # outer loop so contents/payload get rebuilt from the patched `history`.
         console.log("[400-FUNCRESP] Retrying with patched function response", "INFO")
         _func_resp_patched = False
+        turn_count -= 1
+        continue
+
+      if _trailing_model_patched:
+        # A placeholder user turn was appended after a dangling trailing model turn; retry
+        # outer loop so contents/payload get rebuilt from the patched `history`.
+        console.log("[400-TRAILMODEL] Retrying with patched trailing model turn", "INFO")
+        _trailing_model_patched = False
         turn_count -= 1
         continue
 
