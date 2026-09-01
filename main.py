@@ -6943,9 +6943,15 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                 if extra_atts:
                   resp_parts.extend(await discord_attachment_to_parts(extra_atts, text=True))
 
+                # NOTE: messages are walked newest-first here and the whole history list
+                # gets a single blanket [::-1] reversal later (see `history = web_history[::-1]`)
+                # to restore chronological order. That reversal also flips the internal
+                # order of any multi-entry return from this function, so to end up as
+                # [functionCall, functionResponse] AFTER the reversal, we must return them
+                # pre-reversed here: [functionResponse, functionCall].
                 return [
-                  {"role": "model", "parts": [call_part]},
                   {"role": "user", "parts": resp_parts},
+                  {"role": "model", "parts": [call_part]},
                 ]
             except Exception as _cee:
               console.log(f"[CODE_EXEC_HISTORY] Failed to reconstruct functionCall/functionResponse for msg {msg.id}: {_cee}", "WARN")
