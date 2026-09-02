@@ -85,6 +85,12 @@ services:
       - TZ=UTC
       - LANG=en_US.UTF-8
       - LC_ALL=en_US.UTF-8
+      # npm KHÔNG đọc HTTP_PROXY/HTTPS_PROXY thường, phải dùng npm_config_*.
+      # File .npmrc build sẵn trong image bị xoá mỗi lần start vì tmpfs
+      # mount đè /home/sandboxuser -> dùng env var thay thế, sống sót qua tmpfs.
+      - npm_config_proxy=http://127.0.0.1:8888
+      - npm_config_https-proxy=http://127.0.0.1:8888
+      - npm_config_noproxy=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
     volumes:
       - ./workdir:/app/workdir
       - ./output:/app/output
