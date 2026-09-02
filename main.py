@@ -1814,6 +1814,33 @@ async def load_channel_history(channel, limit: int, current_message_id: int) -> 
   messages = [msg async for msg in channel.history(limit=limit, oldest_first=False)]
   bot_id = client.user.id
 
+  # Same truncation guard as fetch_full_history: if the oldest message in this window
+  # is a bot "-# Code Execution Output" message, widen the window and cut it at the real
+  # user message that triggered the run_code call(s) instead of mid code-exec chain.
+  # Escalates past this function's normal 50-cap (30 -> 50 -> 100) since a func-call
+  # reconstructed here would otherwise land as an unpaired boundary turn; 100 straight
+  # bot messages with no user turn in between isn't normal usage, so stop there.
+  if messages and messages[-1].author.id == bot_id and messages[-1].content.startswith("-# Code Execution Output"):
+    _cut_idx = None
+    _extended = messages
+    for _tier in (30, 50, 100):
+      if _tier <= limit:
+        continue
+      _extended = [msg async for msg in channel.history(limit=_tier, oldest_first=False)]
+      _found = None
+      for _i in range(len(messages), len(_extended)):
+        if _extended[_i].author.id != bot_id:
+          _found = _i + 1
+          break
+      if _found is not None:
+        _cut_idx = _found
+        break
+    if _cut_idx is not None:
+      messages = _extended[:_cut_idx]
+    elif _extended is not messages:
+      console.log(f"[HISTORY] load_more_context: no user message found within 100 messages behind a Code Execution Output boundary — abnormal, using last 100 as-is.", "WARN")
+      messages = _extended
+
   async def _process(msg):
     if msg.id == current_message_id:
       return None
@@ -6961,6 +6988,39 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
         bot_id = client.user.id
         
         messages = [msg async for msg in channel.history(limit=limit, oldest_first=False)]
+
+        # Guard against truncation cutting mid function-call/response reconstruction.
+        # If the OLDEST fetched message is a bot "-# Code Execution Output" message, it
+        # gets reconstructed below into a [functionResponse, functionCall] pair, which
+        # after the later chronological reversal puts a bare functionCall as the very
+        # FIRST turn in history — no preceding user/functionResponse turn — and Gemini
+        # rejects that with "function call turn must come immediately after a user turn
+        # or after a function response turn." Widen the fetch and cut the window at the
+        # real user message that triggered the run_code call(s), walking back past any
+        # number of chained code-exec messages (>1 func call in a row). Escalate through
+        # 30 -> 50 -> 100; a real conversation never has 100 straight bot messages with
+        # no user turn in between, so if even that fails to find one, this isn't normal
+        # truncation anymore (e.g. someone spamming with a leaked bot token) — stop
+        # escalating, log it loudly, and fall back to whatever we've got.
+        if messages and messages[-1].author.id == bot_id and messages[-1].content.startswith("-# Code Execution Output"):
+          _cut_idx = None
+          _extended = messages
+          for _tier in (30, 50, 100):
+            _extended = [msg async for msg in channel.history(limit=_tier, oldest_first=False)]
+            _found = None
+            for _i in range(len(messages), len(_extended)):
+              if _extended[_i].author.id != bot_id:
+                _found = _i + 1
+                break
+            if _found is not None:
+              _cut_idx = _found
+              break
+          if _cut_idx is not None:
+            console.log(f"[HISTORY] Oldest fetched msg is Code Execution Output — widening history window {len(messages)} -> {_cut_idx} to include trigger context", "INFO")
+            messages = _extended[:_cut_idx]
+          else:
+            console.log(f"[HISTORY] No user message found within 100 messages behind a Code Execution Output boundary — abnormal (possible token leak/spam?). Falling back to last 100 as-is.", "WARN")
+            messages = _extended
 
         # Find the most recent !arona clear — cut off at that index and everything older
         cutoff_index = None
