@@ -7277,7 +7277,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
 
       temperature = DEFAULT_TEMPERATURE
 
-      if not apikeys.check_quota(resolve_id(message.author.id)):
+      if message.author.id not in ADMINS and not apikeys.check_quota(resolve_id(message.author.id)):
         used, limit = apikeys.get_quota_status(resolve_id(message.author.id))
         reset_ts = _next_midnight_pacific_ts()
         await send_with_retry(message.channel, f"Daily free message limit reached ({used}/{limit}). Resets <t:{reset_ts}:R>.\nType `!arona addkey` to use your own key instead (don't worry, it's free).")
@@ -7828,6 +7828,13 @@ async def on_message(message):
     _uid = resolve_id(message.author.id)
     used, limit = apikeys.get_quota_status(_uid)
     reset_ts = _next_midnight_pacific_ts()
+    if message.author.id in ADMINS:
+      # Admins are never actually gated on quota (see the check_quota bypass above), so
+      # show their real usage count against an unlimited (∞) cap instead of the normal
+      # numeric limit — keeps this message shaped exactly like the regular free-tier one.
+      _admin_used = used if used is not None else 0
+      await send_with_retry(message.channel, f"Free tier: {_admin_used}/∞ messages used today. Resets <t:{reset_ts}:R>.")
+      return
     if used is None:
       # Has own key(s) — unlimited via their own key, but still show how much of the
       # free-tier fallback (used automatically if their own key(s) ever fail) they've
