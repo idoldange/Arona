@@ -3686,6 +3686,72 @@ def _patch_missing_function_responses(history: list) -> str | None:
 
   return "; ".join(patched_desc) if patched_desc else None
 
+def _merge_consecutive_model_turns(history: list) -> list:
+  """
+  Gemini requires a functionCall turn to be immediately preceded by a "user"
+  turn or a "functionResponse" turn. History reconstructed from Discord
+  messages (fetch_full_history) can end up with two or more consecutive
+  "model" role turns — e.g. a plain-text bot note (like a "-# File(s)" or
+  web-search notice) sitting right before a reconstructed run_code
+  functionCall/functionResponse pair, with no user message between them in
+  Discord. Left as-is, that produces:
+    400 "Please ensure that function call turn comes immediately after a user
+    turn or after a function response turn."
+  This folds any run of consecutive "model" turns into a single turn
+  (concatenating their parts, preserving order), so the model side of the
+  conversation is never internally split. "user" turns (including our own
+  functionResponse turns, which are always sent as role="user") are left
+  completely untouched — Gemini allows, and this codebase relies on,
+  consecutive user-role turns.
+  Does not mutate the input list; returns a new merged list.
+  """
+  if not history:
+    return history
+  merged: list = []
+  for turn in history:
+    role = turn.get("role")
+    parts = turn.get("parts", [])
+    if not isinstance(parts, list):
+      parts = []
+    if role == "model" and merged and merged[-1].get("role") == "model":
+      merged[-1]["parts"] = merged[-1].get("parts", []) + parts
+    else:
+      merged.append({"role": role, "parts": list(parts)})
+  return merged
+
+def _patch_misplaced_function_call(history: list) -> str | None:
+  """
+  Safety-net counterpart to _merge_consecutive_model_turns (which is the
+  primary defense, run once when `history` is first built). If a "model"
+  turn carrying a functionCall ever ends up immediately preceded by another
+  "model" turn later in the pipeline, Gemini rejects the request with:
+    400 "Please ensure that function call turn comes immediately after a user
+    turn or after a function response turn."
+  This scans `history`, finds any model turn directly preceded by another
+  model turn, and merges the pair (folding the earlier turn's parts into the
+  later one) so the conversation becomes Gemini-valid again. Mutates
+  `history` in place. Returns a short description of what was patched, or
+  None if nothing needed fixing.
+  """
+  patched_desc = []
+  i = 1
+  while i < len(history):
+    cur = history[i]
+    prev = history[i - 1]
+    if cur.get("role") == "model" and prev.get("role") == "model":
+      cur_parts = cur.get("parts", [])
+      prev_parts = prev.get("parts", [])
+      if not isinstance(cur_parts, list):
+        cur_parts = []
+      if not isinstance(prev_parts, list):
+        prev_parts = []
+      cur["parts"] = prev_parts + cur_parts
+      history.pop(i - 1)
+      patched_desc.append(f"turn {i - 1} merged into turn {i}")
+      continue  # re-check the same index; a chain of 3+ model turns can collapse fully
+    i += 1
+  return "; ".join(patched_desc) if patched_desc else None
+
 def _patch_trailing_model_turn(history: list) -> str | None:
   """
   Gemini rejects requests whose final turn has role "model":
@@ -4371,6 +4437,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       _context_stripped = False  # set when ALL keys hit TPM 429 and we shrank a history part instead of giving up
       _func_resp_patched = False  # set when 400 "function response must follow function call" gets auto-patched mid-retry
       _func_resp_patch_attempts = 0  # cap patch retries so a genuinely unfixable payload doesn't loop forever
+      _misplaced_call_patched = False  # set when 400 "function call turn must follow a user/function response turn" gets auto-patched mid-retry
+      _misplaced_call_patch_attempts = 0  # cap patch retries so a genuinely unfixable payload doesn't loop forever
       _trailing_model_patched = False  # set when 400 "Requests ending with a model turn" gets auto-patched mid-retry
       _trailing_model_patch_attempts = 0  # cap patch retries so a genuinely unfixable payload doesn't loop forever
       _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
@@ -4633,7 +4701,35 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 _schema_stripped = True
                 break  # break key loop; round loop checks _schema_stripped below
 
-              if ("function response turn" in body_text.lower() and "function call turn" in body_text.lower()
+              # NOTE: these two Gemini 400s share the substrings "function call turn" and
+              # "function response turn" but describe OPPOSITE problems, so they must be
+              # told apart before picking a patch function:
+              #   A) "...function response turn comes immediately after a function call
+              #      turn." -> a functionCall has no functionResponse AFTER it (missing).
+              #   B) "...function call turn comes immediately after a user turn or after a
+              #      function response turn." -> a functionCall is preceded by the WRONG
+              #      turn (usually another stray "model" turn) BEFORE it.
+              # B is checked first and matched on its distinguishing "...after a user turn"
+              # phrase so it never falls through to A's handler, which looks for a missing
+              # functionResponse that doesn't actually exist in this case and would just
+              # give up without fixing anything.
+              _body_lower = body_text.lower()
+              if ("function call turn comes immediately after a user turn" in _body_lower
+                  and _misplaced_call_patch_attempts < 3):
+                # A functionCall turn ended up right after another "model" turn instead of
+                # a user/functionResponse turn — usually two consecutive Discord bot
+                # messages (e.g. a plain tool note followed by a reconstructed run_code
+                # call) with no user message between them. Merge the offending model
+                # turns and retry instead of failing the whole request outright.
+                _misplaced_call_patch_attempts += 1
+                patch_desc = _patch_misplaced_function_call(history)
+                if patch_desc:
+                  console.log(f"[400-MISPLACEDCALL] Patched misplaced functionCall turn ({patch_desc}), retrying", "WARN")
+                  _misplaced_call_patched = True
+                  break  # break key loop; round loop checks _misplaced_call_patched below
+                else:
+                  console.log("[400-MISPLACEDCALL] Gemini reported a misplaced functionCall turn but none was found to patch — giving up", "ERROR")
+              elif ("function response turn" in _body_lower and "function call turn" in _body_lower
                   and _func_resp_patch_attempts < 3):
                 # history has a functionCall with no matching functionResponse right after it
                 # (e.g. history reconstructed from Discord messages, or a response append got
@@ -4757,7 +4853,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             key_pos += 1
             _same_key_503_retries = 0
             continue
-        if response or _schema_stripped or _thinking_stripped or _context_stripped or _func_resp_patched or _trailing_model_patched:
+        if response or _schema_stripped or _thinking_stripped or _context_stripped or _func_resp_patched or _misplaced_call_patched or _trailing_model_patched:
           break
         # Update consecutive 429-round counter for backoff + early model switch
         # (key_order guard: an empty key_order — e.g. all keys just got suspended out from
@@ -4813,7 +4909,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           _429_round_count = 0
         round_num += 1
 
-      if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped and not _func_resp_patched and not _trailing_model_patched:
+      if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped and not _func_resp_patched and not _misplaced_call_patched and not _trailing_model_patched:
         if using_own_keys and not byok_free_quota_available:
           # Own key(s) failed for this request AND their free-tier fallback allowance is
           # already used up today — distinct from the normal "hit a transient error" or
@@ -4855,6 +4951,14 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         # outer loop so contents/payload get rebuilt from the patched `history`.
         console.log("[400-FUNCRESP] Retrying with patched function response", "INFO")
         _func_resp_patched = False
+        turn_count -= 1
+        continue
+
+      if _misplaced_call_patched:
+        # A functionCall turn that was preceded by a stray "model" turn got merged; retry
+        # outer loop so contents/payload get rebuilt from the patched `history`.
+        console.log("[400-MISPLACEDCALL] Retrying with patched misplaced functionCall turn", "INFO")
+        _misplaced_call_patched = False
         turn_count -= 1
         continue
 
@@ -7220,6 +7324,11 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
               console.log(f"Error building reply_context: {e}", "ERROR")
 
       history = web_history[::-1] if web_history else []
+      # Guard: two "model" turns can end up back-to-back after reconstruction (e.g. a
+      # plain-text bot note sitting right before a reconstructed run_code functionCall
+      # pair, with no user message between them in Discord). Merge them BEFORE they
+      # ever reach the payload, instead of relying only on the mid-retry 400 patch.
+      history = _merge_consecutive_model_turns(history)
         
       bot_member = message.guild.me if message.guild else None
       display_name = bot_member.display_name if bot_member else "Arona"
