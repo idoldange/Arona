@@ -7833,7 +7833,7 @@ async def on_message(message):
       # show their real usage count against an unlimited (∞) cap instead of the normal
       # numeric limit — keeps this message shaped exactly like the regular free-tier one.
       _admin_used = used if used is not None else 0
-      await send_with_retry(message.channel, f"Free tier: {_admin_used}/∞ messages used today. Resets <t:{reset_ts}:R>.")
+      await send_with_retry(message.channel, f"Developer: {_admin_used}/∞ messages used today. Resets <t:{reset_ts}:R>.")
       return
     if used is None:
       # Has own key(s) — unlimited via their own key, but still show how much of the
@@ -7859,7 +7859,7 @@ async def on_message(message):
     await send_with_retry(
       message.channel,
       "⚠️ This will **permanently delete** everything Arona has stored about you: saved information, "
-      "message history, and your account link key. This cannot be undone.\n\n"
+      "message history, api keys, and your account link key. This cannot be undone.\n\n"
       "Type `!arona forgetme confirm` within the next message to proceed."
     )
     return
