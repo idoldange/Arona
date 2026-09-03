@@ -3989,8 +3989,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
         resp = await session.post(
           url, headers=headers, json=payload, timeout=timeout
         )
-        if debug_enabled:
-          console.log(f"Raw response: {await resp.text()}", "DEBUG")
+        console.log(f"Raw response: {await resp.text()}", "DEBUG")
         return resp
       except (aiohttp.ClientConnectionError, aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError) as e:
         console.log(f"Connection error on attempt {attempt+1}/3: {e}", "WARN")
@@ -7148,8 +7147,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                         ref_content += embed.description
                         break
             
-            #only if current msg is from user
-            rep = f" (Referencing to {author}: {ref_content})\n" if msg.author.id != bot_id else ""
+            rep = f" (Referencing to {author}: {ref_content})\n"# if msg.author.id != bot_id else ""
           if msg.content:
             if role == "model" and _THOUGHT_LINK_RE.match(msg.content.strip()):
               # Thought-link message — fetch thought.md attachment for real thought content
