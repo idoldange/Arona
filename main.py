@@ -7137,9 +7137,8 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
             if hasattr(referenced_msg, 'author'):
                 author = referenced_msg.author.display_name
             if hasattr(referenced_msg, 'content'):
-                ref_content = referenced_msg.content[:200] + ("..." if len(referenced_msg.content) > 200 else "")
+                ref_content = referenced_msg.content
             
-            # skip if arona
             if hasattr(referenced_msg, 'embeds') and referenced_msg.embeds and getattr(getattr(referenced_msg, 'author', None), 'id', None) != bot_id:
                 for embed in referenced_msg.embeds:
                     ref_content += f"\n\n(Embed: {embed.title or 'No title'})"
