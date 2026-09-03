@@ -7788,14 +7788,20 @@ async def on_message(message):
   #guard for more sudo commands in the future
   if message.content.lower().startswith("!sudo arona"):
     if message.author.id not in ADMINS:
-      await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      msg = await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      await asyncio.sleep(10)
+      try: await msg.delete()
+      except Exception: pass
       return
     
   if message.content.lower().startswith("!sudo arona channel"):
     if message.author.id not in ADMINS:
-      await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      msg = await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      await asyncio.sleep(10)
+      try: await msg.delete()
+      except Exception: pass
       return
-    console.log(f"Admin {message.author.display_name} used !arona sudo channel command", "INFO")
+    console.log(f"Admin {message.author.display_name} used !sudo arona channel command", "INFO")
     subcommand = message.content[19:].strip().lower()
     channel_id = message.channel.id
     if subcommand == "add":
@@ -7818,7 +7824,10 @@ async def on_message(message):
 
   if message.content.lower().startswith("!sudo arona ignoredchannel"):
     if message.author.id not in ADMINS:
-      await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      msg = await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      await asyncio.sleep(10)
+      try: await msg.delete()
+      except Exception: pass
       return
     console.log(f"Admin {message.author.display_name} used !sudo arona ignoredchannel command", "INFO")
 
@@ -7860,7 +7869,10 @@ async def on_message(message):
 
   if message.content.lower() == "!sudo arona clear":
     if message.author.id not in ADMINS:
-      await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      msg = await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")
+      await asyncio.sleep(10)
+      try: await msg.delete()
+      except Exception: pass
       return
     console.log(f"Admin {message.author.display_name} used !sudo arona clear command", "INFO")
     clear_time = time.time()
@@ -7871,7 +7883,10 @@ async def on_message(message):
     permissions = message.channel.permissions_for(message.author)
     
     if not permissions.manage_channels:
-      await message.channel.send(message.channel, "You need the `Manage Channels` permission to use this command.")
+      msg = await message.channel.send("You need the `Manage Channels` permission to use this command.")
+      await asyncio.sleep(10)
+      try: await msg.delete()
+      except Exception: pass
       return
     
     console.log(f"User {message.author.display_name} used !arona channel command", "INFO")
@@ -7902,7 +7917,10 @@ async def on_message(message):
     permissions = message.channel.permissions_for(message.author)
 
     if not permissions.manage_channels:
-      await send_with_retry(message.channel, "You need the `Manage Channels` permission to use this command.")
+      msg = await message.channel.send("You need the `Manage Channels` permission to use this command.")
+      await asyncio.sleep(10)
+      try: await msg.delete()
+      except Exception: pass
       return
 
     console.log(f"User {message.author.display_name} used !arona ignoredchannel command", "INFO")
@@ -7950,7 +7968,10 @@ async def on_message(message):
     if not is_dm:
       permissions = message.channel.permissions_for(message.author)
       if not permissions.manage_messages:
-        await message.channel.send("You need the `Manage Messages` permission or in DM to use this command.")
+        msg = await message.channel.send("You need the `Manage Messages` permission or in DM to use this command.")
+        await asyncio.sleep(10)
+        try: await msg.delete()
+        except Exception: pass
         return
     
     console.log(f"User {message.author.display_name} used !arona clear command", "INFO")
@@ -8071,7 +8092,12 @@ async def on_message(message):
   if message.content.lower().startswith("!arona"):
     # unknown command starting with !arona
     console.log(f"User {message.author.display_name} used unknown command: {message.content}", "INFO")
-    await send_with_retry(message.channel, "Unknown command. Type `!arona help` for a list of available commands.")
+    msg = await send_with_retry(message.channel, "Unknown command. Type `!arona help` for a list of available commands.")
+    await asyncio.sleep(10)
+    try:
+      await msg.delete()
+    except Exception:
+      pass
     return
   # Handle text messages in voice channel
   if gemini_ws.is_voice_session and message.channel == gemini_ws.current_channel and not message.author.id == client.user.id:
