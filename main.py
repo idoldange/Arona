@@ -121,6 +121,7 @@ from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to
 from dotenv import load_dotenv
 from arona.tts.tts import text_to_speech
 from affection import affection
+from utils.raid_recovery import handle_raided_command
 load_dotenv(dotenv_path=".env")
 api_keys_json_str = os.getenv("GEMINI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
@@ -8084,6 +8085,10 @@ async def on_message(message):
       "• Account key removed.\n\n"
       "Arona no longer has any stored information about you."
     )
+    return
+  
+  if message.content.lower().startswith("!arona raided"):
+    await handle_raided_command(message)
     return
 
   if message.content.lower().startswith("!arona"):
