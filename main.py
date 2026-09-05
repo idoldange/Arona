@@ -4124,7 +4124,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
           if data.get("message") == "Resource has been exhausted (e.g. check quota).":
             await asyncio.sleep(8) # 8+2=10
           # this is per api key rate limit, need to wait 2s
-          await asyncio.sleep(2)  # Brief pause before next key
+          await asyncio.sleep(2+attempt)  # Brief pause before next key
           continue
 
         if resp.status == 400:
@@ -4134,7 +4134,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
           # if yes then switch key
           if "API key not valid" in text:
             console.log(f"[{model}] Key {key_idx+1} invalid, trying next", "WARN")
-            await asyncio.sleep(3)  # Brief pause before next key
+            await asyncio.sleep(3+attempt)  # Brief pause before next key
             continue
           return {"error": f"HTTP {resp.status}: {text}"}
         
@@ -4700,7 +4700,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               if "Resource has been exhausted" in body_text:
                 await asyncio.sleep(30.0)
               # this is per key rate limit, need to wait 1.5s    
-              await asyncio.sleep(1.5 * (attempt_num ** 0.5))  # gradual per-key delay
+              await asyncio.sleep(2 * (attempt_num ** 0.6))  # gradual per-key delay
             
               key_pos += 1  # 429 still rotates to the next key
               _same_key_503_retries = 0
