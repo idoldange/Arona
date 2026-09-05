@@ -1318,6 +1318,17 @@ async def image_search(image_url: str, crawl_full_pages: int = 3, max_chars_per_
 
 
 # § GEMINI RESPONSE UTILITIES  (clean_gemini_response, extract_gemini_text)
+# Matches the same "[Attachment: name | Url: url]" tags emitted into reply_context /
+# reconstructed history (see fetch_full_history's process_msg). Stripped out before
+# content-matching because Discord re-signs the CDN URL's token each time a message's
+# .attachments is fetched, so the tag built for the current turn won't byte-match the
+# one rebuilt later when that message becomes history — the surrounding text is what
+# actually needs to match.
+_ATTACHMENT_TAG_RE = re.compile(r'\[Attachment:\s*.*?\]')
+
+def _strip_attachment_tags(text: str) -> str:
+  return _ATTACHMENT_TAG_RE.sub('', text)
+
 def _ref_author_in_history(history: list, author: str) -> bool:
   """True if `author` shows up as a name in the actual context fed into this request."""
   author_l = author.strip().lower()
@@ -1335,17 +1346,23 @@ def _content_in_history(history: list, author: str, snippet: str, min_len: int =
   context actually fed into this request (i.e. this isn't just the model coincidentally
   writing similar-looking text, e.g. while explaining code or some mechanic).
   """
-  snippet = snippet.strip()
+  snippet = _strip_attachment_tags(snippet).strip()
   if snippet.endswith('...'):
     snippet = snippet[:-3].rstrip()
   if len(snippet) < min_len:
     # Too short to reliably match on content alone — require at least the author to be real.
     return _ref_author_in_history(history, author)
-  needle = snippet[:80].lower()
+  # Full snippet, not just a prefix: content_start is fixed while j (candidate end)
+  # varies, so a fixed-length prefix needle is IDENTICAL for every longer candidate —
+  # combined with trying longest-candidate-first, that let one coincidental short
+  # prefix match swallow arbitrary freshly-generated trailing text as "quoted"
+  # content. Matching the whole snippet means only the real quote's exact boundary
+  # can succeed, since freshly-generated text won't exist verbatim in history.
+  needle = snippet.lower()
   author_l = author.strip().lower()
   for entry in history or []:
     for part in entry.get("parts", []) or []:
-      t = (part.get("text") or "")
+      t = _strip_attachment_tags(part.get("text") or "")
       if author_l and author_l not in t.lower():
         continue
       if needle in t.lower():
@@ -1388,7 +1405,12 @@ def _strip_referencing_blocks(text: str, history: list = None) -> str:
         out.append(text[i]); i += 1; continue
       author = text[author_start:colon_idx].strip()
       content_start = colon_idx + 2
-      window_end = min(n, content_start + 260)
+      # No fixed char cap here on purpose: referenced content can legitimately run
+      # long (multi-line quotes, appended "(Embed: ...)" text, or
+      # "[Attachment Context: ...]" blocks), and _content_in_history() below is what
+      # actually guards against false positives, not this window size. Bound only by
+      # end of text or the start of the next Referencing/Replying block.
+      window_end = n
       for marker in ('\n(Referencing to ', '\n(Replying to '):
         m_idx = text.find(marker, content_start)
         if m_idx != -1:
@@ -1454,7 +1476,7 @@ def clean_gemini_response(text: str, history: list = None) -> str:
   """
   console.log(f"Original Gemini text: {text}...", "DEBUG")
   text = re.sub(r'^\s*<thought>.*?</thought>\s*', '', text, count=1, flags=re.DOTALL | re.IGNORECASE)
-  text = re.sub(r'\[Attachment:\s*.*?\]', '', text)
+  text = _ATTACHMENT_TAG_RE.sub('', text)
   text = re.sub(r'\[[^\]]+?\s*\|\s*(?:URL:\s*)?https?://[^\]]+?\]', '', text)
   text = _strip_referencing_blocks(text, history)
   text = re.sub(r'-#\s*<:rag:\d+>\s*\[Thought for \d+s\s*→\]\(https?://arona\.hangdongwibu\.io/[^)]+?\)', '', text)
@@ -7146,6 +7168,13 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                     if embed.description:
                         ref_content += embed.description
                         break
+
+            # Same tag format as reply_context (see below) — keeps this consistent
+            # with what the current turn actually saw, instead of silently dropping
+            # attachment context once the message scrolls into history.
+            if hasattr(referenced_msg, 'attachments') and referenced_msg.attachments:
+                for att in referenced_msg.attachments:
+                    ref_content += f" [Attachment: {att.filename} | Url: {att.url}]"
             
             rep = f" (Referencing to {author}: {ref_content})\n"# if msg.author.id != bot_id else ""
           if msg.content:
@@ -7326,51 +7355,18 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                       if embed.description:
                           title = embed.title or "No title"
                           attachment_texts.append(f"(embed: {title}) {embed.description}")
-              
-              async def read_text_attachment(att: discord.Attachment):
-                  """Read first 1000 chars of a text file."""
-                  try:
-                      raw_bytes = await att.read()
-                      text_content = raw_bytes.decode('utf-8', errors='ignore')
-                      snippet = text_content[:1000].strip()
-                      if len(text_content) > 1000:
-                          snippet += "..."
-                      
-                      if snippet:
-                          attachment_texts.append(f"(File: {att.filename}): ```{snippet}```")
-                      else:
-                          attachment_texts.append(f"(File: {att.filename}) - File is empty or could not be read.")
-                  except Exception as e:
-                      console.log(f"Error reading text file {att.filename}: {e}", "ERROR")
-                      attachment_texts.append(f"(File: {att.filename}) - Error reading.")
-  
-              text_tasks = []
-              
+
+              # Don't pre-read attachment content here — Arona has run_code and can
+              # fetch/read the URL herself if she actually needs the file. Just point
+              # at it. Tag format matches the "[Attachment: ...]" pattern already
+              # stripped in clean_gemini_response, so it also self-cleans if Gemini
+              # ever echoes it back verbatim; and since it's just name+url (not file
+              # content), it stays short regardless of file size.
               for att in getattr(context_message, "attachments", []):
-                  # Quick checks first (extensions / content-type hints)
-                  name = (att.filename or "").lower()
-                  ct = (att.content_type or "").lower()
-                  if (
-                    name.endswith(TEXT_EXTENSIONS)
-                    or ct.startswith("text/")
-                    or "json" in ct
-                    or "xml" in ct
-                    or "yaml" in ct or "yml" in ct
-                  ):
-                      text_tasks.append(read_text_attachment(att))
-                  else:
-                      # Fallback to encoding-based detection (async)
-                      try:
-                          if await is_text_attachment(att):
-                              text_tasks.append(read_text_attachment(att))
-                      except Exception as e:
-                          console.log(f"Encoding detection failed for {att.filename}: {e}", "DEBUG")
-  
-              if text_tasks:
-                  await asyncio.gather(*text_tasks)
-  
+                  attachment_texts.append(f"[Attachment: {att.filename} | Url: {att.url}]")
+
               attach_block = (
-                  " [Attachment Context: " + " | ".join(attachment_texts) + "]"
+                  " " + " | ".join(attachment_texts)
                   if attachment_texts
                   else ""
               )
