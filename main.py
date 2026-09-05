@@ -1330,11 +1330,13 @@ def _strip_attachment_tags(text: str) -> str:
   return _ATTACHMENT_TAG_RE.sub('', text)
 
 def _ref_author_in_history(history: list, author: str) -> bool:
-  """True if `author` shows up as a name in the actual context fed into this request."""
+  """True if `author` shows up as a name in a real USER message fed into this request."""
   author_l = author.strip().lower()
   if not author_l:
     return False
   for entry in history or []:
+    if entry.get("role") != "user":
+      continue
     for part in entry.get("parts", []) or []:
       if author_l in (part.get("text") or "").lower():
         return True
@@ -1361,6 +1363,8 @@ def _content_in_history(history: list, author: str, snippet: str, min_len: int =
   needle = snippet.lower()
   author_l = author.strip().lower()
   for entry in history or []:
+    if entry.get("role") != "user":
+      continue
     for part in entry.get("parts", []) or []:
       t = _strip_attachment_tags(part.get("text") or "")
       if author_l and author_l not in t.lower():
@@ -1378,9 +1382,12 @@ def _strip_referencing_blocks(text: str, history: list = None) -> str:
   the moment the quoted content itself has unbalanced parens (e.g. `haha =)))`,
   `(test) test`). Instead, for each candidate block we try the plausible closing
   parens and only accept one if the resulting (author, content) actually matches a
-  real message in `history` — this also prevents false positives where the model is
-  just explaining something (code, a mechanic, etc.) in text that happens to look
-  like this pattern.
+  real USER message in `history` (see _content_in_history/_ref_author_in_history —
+  model-authored entries are deliberately excluded, since Arona's own past replies
+  get a reconstructed '(Referencing to <user>: ...)'-shaped rep too, which would
+  otherwise let a hallucinated echo validate against Arona's own prior turn) — this
+  also prevents false positives where the model is just explaining something (code,
+  a mechanic, etc.) in text that happens to look like this pattern.
 
   If no history is supplied, nothing is stripped (safer than guessing).
   """
