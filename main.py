@@ -1631,7 +1631,7 @@ def extract_gemini_text(result: dict, history: list = None) -> str:
       json_string = json.dumps(all_image_data)
       extracted_parts.append(f"\n\n<DISCORD_ATTACHMENT_DATA>{json_string}</DISCORD_ATTACHMENT_DATA>")
 
-    return "\n".join(extracted_parts).strip()
+    return "".join(extracted_parts).strip()
   except Exception as e:
     raw_result = result if isinstance(result, dict) else None
     result_str = str(result).replace("\\n", "\n")
