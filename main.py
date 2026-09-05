@@ -1362,7 +1362,7 @@ def _content_in_history(history: list, author: str, snippet: str, min_len: int =
   # can succeed, since freshly-generated text won't exist verbatim in history.
   needle = snippet.lower()
   author_l = author.strip().lower()
-  for entry in history or []:
+  for idx, entry in enumerate(history or []):
     if entry.get("role") != "user":
       continue
     for part in entry.get("parts", []) or []:
@@ -1370,6 +1370,11 @@ def _content_in_history(history: list, author: str, snippet: str, min_len: int =
       if author_l and author_l not in t.lower():
         continue
       if needle in t.lower():
+        console.log(
+          f"[STRIP_MATCH] author={author!r} snippet_len={len(snippet)} matched history[{idx}] "
+          f"role={entry.get('role')!r} entry_text_preview={t[:200]!r}",
+          "DEBUG"
+        )
         return True
   return False
 
