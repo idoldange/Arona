@@ -1478,7 +1478,7 @@ def clean_gemini_response(text: str, history: list = None) -> str:
   text = re.sub(r'^\s*<thought>.*?</thought>\s*', '', text, count=1, flags=re.DOTALL | re.IGNORECASE)
   text = _ATTACHMENT_TAG_RE.sub('', text)
   text = re.sub(r'\[[^\]]+?\s*\|\s*(?:URL:\s*)?https?://[^\]]+?\]', '', text)
-  #text = _strip_referencing_blocks(text, history)
+  text = _strip_referencing_blocks(text, history)
   text = re.sub(r'-#\s*<:rag:\d+>\s*\[Thought for \d+s\s*→\]\(https?://arona\.hangdongwibu\.io/[^)]+?\)', '', text)
   text = re.sub(r'\[[^\]]+?\s*—\s*Preview\]\(https?://arona-ai\.github\.io/[^)]+?\)', '', text)
   text = re.sub(r'!\[mood\]\(\d+\)', '', text)
@@ -4268,6 +4268,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   
   turn_count = 0
   malformed_retries = 0
+  _self_entry_this_round = None  # tracks this round's own (uncleaned) history entry — see append/pop around it
   MAX_MALFORMED_RETRIES = 5
   retry_temperature = temperature  # lowered on each malformed retry, reset on success
   empty_response_retries = 0  # tracks consecutive turns with no text and no function call
@@ -5237,9 +5238,10 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         "role": "model",
         "parts": parts_list
       })
+      _self_entry_this_round = history[-1]  # see removal at the `return response` sites below
 
       # Send any textual parts immediately to channel (before executing functions) ONLY if the model called a function
-      text_parts = [clean_gemini_response(p.get("text", ""), history) for p in parts_list if p.get("text", "").strip() and not p.get("thought", False)]
+      text_parts = [clean_gemini_response(p.get("text", ""), history[:-1]) for p in parts_list if p.get("text", "").strip() and not p.get("thought", False)]
       text_parts = [t for t in text_parts if t]  # drop empty after cleaning
       has_func_call = any("functionCall" in p for p in parts_list)
       if has_func_call and text_parts and message and not gemini_ws.is_voice_session:
@@ -5416,6 +5418,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         if 'func_msg' in locals() and func_msg:
           asyncio.create_task(_delete_func_msg(func_msg))
           func_msg = []  # already scheduled — don't let `finally` re-schedule it
+        if history and _self_entry_this_round is not None and history[-1] is _self_entry_this_round:
+          history.pop()
         return response
       else:
         current_text = None
@@ -5425,6 +5429,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         asyncio.create_task(_delete_func_msg(func_msg))
         func_msg = []  # already scheduled — don't let `finally` re-schedule it
 
+    if history and _self_entry_this_round is not None and history[-1] is _self_entry_this_round:
+      history.pop()
     return response
   finally:
     # Guaranteed cleanup: no matter which path we exit through (normal
@@ -7176,7 +7182,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                 for att in referenced_msg.attachments:
                     ref_content += f" [Attachment: {att.filename} | Url: {att.url}]"
             
-            rep = f" (Referencing to {author}: {ref_content})\n" if msg.author.id != bot_id else ""
+            rep = f" (Referencing to {author}: {ref_content})\n"# if msg.author.id != bot_id else ""
           if msg.content:
             if role == "model" and _THOUGHT_LINK_RE.match(msg.content.strip()):
               # Thought-link message — fetch thought.md attachment for real thought content
