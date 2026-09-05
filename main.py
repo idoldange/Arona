@@ -1478,7 +1478,7 @@ def clean_gemini_response(text: str, history: list = None) -> str:
   text = re.sub(r'^\s*<thought>.*?</thought>\s*', '', text, count=1, flags=re.DOTALL | re.IGNORECASE)
   text = _ATTACHMENT_TAG_RE.sub('', text)
   text = re.sub(r'\[[^\]]+?\s*\|\s*(?:URL:\s*)?https?://[^\]]+?\]', '', text)
-  text = _strip_referencing_blocks(text, history)
+  #text = _strip_referencing_blocks(text, history)
   text = re.sub(r'-#\s*<:rag:\d+>\s*\[Thought for \d+s\s*→\]\(https?://arona\.hangdongwibu\.io/[^)]+?\)', '', text)
   text = re.sub(r'\[[^\]]+?\s*—\s*Preview\]\(https?://arona-ai\.github\.io/[^)]+?\)', '', text)
   text = re.sub(r'!\[mood\]\(\d+\)', '', text)
@@ -7176,7 +7176,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                 for att in referenced_msg.attachments:
                     ref_content += f" [Attachment: {att.filename} | Url: {att.url}]"
             
-            rep = f" (Referencing to {author}: {ref_content})\n"# if msg.author.id != bot_id else ""
+            rep = f" (Referencing to {author}: {ref_content})\n" if msg.author.id != bot_id else ""
           if msg.content:
             if role == "model" and _THOUGHT_LINK_RE.match(msg.content.strip()):
               # Thought-link message — fetch thought.md attachment for real thought content
