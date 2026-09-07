@@ -68,6 +68,8 @@ def add_keys(user_id: int, raw: str) -> list[str]:
             "ON CONFLICT(user_id) DO UPDATE SET keys_encrypted=excluded.keys_encrypted",
             (user_id, _enc(keys), time.strftime("%Y-%m-%d %H:%M:%S"))
         )
+    with _conn() as c:
+        c.execute("UPDATE user_credentials SET key_index=0 WHERE user_id=?", (user_id,))
     return keys
 
 
