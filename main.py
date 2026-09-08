@@ -7502,9 +7502,15 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
       if isinstance(raw_reply, dict) and (raw_reply.get("_malformed_exhausted") or raw_reply.get("_empty_stop")):
         console.log("===== [END MESSAGE] =====", "INFO")
         return
-      # Include this turn's own reply_context (not part of `history`) so a Referencing-to
-      # echo of the message Arona is directly replying to can still be validated.
-      _validate_history = history + [{"role": "user", "parts": [{"text": reply_context}]}] if reply_context else history
+      # Include this turn's own reply_context AND raw current-turn content (neither is
+      # part of `history`) so a Referencing-to echo of either — the message Arona is
+      # directly replying to, OR Gemini hallucinating/duplicating the CURRENT message's
+      # own text back at itself in that shape — can still be validated and stripped.
+      _validate_extra = []
+      if reply_context:
+        _validate_extra.append({"role": "user", "parts": [{"text": reply_context}]})
+      _validate_extra.append({"role": "user", "parts": [{"text": f"{message.author.display_name}: {content}"}]})
+      _validate_history = history + _validate_extra
       reply = extract_gemini_text(raw_reply, _validate_history)
       if not reply or not reply.strip():
         console.log("===== [END MESSAGE] =====", "INFO")
