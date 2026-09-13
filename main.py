@@ -1342,6 +1342,20 @@ def _ref_author_in_history(history: list, author: str) -> bool:
         return True
   return False
 
+# Gemini frequently "re-renders" a Discord mention when it echoes back a quoted
+# message — e.g. the real content stored in history has the raw `<@123456789>` form,
+# but the hallucinated echo writes the resolved `<@Arona>` form instead (or vice
+# versa). Byte-for-byte this defeats _content_in_history's verbatim match and lets
+# the whole reference block survive unstripped, even though it's clearly the same
+# message. Collapse any `<@...>` mention token to one canonical placeholder before
+# comparing so both spellings line up.
+_MENTION_NORM_RE = re.compile(r'<@!?[^>]*>')
+
+def _normalize_for_match(text: str) -> str:
+  text = _MENTION_NORM_RE.sub('@mention', text)
+  text = re.sub(r'\s+', ' ', text)
+  return text.strip().lower()
+
 def _content_in_history(history: list, author: str, snippet: str, min_len: int = 4) -> bool:
   """
   True if `snippet` plausibly came from a real message by `author` somewhere in the
@@ -1360,7 +1374,7 @@ def _content_in_history(history: list, author: str, snippet: str, min_len: int =
   # prefix match swallow arbitrary freshly-generated trailing text as "quoted"
   # content. Matching the whole snippet means only the real quote's exact boundary
   # can succeed, since freshly-generated text won't exist verbatim in history.
-  needle = snippet.lower()
+  needle = _normalize_for_match(snippet)
   author_l = author.strip().lower()
   for idx, entry in enumerate(history or []):
     if entry.get("role") != "user":
@@ -1369,7 +1383,7 @@ def _content_in_history(history: list, author: str, snippet: str, min_len: int =
       t = _strip_attachment_tags(part.get("text") or "")
       if author_l and author_l not in t.lower():
         continue
-      if needle in t.lower():
+      if needle in _normalize_for_match(t):
         console.log(
           f"[STRIP_MATCH] author={author!r} snippet_len={len(snippet)} matched history[{idx}] "
           f"role={entry.get('role')!r} entry_text_preview={t[:200]!r}",
