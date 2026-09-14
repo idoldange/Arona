@@ -4715,7 +4715,63 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 await asyncio.sleep(30.0)
               # this is per key rate limit, need to wait 1.5s    
               await asyncio.sleep(2 * (attempt_num ** 0.6))  # gradual per-key delay
-            
+              
+              if '"quota_limit_value": "0"' in body_text:
+              #key locked,remove
+              #same as 403
+                console.log(f"[429] Key {key_idx} locked, removing from pool", "WARN")
+                suspended_key = keys[key_idx]
+
+                if key_idx < num_own_keys:
+                  own_keys[:] = [k for k in own_keys if k != suspended_key]
+                  num_own_keys = len(own_keys)
+                elif suspended_key in GEMINI_API_KEY:
+                  GEMINI_API_KEY[:] = [k for k in GEMINI_API_KEY if k != suspended_key]
+
+                  env_file = ".env"
+                  try:
+                    with open(env_file, "r") as f:
+                      lines = f.readlines()
+
+                    new_value_json = json.dumps(GEMINI_API_KEY)
+                    updated = False
+                    for i, line in enumerate(lines):
+                      stripped = line.lstrip()
+                      leading_ws = line[: len(line) - len(stripped)]
+                      if not stripped.startswith("GEMINI_API_KEY"):
+                        continue
+                      after_name = stripped[len("GEMINI_API_KEY"):]
+                      after_name_stripped = after_name.lstrip(" \t")
+                      if not after_name_stripped.startswith("="):
+                        continue  
+
+                      after_eq = after_name_stripped[1:].lstrip(" \t")
+                      quote = after_eq[0] if after_eq[:1] in ("'", '"') else ""
+                      newline_suffix = "\n" if line.endswith("\n") else ""
+                      lines[i] = f"{leading_ws}GEMINI_API_KEY = {quote}{new_value_json}{quote}{newline_suffix}"
+                      updated = True
+                      break  
+                    if not updated:
+                      console.log("GEMINI_API_KEY line not found in .env, skipped write", "WARN")
+                    else:
+                      with open(env_file, "w") as f:
+                        f.writelines(lines)
+                  except Exception as e:
+                    console.log(f"Failed to update .env file: {e}", "ERROR")
+
+                keys = (own_keys + GEMINI_API_KEY) if using_own_keys else GEMINI_API_KEY
+                num_free_keys = len(keys) - num_own_keys
+                usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
+
+                if not keys:
+                  return {"error": "403", "details": "All API keys have been suspended."}
+
+                key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
+                own_keys_in_order = 0 if _skip_own_keys else num_own_keys
+                key_pos = min(key_pos, len(key_order) - 1)
+                await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
+                continue
+              
               key_pos += 1  # 429 still rotates to the next key
               _same_key_503_retries = 0
               continue
