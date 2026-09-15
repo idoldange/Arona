@@ -11,8 +11,8 @@ INFLIGHT_DELAY   = 10.0                      # seconds to consider a follow-up m
 
 # ── Gemini API ───────────────────────────────────────────────
 
-DEFAULT_MODEL       = "gemini-3.6-flash"
-FALLBACK_MODEL      = "gemini-3.6-flash"     # 503
+DEFAULT_MODEL       = "gemini-3.5-flash"
+FALLBACK_MODEL      = "gemini-3.5-flash"     # 503
 RATE_LIMIT_MODEL    = "gemini-3.5-flash-lite"# 429
 RATE_LIMIT_MODEL_   = "gemini-3.8-flash"     # 429 on RATE_LIMIT_MODEL
 LITE_MODEL          = "gemini-3.1-flash-lite"
