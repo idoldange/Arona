@@ -56,6 +56,7 @@ from config import *
 MAX_SAME_KEY_503_RETRIES = globals().get("MAX_SAME_KEY_503_RETRIES", 3)
 import discord
 import re
+import unicodedata
 from arona.prompt import get_arona_prompt, get_live_arona_prompt
 from PIL import Image
 from readability import Document 
@@ -1331,14 +1332,14 @@ def _strip_attachment_tags(text: str) -> str:
 
 def _ref_author_in_history(history: list, author: str) -> bool:
   """True if `author` shows up as a name in a real USER message fed into this request."""
-  author_l = author.strip().lower()
+  author_l = _normalize_for_match(author)
   if not author_l:
     return False
   for entry in history or []:
     if entry.get("role") != "user":
       continue
     for part in entry.get("parts", []) or []:
-      if author_l in (part.get("text") or "").lower():
+      if author_l in _normalize_for_match(part.get("text") or ""):
         return True
   return False
 
@@ -1351,10 +1352,37 @@ def _ref_author_in_history(history: list, author: str) -> bool:
 # comparing so both spellings line up.
 _MENTION_NORM_RE = re.compile(r'<@!?[^>]*>')
 
+# Same story for custom Discord emoji: what's actually stored in history is the raw
+# `<:name:123456789>` (or `<a:name:123456789>` if animated) tag — `clean_content`
+# does NOT touch these, it only resolves mentions — but Gemini's echo commonly drops
+# the `a:` flag and/or the numeric id and writes just `:name:`, or occasionally the
+# literal unicode emoji instead. Collapse `<a?:name:id>` down to `:name:` so the
+# angle-bracket/id noise doesn't block the match; a bare `:name:` shortcode in the
+# echo then lines up with it directly.
+_CUSTOM_EMOJI_RE = re.compile(r'<a?:([a-zA-Z0-9_]+):\d+>')
+
+# Standard unicode emoji have the same "looks identical, different bytes" problem as
+# combining diacritics: e.g. "❤️" (heart + U+FE0F variation selector, forces emoji
+# presentation) vs "❤" (bare heart, text presentation) render the same in most
+# clients, but Gemini isn't consistent about which one it reproduces. Stripping the
+# variation selectors before comparing avoids failing the match over that alone.
+_VARIATION_SELECTOR_RE = re.compile('[\uFE0E\uFE0F]')
+
 def _normalize_for_match(text: str) -> str:
+  # Vietnamese diacritics (and other combining-mark scripts) can arrive as either
+  # precomposed (NFC, one codepoint per accented letter) or decomposed (NFD, base
+  # letter + separate combining marks) sequences that render identically but are
+  # different bytes. Discord clients and Gemini's own generation don't consistently
+  # pick one form, so "Dạ dạ" typed one way and echoed back the other way fails a
+  # raw substring/equality check even though they're visually the same text.
+  # Normalizing both sides to NFC first fixes that.
+  text = unicodedata.normalize("NFC", text)
   text = _MENTION_NORM_RE.sub('@mention', text)
+  text = _CUSTOM_EMOJI_RE.sub(lambda m: f':{m.group(1).lower()}:', text)
+  text = _VARIATION_SELECTOR_RE.sub('', text)
   text = re.sub(r'\s+', ' ', text)
   return text.strip().lower()
+
 
 def _content_in_history(history: list, author: str, snippet: str, min_len: int = 4) -> bool:
   """
@@ -1375,13 +1403,13 @@ def _content_in_history(history: list, author: str, snippet: str, min_len: int =
   # content. Matching the whole snippet means only the real quote's exact boundary
   # can succeed, since freshly-generated text won't exist verbatim in history.
   needle = _normalize_for_match(snippet)
-  author_l = author.strip().lower()
+  author_l = _normalize_for_match(author)
   for idx, entry in enumerate(history or []):
     if entry.get("role") != "user":
       continue
     for part in entry.get("parts", []) or []:
       t = _strip_attachment_tags(part.get("text") or "")
-      if author_l and author_l not in t.lower():
+      if author_l and author_l not in _normalize_for_match(t):
         continue
       if needle in _normalize_for_match(t):
         console.log(
@@ -4715,63 +4743,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 await asyncio.sleep(30.0)
               # this is per key rate limit, need to wait 1.5s    
               await asyncio.sleep(2 * (attempt_num ** 0.6))  # gradual per-key delay
-              
-              if '"quota_limit_value": "0"' in body_text:
-              #key locked,remove
-              #same as 403
-                console.log(f"[429] Key {key_idx} locked, removing from pool", "WARN")
-                suspended_key = keys[key_idx]
-
-                if key_idx < num_own_keys:
-                  own_keys[:] = [k for k in own_keys if k != suspended_key]
-                  num_own_keys = len(own_keys)
-                elif suspended_key in GEMINI_API_KEY:
-                  GEMINI_API_KEY[:] = [k for k in GEMINI_API_KEY if k != suspended_key]
-
-                  env_file = ".env"
-                  try:
-                    with open(env_file, "r") as f:
-                      lines = f.readlines()
-
-                    new_value_json = json.dumps(GEMINI_API_KEY)
-                    updated = False
-                    for i, line in enumerate(lines):
-                      stripped = line.lstrip()
-                      leading_ws = line[: len(line) - len(stripped)]
-                      if not stripped.startswith("GEMINI_API_KEY"):
-                        continue
-                      after_name = stripped[len("GEMINI_API_KEY"):]
-                      after_name_stripped = after_name.lstrip(" \t")
-                      if not after_name_stripped.startswith("="):
-                        continue  
-
-                      after_eq = after_name_stripped[1:].lstrip(" \t")
-                      quote = after_eq[0] if after_eq[:1] in ("'", '"') else ""
-                      newline_suffix = "\n" if line.endswith("\n") else ""
-                      lines[i] = f"{leading_ws}GEMINI_API_KEY = {quote}{new_value_json}{quote}{newline_suffix}"
-                      updated = True
-                      break  
-                    if not updated:
-                      console.log("GEMINI_API_KEY line not found in .env, skipped write", "WARN")
-                    else:
-                      with open(env_file, "w") as f:
-                        f.writelines(lines)
-                  except Exception as e:
-                    console.log(f"Failed to update .env file: {e}", "ERROR")
-
-                keys = (own_keys + GEMINI_API_KEY) if using_own_keys else GEMINI_API_KEY
-                num_free_keys = len(keys) - num_own_keys
-                usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
-
-                if not keys:
-                  return {"error": "403", "details": "All API keys have been suspended."}
-
-                key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
-                own_keys_in_order = 0 if _skip_own_keys else num_own_keys
-                key_pos = min(key_pos, len(key_order) - 1)
-                await asyncio.sleep(30.0 * (round_num + 1))  # back off before retrying
-                continue
-              
+            
               key_pos += 1  # 429 still rotates to the next key
               _same_key_503_retries = 0
               continue
@@ -7264,7 +7236,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
                 for att in referenced_msg.attachments:
                     ref_content += f" [Attachment: {att.filename} | Url: {att.url}]"
             
-            rep = f" (Referencing to {author}: {ref_content})\n"# if msg.author.id != bot_id else ""
+            rep = f" (Referencing to {author}: {ref_content})\n" if msg.author.id != bot_id else ""
           if msg.content:
             if role == "model" and _THOUGHT_LINK_RE.match(msg.content.strip()):
               # Thought-link message — fetch thought.md attachment for real thought content
