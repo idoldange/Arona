@@ -8340,12 +8340,12 @@ async def on_message(message):
     call_kwargs["user_input"] = merged_content or None
     call_kwargs["attachments"] = merged_atts if merged_atts else None
   
-  permissions = message.channel.permissions_for(message.guild.me)
-  if permissions.send_messages:
-    task = asyncio.create_task(handle_message(merged_msgs[-1], **call_kwargs))
+  can_send = not message.guild or message.channel.permissions_for(message.guild.me).send_messages
+  if can_send:
+      task = asyncio.create_task(handle_message(merged_msgs[-1], **call_kwargs))
   else:
-    console.log(f"Arona does not have permission to send messages in {message.channel.name}", "WARN")
-
+      channel_name = getattr(message.channel, 'name', 'DM')
+      console.log(f"Arona does not have permission to send messages in {channel_name}", "WARN")
   if _is_tracked_channel:
     _active_tasks[key] = task
     _task_msgs[key] = merged_msgs
