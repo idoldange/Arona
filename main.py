@@ -8346,6 +8346,7 @@ async def on_message(message):
   else:
       channel_name = getattr(message.channel, 'name', 'DM')
       console.log(f"Arona does not have permission to send messages in {channel_name}", "WARN")
+      
   if _is_tracked_channel:
     _active_tasks[key] = task
     _task_msgs[key] = merged_msgs
