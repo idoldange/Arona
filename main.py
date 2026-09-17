@@ -7863,6 +7863,7 @@ async def on_message(message):
       "- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n"
       "- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n"
       "- `!arona quota`: Check your remaining daily messages\n"
+      "- `!arona chess start/restart/stop [elo]`: Play chess  — `!arona chess move <move>` to play\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"

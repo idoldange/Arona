@@ -13,7 +13,7 @@ def get_git_diff():
         if not diff.strip():
             diff_args = ["git", "diff", "--function-context"]
             diff = subprocess.check_output(diff_args, text=True, encoding="utf-8", errors="ignore")
-        return diff[:1000000]
+        return diff[:100000]
     except Exception:
         return ""
 
@@ -67,7 +67,7 @@ def main():
 
     success = False
     for key in keys:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}]
         }

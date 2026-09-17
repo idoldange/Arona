@@ -270,3 +270,6 @@ simplify_comments.py
 main.lock
 comments_dump.py
 server-logs/
+
+
+.mcp_undo
