@@ -8207,6 +8207,74 @@ async def on_message(message):
     )
     return
   
+  # !arona chess start/restart/stop/move — local-engine chess, no Gemini calls
+  chess_start_match = re.match(r"^!arona\s+chess\s+start(?:\s+(\d+))?\s*$", message.content, re.IGNORECASE)
+  if chess_start_match:
+    console.log(f"User {message.author.display_name} used !arona chess start", "INFO")
+    elo_arg = chess_start_match.group(1)
+    success, msg = chess_manager.start_engine_game(message.channel.id, int(elo_arg) if elo_arg else None)
+    await send_with_retry(message.channel, msg)
+    if success:
+      board_img_b64 = chess_manager.get_board_image_base64(message.channel.id)
+      image = base64.b64decode(board_img_b64)
+      file = discord.File(BytesIO(image), filename="chess_board.png")
+      await message.channel.send(file=file)
+    return
+
+  chess_restart_match = re.match(r"^!arona\s+chess\s+restart(?:\s+(\d+))?\s*$", message.content, re.IGNORECASE)
+  if chess_restart_match:
+    console.log(f"User {message.author.display_name} used !arona chess restart", "INFO")
+    elo_arg = chess_restart_match.group(1)
+    success, msg = chess_manager.restart_engine_game(message.channel.id, int(elo_arg) if elo_arg else None)
+    await send_with_retry(message.channel, msg)
+    if success:
+      board_img_b64 = chess_manager.get_board_image_base64(message.channel.id)
+      image = base64.b64decode(board_img_b64)
+      file = discord.File(BytesIO(image), filename="chess_board.png")
+      await message.channel.send(file=file)
+    return
+
+  if message.content.lower().strip() == "!arona chess stop":
+    console.log(f"User {message.author.display_name} used !arona chess stop", "INFO")
+    success, msg = chess_manager.stop_engine_game(message.channel.id)
+    await send_with_retry(message.channel, msg)
+    return
+
+  chess_move_match = re.match(r"^!arona\s+chess\s+move\s+(.+)$", message.content, re.IGNORECASE)
+  if chess_move_match:
+    console.log(f"User {message.author.display_name} used !arona chess move", "INFO")
+    channel_id = message.channel.id
+    if not chess_manager.is_engine_game(channel_id):
+      await send_with_retry(message.channel, "No local engine game running here. Start one with `!arona chess start [elo]`.")
+      return
+    move_str = chess_move_match.group(1).strip()
+    success, msg, _ = chess_manager.play_user_move(channel_id, move_str)
+    if not success:
+      await send_with_retry(message.channel, f"Move failed: {msg}")
+      return
+    reply_lines = [msg]
+    board = chess_manager._get_game(channel_id)
+    if not board.is_game_over():
+      eng_success, eng_msg, _ = await chess_manager.engine_play_move(channel_id)
+      reply_lines.append(eng_msg if eng_success else f"Engine move failed: {eng_msg}")
+    board_img_b64 = chess_manager.get_board_image_base64(channel_id)
+    image = base64.b64decode(board_img_b64)
+    file = discord.File(BytesIO(image), filename="chess_board.png")
+    await send_with_retry(message.channel, "\n".join(reply_lines))
+    await message.channel.send(file=file)
+    return
+
+  if message.content.lower().startswith("!arona chess"):
+    await send_with_retry(
+      message.channel,
+      "Usage:\n"
+      "`!arona chess start [elo]` — start a local-engine game (you play White)\n"
+      "`!arona chess move <move>` — play a move (UCI or SAN, e.g. `e2e4` or `Nf3`)\n"
+      "`!arona chess restart [elo]` — reset the board, keep or replace elo\n"
+      "`!arona chess stop` — end the local-engine game"
+    )
+    return
+  
   if message.content.lower().startswith("!arona raided"):
     await handle_raided_command(message)
     return

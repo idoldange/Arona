@@ -1,4 +1,7 @@
 import chess
+import chess.engine
+import asyncio
+import shutil
 import base64
 import io
 import os
@@ -7,6 +10,13 @@ import re
 from PIL import Image, ImageDraw, ImageFont
 from typing import Union, Tuple, Optional
 from console import console
+from config import (
+    CHESS_ENGINE_PATH,
+    CHESS_ENGINE_DEFAULT_ELO,
+    CHESS_ENGINE_MIN_ELO,
+    CHESS_ENGINE_MAX_ELO,
+    CHESS_ENGINE_MOVE_TIME,
+)
 
 class DiscordChessManager:
     def __init__(self):
@@ -35,6 +45,19 @@ class DiscordChessManager:
         
         # Load games from file on startup
         self.load_games()
+
+        # ── Local chess engine (no Gemini calls) ──────────────
+        # Per-channel engine sessions: {channel_id: {"elo": int}}
+        # Presence of a channel_id in this dict means "!arona chess" engine
+        # mode is active there — moves get answered by the local engine
+        # instead of going through Gemini function calling.
+        self.engine_path = self._resolve_engine_path()
+        self.engine_sessions = {}
+        self.engine_sessions_file = os.path.join(os.path.dirname(__file__), "chess_engine_sessions.json")
+        # Serializes engine access per channel so two moves in the same
+        # channel can't spawn overlapping engine processes.
+        self._engine_locks = {}
+        self.load_engine_sessions()
     
     def _load_piece_images(self):
         """Load all piece images into memory."""
@@ -72,6 +95,236 @@ class DiscordChessManager:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"Error saving games to file: {e}")
+
+    # ── Local engine: session persistence ──────────────────────
+
+    def _resolve_engine_path(self):
+        """
+        Find a UCI-compatible chess engine binary. Any engine works
+        (Stockfish, Lc0, etc) as long as it speaks the UCI protocol.
+        Lookup order:
+          1. config.CHESS_ENGINE_PATH / env var CHESS_ENGINE_PATH or STOCKFISH_PATH
+          2. games/assets/engine/ (bundled binary, if you drop one there)
+          3. system PATH
+        """
+        candidates = []
+        env_path = os.environ.get("CHESS_ENGINE_PATH") or os.environ.get("STOCKFISH_PATH")
+        if CHESS_ENGINE_PATH:
+            candidates.append(CHESS_ENGINE_PATH)
+        if env_path:
+            candidates.append(env_path)
+        for c in candidates:
+            if c and os.path.isfile(c):
+                return c
+
+        bundled_dir = os.path.join(os.path.dirname(__file__), "assets", "engine")
+        if os.path.isdir(bundled_dir):
+            for fname in os.listdir(bundled_dir):
+                lower = fname.lower()
+                if lower.endswith(".exe") or "stockfish" in lower or "engine" in lower:
+                    full = os.path.join(bundled_dir, fname)
+                    if os.path.isfile(full) and os.access(full, os.X_OK) or lower.endswith(".exe"):
+                        return full
+
+        for name in ("stockfish", "stockfish.exe", "stockfish-windows-x86-64-avx2.exe",
+                     "stockfish-windows-x86-64.exe", "lc0", "lc0.exe"):
+            found = shutil.which(name)
+            if found:
+                return found
+
+        return None
+
+    def has_engine(self) -> bool:
+        return bool(self.engine_path)
+
+    def load_engine_sessions(self):
+        """Load per-channel engine session (elo) state from disk."""
+        try:
+            if os.path.exists(self.engine_sessions_file):
+                with open(self.engine_sessions_file, 'r') as f:
+                    data = json.load(f)
+                self.engine_sessions = {int(k): v for k, v in data.items()}
+                console.log(f"Loaded {len(self.engine_sessions)} chess engine sessions from file", "INFO")
+        except Exception as e:
+            console.log(f"Error loading chess engine sessions: {e}", "ERROR")
+
+    def save_engine_sessions(self):
+        try:
+            data = {str(k): v for k, v in self.engine_sessions.items()}
+            os.makedirs(os.path.dirname(self.engine_sessions_file), exist_ok=True)
+            with open(self.engine_sessions_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            console.log(f"Error saving chess engine sessions: {e}", "ERROR")
+
+    def is_engine_game(self, channel_id) -> bool:
+        return channel_id in self.engine_sessions
+
+    def get_engine_elo(self, channel_id) -> Optional[int]:
+        session = self.engine_sessions.get(channel_id)
+        return session.get("elo") if session else None
+
+    def _clamp_elo(self, elo) -> int:
+        try:
+            elo = int(elo)
+        except (TypeError, ValueError):
+            return CHESS_ENGINE_DEFAULT_ELO
+        return max(CHESS_ENGINE_MIN_ELO, min(CHESS_ENGINE_MAX_ELO, elo))
+
+    def start_engine_game(self, channel_id, elo=None) -> Tuple[bool, str]:
+        """Start a fresh local-engine game in this channel. Player = White."""
+        if not self.has_engine():
+            return False, (
+                "No local chess engine found on the server. Set `CHESS_ENGINE_PATH` "
+                "(or `STOCKFISH_PATH`) in `.env`, or drop a UCI engine binary into "
+                "`games/assets/engine/`."
+            )
+        final_elo = self._clamp_elo(elo) if elo is not None else CHESS_ENGINE_DEFAULT_ELO
+        self.games[channel_id] = chess.Board()
+        self.engine_sessions[channel_id] = {"elo": final_elo}
+        self.save_games()
+        self.save_engine_sessions()
+        return True, (
+            f"Engine game started! You're **White**, the engine is **Black** at ~**{final_elo} ELO**.\n"
+            f"Play with `!arona chess move <move>` (UCI or SAN, e.g. `e2e4` or `Nf3`)."
+        )
+
+    def stop_engine_game(self, channel_id) -> Tuple[bool, str]:
+        """Turn off local-engine mode for this channel. Board state is kept."""
+        if channel_id not in self.engine_sessions:
+            return False, "There's no active engine game in this channel."
+        del self.engine_sessions[channel_id]
+        self.save_engine_sessions()
+        return True, "Engine game stopped. The board position is still saved."
+
+    def restart_engine_game(self, channel_id, elo=None) -> Tuple[bool, str]:
+        """Reset the board and (re)start engine mode, keeping the previous elo unless a new one is given."""
+        if not self.has_engine():
+            return False, (
+                "No local chess engine found on the server. Set `CHESS_ENGINE_PATH` "
+                "(or `STOCKFISH_PATH`) in `.env`, or drop a UCI engine binary into "
+                "`games/assets/engine/`."
+            )
+        previous_elo = self.engine_sessions.get(channel_id, {}).get("elo", CHESS_ENGINE_DEFAULT_ELO)
+        final_elo = self._clamp_elo(elo) if elo is not None else previous_elo
+        self.games[channel_id] = chess.Board()
+        self.engine_sessions[channel_id] = {"elo": final_elo}
+        self.save_games()
+        self.save_engine_sessions()
+        return True, (
+            f"Engine game restarted! You're **White**, the engine is **Black** at ~**{final_elo} ELO**."
+        )
+
+    def _get_engine_lock(self, channel_id) -> asyncio.Lock:
+        lock = self._engine_locks.get(channel_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._engine_locks[channel_id] = lock
+        return lock
+
+    def play_user_move(self, channel_id, move_str: str) -> Tuple[bool, str, Optional[chess.Move]]:
+        """
+        Apply a single move from the human player (White) to the board.
+        Used by the local-engine flow (!arona chess move ...) — separate from
+        move(), which is the Gemini-tool-facing entry point.
+        """
+        board = self._get_game(channel_id)
+        if board.is_game_over():
+            return False, "The game is already over. Use `!arona chess restart` to play again.", None
+
+        clean_move = move_str.strip()
+        if not clean_move:
+            return False, "No move provided.", None
+
+        if self._is_promotion_move(board, clean_move.replace("-", "")) and len(clean_move.replace("-", "")) < 5:
+            return False, "Pawn promotion detected. Specify the piece, e.g. `a7a8q` (Q/R/B/N).", None
+
+        try:
+            move = self._parse_move(board, clean_move)
+        except ValueError:
+            return False, f"`{clean_move}`: invalid move format (tried UCI, SAN, and extended notation).", None
+
+        if move not in board.legal_moves:
+            reason = self._describe_illegal_move(board, move)
+            extra = f" {reason}" if reason else ""
+            return False, f"`{clean_move}` is illegal.{extra}", None
+
+        board.push(move)
+        self.save_games()
+
+        status = f"You played: {clean_move}"
+        if board.is_checkmate():
+            status += " — Checkmate! You win!"
+        elif board.is_stalemate():
+            status += " — Stalemate (Draw)."
+        elif board.is_insufficient_material():
+            status += " — Draw (insufficient material)."
+        elif board.is_check():
+            status += " — Check!"
+        return True, status, move
+
+    async def engine_play_move(self, channel_id) -> Tuple[bool, str, Optional[chess.Move]]:
+        """
+        Ask the local engine to compute and push a move for Black in this
+        channel's board. Spawns and quits the engine process per call —
+        simpler and safer than keeping long-lived engine processes around
+        for a Discord bot with many channels.
+        """
+        if not self.has_engine():
+            return False, "No local chess engine available.", None
+
+        board = self._get_game(channel_id)
+        if board.is_game_over():
+            return False, "Game is already over.", None
+
+        elo = self.get_engine_elo(channel_id) or CHESS_ENGINE_DEFAULT_ELO
+        lock = self._get_engine_lock(channel_id)
+
+        async with lock:
+            try:
+                transport, engine = await chess.engine.popen_uci(self.engine_path)
+            except Exception as e:
+                console.log(f"Failed to start chess engine at {self.engine_path}: {e}", "ERROR")
+                return False, f"Failed to start the chess engine: {e}", None
+
+            try:
+                options = {}
+                if "UCI_LimitStrength" in engine.options:
+                    options["UCI_LimitStrength"] = True
+                if "UCI_Elo" in engine.options:
+                    opt = engine.options["UCI_Elo"]
+                    lo = getattr(opt, "min", None) or CHESS_ENGINE_MIN_ELO
+                    hi = getattr(opt, "max", None) or CHESS_ENGINE_MAX_ELO
+                    options["UCI_Elo"] = max(lo, min(hi, elo))
+                if options:
+                    await engine.configure(options)
+
+                result = await engine.play(board, chess.engine.Limit(time=CHESS_ENGINE_MOVE_TIME))
+                move = result.move
+                if move is None:
+                    return False, "Engine returned no move (game likely over).", None
+
+                board.push(move)
+                self.save_games()
+
+                status = f"Engine played: {move.uci()}"
+                if board.is_checkmate():
+                    status += " — Checkmate! Engine wins."
+                elif board.is_stalemate():
+                    status += " — Stalemate (Draw)."
+                elif board.is_insufficient_material():
+                    status += " — Draw (insufficient material)."
+                elif board.is_check():
+                    status += " — Check!"
+                return True, status, move
+            except Exception as e:
+                console.log(f"Engine move error: {e}", "ERROR")
+                return False, f"Engine failed to produce a move: {e}", None
+            finally:
+                try:
+                    await engine.quit()
+                except Exception:
+                    pass
 
     def _get_game(self, channel_id):
         """Get or create a chess game for a specific channel."""

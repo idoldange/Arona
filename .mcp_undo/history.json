@@ -1,0 +1,14 @@
+[
+  {
+    "type": "edit",
+    "path": "config.py",
+    "backup": "1789620477_8515b790_config.py.bak",
+    "ts": 1789620477.3563328
+  },
+  {
+    "type": "edit",
+    "path": "games/chess.py",
+    "backup": "1789620617_522636eb_chess.py.bak",
+    "ts": 1789620617.6197183
+  }
+]

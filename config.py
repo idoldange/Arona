@@ -81,6 +81,18 @@ SEARCH_URL = "https://serpapi.com/search.json"
 MAX_SCHEULED_TASK_RETRIES = 5  # Max retries for a failed scheduled task before giving up
 
 
+# ── Chess Engine (local, no Gemini calls) ────────────────────
+
+# Override with env var CHESS_ENGINE_PATH if set. Otherwise auto-detected at
+# runtime from games/assets/engine/ or system PATH (any UCI-compatible engine
+# works — Stockfish, Lc0, etc).
+CHESS_ENGINE_PATH        = None
+CHESS_ENGINE_DEFAULT_ELO = 1500
+CHESS_ENGINE_MIN_ELO     = 400
+CHESS_ENGINE_MAX_ELO     = 3190
+CHESS_ENGINE_MOVE_TIME   = 1.0   # seconds engine "thinks" per move
+
+
 # ── Docker ───────────────────────────────────────────────────
 
 DOCKER_DESKTOP_PATH = "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe"
