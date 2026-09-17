@@ -185,17 +185,17 @@ class DiscordChessManager:
         self.save_games()
         self.save_engine_sessions()
         return True, (
-            f"Engine game started! You're **White**, the engine is **Black** at ~**{final_elo} ELO**.\n"
+            f"Game started! You're **White**, Arona is **Black** at ~**{final_elo} ELO**.\n"
             f"Play with `!arona chess move <move>` (UCI or SAN, e.g. `e2e4` or `Nf3`)."
         )
 
     def stop_engine_game(self, channel_id) -> Tuple[bool, str]:
         """Turn off local-engine mode for this channel. Board state is kept."""
         if channel_id not in self.engine_sessions:
-            return False, "There's no active engine game in this channel."
+            return False, "There's no active game in this channel."
         del self.engine_sessions[channel_id]
         self.save_engine_sessions()
-        return True, "Engine game stopped. The board position is still saved."
+        return True, "Game stopped. The board position is still saved."
 
     def restart_engine_game(self, channel_id, elo=None) -> Tuple[bool, str]:
         """Reset the board and (re)start engine mode, keeping the previous elo unless a new one is given."""
@@ -212,7 +212,7 @@ class DiscordChessManager:
         self.save_games()
         self.save_engine_sessions()
         return True, (
-            f"Engine game restarted! You're **White**, the engine is **Black** at ~**{final_elo} ELO**."
+            f"Chess game restarted! You're **White**, Arona is **Black** at ~**{final_elo} ELO**."
         )
 
     def _get_engine_lock(self, channel_id) -> asyncio.Lock:
@@ -307,9 +307,9 @@ class DiscordChessManager:
                 board.push(move)
                 self.save_games()
 
-                status = f"Engine played: {move.uci()}"
+                status = f"Arona played: {move.uci()}"
                 if board.is_checkmate():
-                    status += " — Checkmate! Engine wins."
+                    status += " — Checkmate! Arona wins."
                 elif board.is_stalemate():
                     status += " — Stalemate (Draw)."
                 elif board.is_insufficient_material():
@@ -318,8 +318,8 @@ class DiscordChessManager:
                     status += " — Check!"
                 return True, status, move
             except Exception as e:
-                console.log(f"Engine move error: {e}", "ERROR")
-                return False, f"Engine failed to produce a move: {e}", None
+                console.log(f"Arona move error: {e}", "ERROR")
+                return False, f"Arona failed to produce a move: {e}", None
             finally:
                 try:
                     await engine.quit()
