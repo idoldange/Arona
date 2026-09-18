@@ -1,38 +1,38 @@
-# Arona - Tai lieu kien truc va van hanh
+# Arona - Architecture and Operations Documentation
 
-> Tai lieu ky thuat danh cho maintainer. Noi dung duoc tong hop tu code va cau hinh hien co trong repository. Cac chi tiet chua duoc xac minh trong moi truong runtime duoc danh dau ro.
+> Technical documentation for maintainers. This document is based on the source code and configuration currently present in the repository. Items that have not been verified in a live runtime are explicitly marked.
 
-## 1. Tong quan
+## 1. Overview
 
-Arona la mot bot Discord AI viet chu yeu bang Python, co nhan vat hoi thoai Arona, ho tro van ban va voice, bo nho dai han, he thong affection/mood/bond, cac tich hop web va mot control panel chay bang Node.js.
+Arona is an AI Discord bot written primarily in Python. It provides an Arona character persona, text and voice interaction, long-term memory, an affection/mood/bond system, web integrations, and a Node.js control panel.
 
-Du an dang o trang thai experimental/development. README ghi ro mot phan code duoc tao tu dong va co the chua toi uu. Vi vay tai lieu nay uu tien mo ta hanh vi hien tai cua code, khong xem day la cam ket ve mot production architecture hoan chinh.
+The project is experimental/development-stage software. The README states that parts of the codebase were generated automatically and may not be fully optimized. This document describes the current implementation, not a guarantee of production readiness.
 
-### 1.1 Thanh phan chinh
+### 1.1 Main components
 
-| Thanh phan | Cong nghe | Vai tro |
+| Component | Technology | Responsibility |
 |---|---|---|
-| Bot runtime | Python, `discord.py` | Nhan su kien Discord, tao hoi thoai va tra loi |
-| AI orchestration | Gemini API qua HTTP/WebSocket va function calling | Sinh phan hoi, chon tool, xu ly retry/fallback |
-| Control panel | Node.js, Express, Socket.IO | Dang nhap, start/stop/restart bot, xem log, gui lenh |
-| Frontend panel | HTML/CSS/JavaScript | Terminal realtime, nut dieu khien, log viewer |
-| Launcher | Java `ServerUI.java`, `start.bat` | Mo giao dien dieu khien tren Windows |
-| Persistent state | SQLite, ChromaDB, JSON | Luu memory, message history, bond, task va trang thai |
-| Voice | `discord-ext-voice-recv`, TTS HTTP, RVC/Applio | Nhan/gia lap voice va phat audio |
-| Sandbox | Docker Compose, WARP, tinyproxy | Chay code do model sinh trong container cach ly |
-| Game | `python-chess`, UCI engine | Choi co vua trong Discord |
+| Bot runtime | Python, `discord.py` | Receives Discord events and generates replies |
+| AI orchestration | Gemini API over HTTP/WebSocket and function calling | Generates responses, selects tools, handles retries/fallbacks |
+| Control panel | Node.js, Express, Socket.IO | Login, process control, logs, and commands |
+| Frontend | HTML/CSS/JavaScript | Realtime terminal, controls, and log viewer |
+| Launcher | Java `ServerUI.java`, `start.bat` | Windows launcher/controller |
+| Persistent state | SQLite, ChromaDB, JSON | Memory, history, bond, tasks, and runtime state |
+| Voice | Discord voice receive, HTTP TTS, RVC/Applio | Voice input, synthesis, conversion, and playback |
+| Sandbox | Docker Compose, WARP, tinyproxy | Isolated execution of model-generated code |
+| Game | `python-chess`, UCI engine | Chess gameplay inside Discord |
 
-### 1.2 Muc tieu chuc nang
+### 1.2 Main capabilities
 
-- Hoi thoai voi nguoi dung tren Discord.
-- Ho tro context ca nhan, channel, guild va semantic memory.
-- Goi tool theo nhu cau: web, GitHub, YouTube, media, scheduler, todo, chess, Blue Archive, file va code sandbox.
-- Tao giong noi va tham gia voice channel khi du runtime phu tro.
-- Theo doi mood, affection va bond cua Arona.
-- Dieu khien bot tu xa qua web panel.
-- Chay code/phan tich file trong Docker executor.
+- Discord text and voice interaction.
+- User, channel, guild, and semantic context.
+- Gemini function calling for web, GitHub, YouTube, media, scheduling, todo, chess, Blue Archive, files, and code execution.
+- Text-to-speech and optional voice conversion.
+- Mood, affection, and per-user bond tracking.
+- Remote bot control through a web panel.
+- Docker-based code and file analysis.
 
-## 2. Kien truc tong the
+## 2. Overall architecture
 
 ```mermaid
 flowchart LR
@@ -64,7 +64,565 @@ flowchart LR
     K --> N[WARP + tinyproxy network]
 ```
 
-### 2.1 Luong hoi thoai van ban
+### 2.1 Text conversation flow
+
+```mermaid
+sequenceDiagram
+    participant Discord
+    participant Bot as main.py
+    participant Memory as SQLite/ChromaDB
+    participant Gemini
+    participant Tool as execute_function
+
+    Discord->>Bot: Message or slash command
+    Bot->>Bot: Filter channel, permissions, duplicates, inflight work
+    Bot->>Memory: Read history and scoped memory
+    Bot->>Bot: Build persona and affection context
+    Bot->>Gemini: Send content, attachments, and tool declarations
+    Gemini-->>Bot: Text or function call
+    alt Function call
+        Bot->>Tool: Dispatch tool
+        Tool-->>Bot: Tool result
+        Bot->>Gemini: Send result and continue
+    end
+    Bot->>Memory: Save message, vector, and state
+    Bot->>Discord: Reply, embed, file, or audio
+```
+
+### 2.2 Web control flow
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Express as server.js
+    participant Socket as Socket.IO
+    participant Child as main.py
+
+    Browser->>Express: POST /login
+    Express-->>Browser: Authenticated session
+    Browser->>Socket: Connect
+    Socket->>Express: Check session
+    Express-->>Socket: Allow or disconnect
+    Browser->>Socket: start/stop/restart/kill/command
+    Socket->>Child: Spawn, terminate, or stdin.write
+    Child-->>Socket: stdout/stderr
+    Socket-->>Browser: status, output, and log events
+```
+
+Important boundaries:
+
+- Python is the Discord runtime; the panel manages that process.
+- Gemini tools consist of core tools and lazy-loaded groups.
+- Message rows and vectors are one logical data update.
+- Docker is the main isolation boundary for generated code.
+- Voice depends on external services, not only Python packages.
+
+## 3. Repository structure
+
+```text
+/
+|-- main.py                         # Discord bot entry point
+|-- config.py                       # Runtime constants and state paths
+|-- server.js                       # Node control panel and process manager
+|-- package.json                    # Node scripts and dependencies
+|-- requirements.txt                # Python dependencies
+|-- README.md                       # General project guide
+|-- .env.example                    # Environment variable template
+|-- generate_msg.py                 # Commit-message generator
+|-- migrate_msgbank.py              # Message/vector migration
+|-- start.bat                       # Java UI launcher
+|-- sync.bat                        # Git add/commit/push helper
+|-- ServerUI.java                   # Windows desktop controller
+|-- cf_worker.js                    # Optional Cloudflare Worker proxy
+|-- public/                         # Web panel frontend
+|-- console/                        # Logger and runtime commands
+|-- affection/                      # Mood, bond, and affection logic
+|-- arona/                          # Persona, TTS, and voice stack
+|-- utils/                          # Memory, tools, integrations, and utilities
+|-- games/                          # Chess logic and assets
+|-- database/                       # Runtime databases and skills
+|-- docker/                         # Compose, image, and network scripts
+|-- logs/                           # Runtime logs
+|-- crashreports/                   # Crash dumps
+|-- temp/, temp_audio/              # Temporary files
+`-- fluidsynth/                     # Supporting audio files
+```
+
+### 3.1 Module groups
+
+| Group | Representative modules | Responsibility |
+|---|---|---|
+| Runtime | `main.py`, `config.py` | Startup, event loop, Discord client, dispatcher |
+| Persona | `arona/prompt.py` | System prompt and character rules |
+| Memory | `utils/memory.py`, `msg_bank.py`, `vector_database.py` | Key-value memory, history, semantic retrieval |
+| Scoped memory | `channel_memory.py`, `guild_memory.py`, `impression.py` | Channel/guild context and impressions |
+| Relationship | `affection/manager.py`, `mood.py`, `bond.py` | Mood, affection, bond, prompt blocks |
+| Tools | `tool_schemas.py`, `tool_groups.py` | Gemini declarations and TTL loading |
+| Integrations | `github.py`, `youtube.py`, `schale_db.py`, `wiki.py` | External services |
+| Media | `attachment.py`, `text_utils.py`, media modules | Attachments, audio, images, video |
+| Operations | `console/`, `scheduler.py`, `raid_recovery.py` | Commands, tasks, recovery |
+| Isolation | `utils/docker.py`, `docker/` | Untrusted code execution |
+| Games | `games/chess.py` | Chess and UCI engine |
+
+## 4. Discord bot lifecycle
+
+### 4.1 Startup
+
+`main.py` changes the working directory, installs a crash hook, configures logging, loads `.env` and `config.py`, initializes memory/scheduler/affection, registers Discord handlers, and starts supporting services after `on_ready()`.
+
+Startup depends on local databases, API keys, ffmpeg, optional browser sessions, and optional voice services.
+
+### 4.2 Message processing
+
+Important symbols:
+
+- `slash_arona()`: `/arona` slash-command entry point.
+- `on_ready()`: Discord-ready lifecycle hook.
+- `on_message()`: message, command, channel, and permission filtering.
+- `handle_message()`: main conversation pipeline.
+- `ask_gemini()`: Gemini request, retry/fallback, and tool-call handling.
+- `execute_function()`: tool dispatcher.
+- `run_code()`: Docker-backed Python/shell execution.
+- `join_voice_channel()` and `leave_voice_channel()`: voice management.
+- `save_active_channels()` and `save_ignored_channels()`: channel persistence.
+
+Expected pipeline:
+
+1. Receive a Discord message.
+2. Check mentions, ignored channels, permissions, and inflight requests.
+3. Read attachments, text, history, and scoped context.
+4. Build persona, memory, mood, bond, impression, and time context.
+5. Build Gemini tools; groups use a TTL.
+6. Call Gemini.
+7. Dispatch function calls and send results back in later turns.
+8. Send a reply, embed, file, or audio.
+9. Save messages/state and update affection/bond.
+
+### 4.3 Retry, models, and quotas
+
+`config.py` defines default/fallback/rate-limit/lite/live models, retry and timeout limits, maximum function turns, free-tier limits, the 503 unstick mechanism, thought-signature handling, and optional Cloudflare Worker routing.
+
+`GEMINI_API_KEY` may be a JSON list or a single string. `main.py` normalizes both forms for key rotation.
+
+### 4.4 Voice
+
+- Discord voice receive/live: `discord-ext-voice-recv`, `AudioProcessor`, `GeminiWebSocket`.
+- Text-to-speech/conversion: `arona/tts/tts.py`, `VoiceChangerBridge`, RVC/Applio.
+- TTS default: `127.0.0.1:9880`.
+- Applio/RVC default: `127.0.0.1:6969`.
+- Reference audio and model paths: `config.py`.
+- MoviePy is configured to use `ffmpeg.exe`.
+
+Voice is optional and may require model weights, separate services, a desktop session, and a GPU.
+
+## 5. Gemini tools and features
+
+### 5.1 Tool mechanism
+
+`utils/tool_schemas.py` creates Gemini function declarations. `get_gemini_tools()` provides core web/memory/profile/weather/user/Blue Archive tools, group-loading meta-tools, voice-session tools, current chess declarations, and the default-model `escalate` tool.
+
+Text-channel groups unload after five incoming messages; loading a group refreshes the TTL. Voice groups remain available because voice sessions have no message stream for TTL tracking.
+
+### 5.2 Tool groups
+
+| Group | Scope |
+|---|---|
+| `chess` | Board state, moves, promotion, reset, board images |
+| `scheduler` | Messages, AI tasks, recurring loops, edits, deletes |
+| `dev` | Skills, code execution, file staging/edit/send, workspace |
+| `github` | Repository search, trees, files, strings, commits |
+| `blue_archive` | Gacha, birthdays, Schale DB |
+| `media` | Reverse image, YouTube, songs, channel summaries |
+| `todo` | Per-channel task lists |
+| `migration` | Discord account linking/unlinking |
+
+### 5.3 Prompt and persona
+
+`arona/prompt.py` builds the persona, conversation rules, anti-hallucination rules, and tool guidance. The prompt is not a security boundary; tools still validate permissions, input, and scope.
+
+`affection/manager.py` adds mood, bond, and tag context. Channel/guild memory and user information are injected before Gemini.
+
+## 6. Memory and persistent data
+
+### 6.1 Memory layers
+
+1. **User key-value memory**: name, preferences, timezone, and similar facts.
+2. **Message history**: per-user history for recent context and semantic search.
+3. **Semantic memory**: long-term facts and summaries in ChromaDB.
+4. **Channel memory**: free-form channel-scoped memory.
+5. **Guild memory**: free-form server-scoped memory.
+6. **Impressions**: context about users.
+7. **Affection state**: global mood and per-user bond.
+
+### 6.2 Database and file state
+
+| Path | Data/role |
+|---|---|
+| `database/saved_information.db` | Per-user saved information |
+| `database/msg_bank.db` | Message history, about 600 messages/user |
+| `database/vector_db/` | Persistent ChromaDB and `msg_bank` collection |
+| `database/affection.db` | Global mood and user bond |
+| `database/apikeys.db` | BYOK keys, quota, encryption metadata |
+| `database/schedule.db` | One-shot/recurring tasks and retries |
+| `database/channel_memory.db` | Channel memory |
+| `database/guild_memory.db` | Guild memory |
+| `database/migration_keys.db` | Account migration keys |
+| `database/thought_sig.db` | Expiring Gemini thought signatures |
+| `database/active_channel.json` | Active bot channels |
+| `database/ignored_channel.json` | Ignored channels |
+| `games/chess_games.json` | Chess state |
+| `games/chess_engine_sessions.json` | UCI engine sessions |
+| `database/files/persistent/` | Persistent staged files |
+| `logs/`, `crashreports/` | Logs and crash dumps |
+| `docker/workdir/`, `docker/output/` | Executor workspace/output |
+
+Database paths are built from `_BASE` in `config.py`; some voice and log paths remain relative.
+
+### 6.3 MessageBank
+
+`utils/msg_bank.py` uses `aiosqlite` for rows and ChromaDB for vectors. Rows contain user, channel, guild, display name, content, bot flag, and timestamp. Older rows are removed after the per-user limit. New messages use the `BAAI/bge-m3` embedding model. `get_recent_messages()` returns oldest-first, `search_messages()` performs user-scoped semantic retrieval, and `merge_into()` supports account migration.
+
+Changes to schema or merge logic must be tested against both SQLite and the vector collection.
+
+### 6.4 Migration
+
+`migrate_msgbank.py` migrates message/vector data. `utils/migration_keys.py` manages account linking and root-account resolution. Back up SQLite and vector directories before migration.
+
+## 7. Affection, mood, and bond
+
+| Module | Responsibility |
+|---|---|
+| `affection/manager.py` | Coordinates mood/bond and builds prompt context |
+| `affection/mood.py` | Global mood, ticks, idle/sleep, CPU temperature |
+| `affection/bond.py` | Per-user bond, ranks, RAM cache, SQLite flush |
+| `affection/__init__.py` | Initializes the `affection` facade |
+
+Important values include a ten-second tick, bond flush every six ticks, sleep after one hour idle, mood drift/decay, CPU-temperature deltas, and ranks from zero to Max.
+
+Mood is global, bond is user-scoped, and memory has several scopes.
+
+## 8. Web control panel
+
+### 8.1 Backend
+
+`server.js` uses Express, sessions, Socket.IO, bcrypt, and rate limiting. Important functions are `ensurePasswordHash()`, `requireAuth()`, `startBot()`, `restartBot()`, `killBot()`, `checkSocketRateLimit()`, and `appendLog()`.
+
+| Type | Name | Responsibility |
+|---|---|---|
+| HTTP | `GET /login.html` | Login page |
+| HTTP | `POST /login` | Username/password authentication |
+| HTTP | `GET /logout` | Destroys the session |
+| HTTP | `GET /api/auth/status` | Session and bot status |
+| Static | `public/` | Frontend files |
+| Socket | `start`, `stop`, `restart`, `kill` | Process control |
+| Socket | `command` | Writes to bot stdin |
+| Socket | `toggleAutorestart` | Automatic restart setting |
+| Socket | `loadLogs`, `logFiles` | Read/list logs |
+| Socket | `status`, `output` | Status and output stream |
+
+### 8.2 Frontend and process model
+
+`public/index.html` contains the terminal, process controls, sidebar settings, auto-scroll, auto-restart, and log selection. It uses Socket.IO. `public/login.html` is the login view. `public/script.js` contains another implementation that calls `/logs` HTTP routes; those routes were not confirmed in the inspected `server.js`, so it may be legacy code.
+
+The panel spawns Python in unbuffered mode. Panel privileges are the privileges of the Node process user; `command` and process actions are privileged operations.
+
+## 9. Docker sandbox and network
+
+### 9.1 Compose services
+
+`docker/docker-compose.yml` defines:
+
+- `warp`: privileged Cloudflare WARP with `NET_ADMIN`/`NET_RAW` and a killswitch.
+- `proxy`: tinyproxy on port 8888 sharing the WARP namespace.
+- `arona-executor`: code worker sharing the namespace and mounting workdir/output.
+
+The executor uses Python 3.12 slim Debian Bookworm, data/document libraries, Node.js/npm, compiler/debug tools, ffmpeg, a read-only root filesystem, `noexec,nosuid,nodev` tmpfs for `/tmp` and home, dropped capabilities except `CHOWN`/`SETGID`/`SETUID`, `no-new-privileges`, and Compose limits of 3 CPUs and 8 GB RAM.
+
+### 9.2 `utils/docker.py`
+
+`AronaDocker` checks the container, can wake Docker Desktop on Windows, creates channel/message workspaces, sanitizes names, applies rate limits, runs Python/shell, collects output, and separates `OUTPUT_DIR` from `VIEW_DIR`.
+
+Docker isolation is mandatory when `run_code` is enabled. Never expose the Docker daemon socket to the executor.
+
+### 9.3 Network
+
+The executor uses the shared WARP proxy. Compose configures HTTP/HTTPS, npm, and `NO_PROXY` variables. The executor no longer has network-administration capabilities according to the Dockerfile comments.
+
+## 10. Technology and dependencies
+
+### 10.1 Python
+
+`requirements.txt` covers `aiohttp`, `requests`, `websockets`, Discord packages, `aiosqlite`, `chromadb`, `sentence-transformers`, `torch`, `numpy`, BGE-M3, BeautifulSoup, readability-lxml, markdownify, ddgs, OpenCV, Pillow, MoviePy, pydub, Playwright, yt-dlp, YouTube transcripts, python-chess, pygame, mido, trimesh, and python-dotenv.
+
+### 10.2 Node.js
+
+`package.json` uses Express, body-parser, Socket.IO, express-session, express-socket.io-session, bcrypt, express-rate-limit, dotenv, ansi-to-html, and Playwright as a development dependency.
+
+### 10.3 System runtime
+
+The README requires Python 3.10+ (3.11 recommended), Node.js, Java Runtime/JDK, Docker for sandbox features, and ffmpeg. Stockfish/UCI engine, Applio, GPT-SoVITS, and RVC may be required for optional features. The dedicated Docker image uses Python 3.12 and many apt packages; the Windows host may not have those binaries.
+
+## 11. Configuration and environment variables
+
+### 11.1 `.env`
+
+Real values must never be committed.
+
+| Variable | Responsibility |
+|---|---|
+| `DISCORD_TOKEN` | Discord bot token |
+| `GEMINI_API_KEY` | JSON list or single Gemini key |
+| `APIKEY_ENCRYPT_SECRET` | Fernet key for BYOK user keys |
+| `CF_WORKER_URL` | Optional Cloudflare Worker proxy |
+| `SERP_API_KEY` | Reverse image/web service |
+| `SAUCENAO_API_KEY` | Anime/art reverse image search |
+| `GITHUB_TOKEN` | GitHub integration |
+| `GITHUB_ISSUES_TOKEN` | Issue actions |
+| `WEATHER_API_KEY` | Weather search |
+| `KLIPY_API_KEY`, `GIPHY_API_KEY` | GIF/media integrations |
+
+`main.py` calls `load_dotenv(dotenv_path='.env')` during import.
+
+### 11.2 `config.py`
+
+Configuration covers Discord admins/ignore lists, Gemini models/limits/safety settings, logging, caches, scheduler retries, chess engine/ELO, Docker Desktop path, affection timing and mood thresholds, database paths, and voice/TTS/RVC model paths.
+
+Use `.env.example` as the template, keep secrets outside version control, check relative paths after process-launch changes, and evaluate vector compatibility when changing the embedding model.
+
+## 12. Installation and running
+
+### 12.1 Windows setup
+
+```bat
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+npm install
+copy .env.example .env
+```
+
+Then configure `.env`, review `config.py`, install ffmpeg, and install optional voice services.
+
+### 12.2 Run bot and panel
+
+```bat
+python main.py
+node server.js
+```
+
+The README documents the panel at `http://localhost:3000`; `npm start` runs `node server.js`.
+
+### 12.3 Launcher
+
+```bat
+start.bat
+```
+
+The README says this launches the Java UI with `javaw ServerUI.java`. Verify JDK compatibility on the target machine.
+
+### 12.4 Docker
+
+From the `docker/` directory:
+
+```bat
+docker compose up -d --build
+```
+
+Review mounts, WARP registration, proxy health checks, and Docker permissions first. This is not a complete production deployment without secret management, backups, monitoring, and additional network policy.
+
+## 13. Operations and maintenance scripts
+
+| Script | Responsibility |
+|---|---|
+| `generate_msg.py` | Reads `git diff`, asks Gemini for a commit message, writes `.commit_msg.txt` |
+| `sync.bat` | Runs add, message generation, commit, and push |
+| `migrate_msgbank.py` | Migrates message-bank SQLite/ChromaDB data |
+| `start.bat` | Opens the Java server UI |
+| `utils/test_session_reuse.py` | Direct session-reuse test |
+| `bond_editor.py` | Bond editing |
+| `clean_context.py` | Temporary context/data cleanup |
+| `debug.py` | Debug helper |
+
+```bat
+python migrate_msgbank.py
+python migrate_msgbank.py --db database/msg_bank.db --chroma ./database/vector_db
+```
+
+Review `sync.bat` before use because the observed script contains `git push --force`.
+
+## 14. Testing and observability
+
+The only directly confirmed test file is:
+
+```bat
+python utils/test_session_reuse.py
+```
+
+The inspected tree does not show formal pytest setup, Discord/Gemini integration tests, panel authentication tests, Docker-boundary tests, migration tests, or a CI workflow.
+
+Smoke-test checklist:
+
+1. Import `config.py` and verify `.env` values are not logged.
+2. Start `python main.py` with a suitable token/test guild.
+3. Test text, attachments, and a function call.
+4. Test saved information, recent history, and RAG save/query.
+5. Test scheduling and restart.
+6. Test panel login, Socket.IO, and log streaming.
+7. If `run_code` is enabled, test cleanup and container user.
+8. If voice is enabled, test TTS 9880, RVC 6969, ffmpeg, and permissions.
+
+Logs are written under `logs/`; crashes go to `crashreports/crash_YYYYMMDD-HHMMSS.log`; the panel keeps an in-memory log buffer and streams output through Socket.IO.
+
+## 15. Security and threat model
+
+This section records issues visible in the source. It is not a penetration-test report.
+
+### 15.1 Control panel
+
+- `server.js` logs the username, password, and stored hash during login. Remove this in production.
+- The session secret is hardcoded as `remote-panel-secret`; move it to an environment secret.
+- Production cookie settings such as `httpOnly`, `secure`, and `sameSite` are not clearly configured.
+- CSRF protection was not observed for login/control actions.
+- `loadLogs` joins a client-supplied filename to `logDir`; validate with a basename/allowlist.
+- `command` writes to bot stdin and must be treated as privileged process control.
+- The login username is hardcoded; use administrative configuration for multiple operators.
+- Rate limiting does not replace TLS, a reverse proxy, or network access control.
+
+### 15.2 AI and code execution
+
+- `run_code` allows arbitrary model-generated Python/shell code. Docker isolation is mandatory.
+- Never expose the Docker daemon socket to the worker.
+- Verify mounts, ownership, timeouts, CPU/RAM limits, and network egress.
+- Retest the WARP/proxy killswitch after network changes.
+- File and GitHub tools must validate paths, URLs, scope, and data leakage.
+
+### 15.3 Secrets and runtime policy
+
+- `.env`, `pass.txt`, `pass.hash`, BYOK databases, and logs may contain secrets.
+- If `APIKEY_ENCRYPT_SECRET` is missing, BYOK data may become undecryptable after restart. Make the secret mandatory.
+- Never log tokens, hashes, or passwords.
+- `generate_msg.py` was observed to use a hardcoded `C:\arona` path for `.env`; make it portable.
+- Several Gemini safety thresholds are `BLOCK_NONE`; review this policy.
+- Playwright may use `headless=False`; servers without a desktop session may fail or hang.
+- User-supplied API keys and external URLs are untrusted input.
+- `sync.bat` uses `git push --force`.
+
+## 16. Items requiring verification
+
+1. Exact lifecycle of `affection.initialize()`/`affection.start()` and tick-task behavior during restart.
+2. Whether `public/script.js` is active or legacy; it calls `/logs` while the inline panel uses Socket.IO.
+3. Whether HTTP log routes exist elsewhere.
+4. Actual database schema after long-running operation and migration.
+5. ChromaDB compatibility with the configured embedding model and package versions.
+6. Whether TTS 9880, Applio/RVC 6969, and model weights run in the expected process set.
+7. `wmi`/`psutil` imports used by mood code are not clearly listed in `requirements.txt`.
+8. The crash handler references `time` before its import during very early startup failures.
+9. Whether the Stockfish/UCI engine path and assets exist on the host.
+10. Whether `ServerUI.java` runs with the command in `start.bat` on the selected JDK.
+11. Production TLS, proxy, backups, monitoring, supervision, and secret storage.
+
+## 17. Symbol and entry-point index
+
+### Runtime
+
+`main.on_ready`, `main.on_message`, `main.handle_message`, `main.ask_gemini`, `main.execute_function`, `main.run_code`, `main.join_voice_channel`, `main.leave_voice_channel`
+
+### AI and tools
+
+`arona.prompt.get_arona_prompt`, `arona.prompt.get_live_arona_prompt`, `utils.tool_schemas.get_gemini_tools`, `utils.tool_groups`, `utils.malformed_recovery`, `utils.tool_status.get_function_execution_message`
+
+### Memory and data
+
+`utils.msg_bank.MessageBank`, `utils.memory.SavedInformationManager`, `utils.vector_database.rag_engine`, `utils.channel_memory`, `utils.guild_memory`, `utils.impression`, `utils.migration_keys`
+
+### Relationship
+
+`affection.manager.AffectionManager`, `affection.mood`, `affection.bond`
+
+### Operations and integrations
+
+`utils.scheduler`, `utils.docker.AronaDocker`, `games.chess.chess_manager`, `utils.github.GithubRepo`, `utils.youtube`, `utils.schale_db`, `arona.tts.tts.text_to_speech`, `arona.voicechanger.VoiceChangerBridge`
+
+## 18. Recommended change workflow
+
+1. Identify the owning module and affected state/database.
+2. Back up SQLite, ChromaDB, JSON state, and model configuration before migrations.
+3. Update tool schemas and prompts together when changing the Gemini contract.
+4. Run the smallest relevant smoke test before a full bot test.
+5. Check logs for secret leakage.
+6. Rebuild Docker and test resource/network policy after Docker changes.
+7. Update this document when adding an entry point, tool group, database, environment variable, or service.
+
+---
+
+**Document status:** Compiled from the current repository implementation. Update the verification section after major runtime changes.
+# Arona - Architecture and Operations Documentation
+
+> Technical documentation for maintainers. This document is based on the source code and configuration currently present in the repository. Items that have not been verified in a live runtime are explicitly marked.
+
+## 1. Overview
+
+Arona is an AI Discord bot written primarily in Python. It provides an Arona character persona, text and voice interaction, long-term memory, an affection/mood/bond system, web integrations, and a Node.js control panel.
+
+The project is still experimental/development-stage software. The README states that parts of the codebase were generated automatically and may not be fully optimized. This document describes the current implementation; it is not a guarantee of a production-ready architecture.
+
+### 1.1 Main components
+
+| Component | Technology | Responsibility |
+|---|---|---|
+| Bot runtime | Python, `discord.py` | Receives Discord events and generates replies |
+| AI orchestration | Gemini API over HTTP/WebSocket and function calling | Generates responses, selects tools, handles retries/fallbacks |
+| Control panel | Node.js, Express, Socket.IO | Login, bot process control, logs, commands |
+| Panel frontend | HTML/CSS/JavaScript | Realtime terminal, controls, log viewer |
+| Launcher | Java `ServerUI.java`, `start.bat` | Windows desktop launcher/controller |
+| Persistent state | SQLite, ChromaDB, JSON | Memory, history, bond, tasks, runtime state |
+| Voice | `discord-ext-voice-recv`, HTTP TTS, RVC/Applio | Voice input, synthesis, and playback |
+| Sandbox | Docker Compose, WARP, tinyproxy | Runs model-generated code inside an isolated container |
+| Game | `python-chess`, UCI engine | Chess gameplay inside Discord |
+
+### 1.2 Functional goals
+
+- Converse with users on Discord.
+- Maintain user, channel, guild, and semantic context.
+- Use tools for web search, GitHub, YouTube, media, scheduling, todo lists, chess, Blue Archive, files, and code execution.
+- Generate speech and join voice channels when the required services are available.
+- Track Arona's mood, affection, and bond state.
+- Control the bot remotely through a web panel.
+- Run code and inspect files inside a Docker executor.
+
+## 2. Overall architecture
+
+```mermaid
+flowchart LR
+    U[Discord user] --> D[Discord Gateway]
+    D --> M[main.py\non_message / slash commands]
+    M --> C[Context builder]
+    C --> H[History and memory]
+    C --> A[Affection mood bond]
+    C --> P[Arona prompt]
+    P --> G[Gemini API / proxy]
+    G --> T[Tool calling]
+    T --> X[execute_function dispatcher]
+    X --> S[Services and integrations]
+    S --> R[SQLite / ChromaDB / JSON]
+    X --> D
+    G --> D
+
+    B[Browser] --> W[server.js]
+    W --> L[Express session and auth]
+    W --> I[Socket.IO]
+    I --> P2[Python bot child process]
+    P2 --> M
+    P2 --> O[stdout stderr logs]
+    O --> I
+    I --> B
+
+    X --> E[utils/docker.py]
+    E --> K[arona-executor]
+    K --> N[WARP + tinyproxy network]
+```
+
+### 2.1 Text conversation flow
 
 ```mermaid
 sequenceDiagram
@@ -75,21 +633,21 @@ sequenceDiagram
     participant Tool as execute_function
 
     Discord->>Bot: Message/slash command
-    Bot->>Bot: Loc channel, quyen, duplicate/inflight
-    Bot->>Memory: Doc history, saved info, channel/guild memory
-    Bot->>Bot: Tao prompt + affection/mood/bond context
-    Bot->>Gemini: Gui noi dung, attachments va tool declarations
-    Gemini-->>Bot: Text hoac function call
-    alt Co function call
+    Bot->>Bot: Filter channel, permissions, duplicates, inflight work
+    Bot->>Memory: Read history, saved info, channel/guild memory
+    Bot->>Bot: Build prompt with affection/mood/bond context
+    Bot->>Gemini: Send content, attachments, and tool declarations
+    Gemini-->>Bot: Text or function call
+    alt Function call returned
         Bot->>Tool: Dispatch tool
-        Tool-->>Bot: Ket qua tool
-        Bot->>Gemini: Gui tool result va tiep tuc turn
+        Tool-->>Bot: Tool result
+        Bot->>Gemini: Send result and continue the turn
     end
-    Bot->>Memory: Luu message, vector va state
-    Bot->>Discord: Reply, embed, file hoac audio
+    Bot->>Memory: Save message, vector, and state
+    Bot->>Discord: Reply, embed, file, or audio
 ```
 
-### 2.2 Luong dieu khien qua web panel
+### 2.2 Web control flow
 
 ```mermaid
 sequenceDiagram
@@ -99,60 +657,59 @@ sequenceDiagram
     participant Child as main.py
 
     Browser->>Express: POST /login
-    Express-->>Browser: Session authenticated
-    Browser->>Socket: Ket noi Socket.IO
-    Socket->>Express: Kiem tra session
-    Express-->>Socket: Cho phep hoac disconnect
+    Express-->>Browser: Authenticated session
+    Browser->>Socket: Connect to Socket.IO
+    Socket->>Express: Check session
+    Express-->>Socket: Allow or disconnect
     Browser->>Socket: start/stop/restart/kill/command
-    Socket->>Child: spawn, terminate hoac stdin.write
+    Socket->>Child: Spawn, terminate, or stdin.write
     Child-->>Socket: stdout/stderr
     Socket-->>Browser: output/status/logFiles/logData
 ```
 
-### 2.3 Cac boundary can nho
+### 2.3 Important boundaries
 
-- Python bot la process chinh; control panel khong phai la runtime Discord ma la process quan ly process.
-- Gemini tools duoc chia thanh core tools va cac group lazy-loaded.
-- Du lieu message co ca SQLite row va vector ChromaDB; hai lop nay phai duoc coi la mot cap nhat logic.
-- Code sandbox la boundary an toan quan trong nhat khi model co the tao lenh Python/shell.
-- Voice phu thuoc cac service ngoai process Python, khong chi phu thuoc `pip install`.
+- The Python bot is the Discord runtime; the control panel manages that process rather than replacing it.
+- Gemini tools are divided into always-available core tools and lazy-loaded groups.
+- Message data has both SQLite rows and ChromaDB vectors. These should be treated as one logical update.
+- The Docker sandbox is the most important isolation boundary because the model can generate Python or shell commands.
+- Voice features depend on services outside the Python process, not only on `pip install`.
 
-## 3. Cau truc repository
+## 3. Repository structure
 
 ```text
 /
-|-- main.py                         # Entry point bot Discord
-|-- config.py                       # Hang so runtime va duong dan state
-|-- server.js                       # Node control panel + process manager
-|-- package.json                    # Node scripts/dependencies
+|-- main.py                         # Discord bot entry point
+|-- config.py                       # Runtime constants and state paths
+|-- server.js                       # Node control panel and process manager
+|-- package.json                    # Node scripts and dependencies
 |-- requirements.txt                # Python dependencies
-|-- README.md                       # Huong dan tong quan
-|-- .env.example                    # Mau bien moi truong
-|-- generate_msg.py                 # Sinh commit message tu git diff
-|-- migrate_msgbank.py              # Migration message/vector data
-|-- start.bat                       # Khoi dong Java UI
-|-- sync.bat                        # Add, sinh message, commit va push
+|-- README.md                       # General project guide
+|-- .env.example                    # Environment variable template
+|-- generate_msg.py                 # Generates a commit message from git diff
+|-- migrate_msgbank.py              # Message/vector migration utility
+|-- start.bat                       # Starts the Java UI
+|-- sync.bat                        # Adds, generates a message, commits, and pushes
 |-- ServerUI.java                   # Windows desktop launcher/controller
-|-- cf_worker.js                    # Cloudflare Worker proxy tuy chon
-|-- attachment.py                   # Tien xu ly attachment Discord
+|-- cf_worker.js                    # Optional Cloudflare Worker proxy
+|-- attachment.py                   # Discord attachment preprocessing
 |-- debug.py                        # Debug flag/helper
-|-- bond_editor.py                  # Cong cu chinh sua bond
-|-- clean_context.py                # Cong cu don context
-|-- comments_dump.txt               # Du lieu/ghi chu phu tro
-|-- public/                         # Frontend control panel
-|   |-- index.html                  # Giao dien terminal va controls
-|   |-- login.html                  # Giao dien dang nhap
-|   |-- script.js                   # Client Socket.IO va log fetch
-|   `-- style.css                   # CSS (neu duoc dung boi view)
-|-- console/                        # Logger va lenh runtime
+|-- bond_editor.py                  # Bond editing utility
+|-- clean_context.py                # Context cleanup utility
+|-- public/                         # Web control panel frontend
+|   |-- index.html                  # Terminal and controls view
+|   |-- login.html                  # Login view
+|   |-- script.js                   # Socket.IO client and log fetch code
+|   `-- style.css                   # Additional stylesheet if referenced
+|-- console/                        # Logger and runtime commands
 |   |-- console.py
 |   `-- command.py
-|-- affection/                      # Mood, bond, affection prompt
+|-- affection/                      # Mood, bond, and affection prompt logic
 |   |-- __init__.py
 |   |-- bond.py
 |   |-- manager.py
 |   `-- mood.py
-|-- arona/                          # Persona va voice stack
+|-- arona/                          # Persona and voice stack
 |   |-- prompt.py
 |   |-- voicechanger.py
 |   |-- tts/tts.py
@@ -160,7 +717,7 @@ sequenceDiagram
 |   `-- voice_engine/
 |       |-- ref/
 |       `-- src/
-|-- utils/                          # Tien ich va service adapters
+|-- utils/                          # Utilities and service adapters
 |   |-- apikeys.py
 |   |-- memory.py
 |   |-- msg_bank.py
@@ -178,387 +735,279 @@ sequenceDiagram
 |   |-- edit_text_file.py
 |   |-- todo.py
 |   `-- ...
-|-- games/                          # Game logic va asset
+|-- games/                          # Game logic and assets
 |   |-- chess.py
 |   |-- assets/engine/
 |   `-- ...
-|-- database/                       # Runtime database/data
-|   |-- skills/                     # SKILL.md cho tool dev
+|-- database/                       # Runtime databases and data
+|   |-- skills/                     # SKILL.md documents for development tools
 |   |-- vector_db/
 |   `-- ...
-|-- docker/                         # Compose, image va network scripts
+|-- docker/                         # Compose, image, and network scripts
 |   |-- docker-compose.yml
 |   |-- Dockerfile
 |   |-- executor-entrypoint.sh
 |   |-- warp-killswitch.sh
 |   |-- iptables-guard.sh
 |   `-- resolv.conf
-|-- games/chess_games.json          # State co vua (runtime)
-|-- logs/                           # Log bot/panel (runtime)
-|-- crashreports/                   # Crash dump (runtime)
-|-- temp/, temp_audio/              # File tam
-`-- fluidsynth/                     # Header/lib phu tro cho audio
+|-- logs/                           # Bot/panel runtime logs
+|-- crashreports/                   # Crash dumps
+|-- temp/, temp_audio/              # Temporary files
+`-- fluidsynth/                     # Supporting audio headers/libraries
 ```
 
-### 3.1 Nhom module Python
+### 3.1 Python module groups
 
-| Nhom | Module tieu bieu | Chuc nang |
+| Group | Representative modules | Responsibility |
 |---|---|---|
-| Runtime | `main.py`, `config.py` | Khoi dong, event loop, Discord client, dispatcher |
-| Persona | `arona/prompt.py` | System prompt, quy tac nhan vat, prompt voice/live |
-| Memory | `utils/memory.py`, `msg_bank.py`, `vector_database.py` | Key-value, lich su, semantic retrieval |
-| Scope memory | `channel_memory.py`, `guild_memory.py`, `impression.py` | Context theo channel/guild va an tuong nguoi dung |
-| Relationship | `affection/manager.py`, `mood.py`, `bond.py` | Tinh trang cam xuc, bond va prompt block |
-| Tools | `tool_schemas.py`, `tool_groups.py` | Khai bao Gemini function va TTL lazy-loading |
-| Integration | `github.py`, `youtube.py`, `schale_db.py`, `wiki.py` | Truy cap dich vu ngoai |
-| Media | `attachment.py`, `text_utils.py`, movie/audio modules | Xu ly attachment, audio, anh, video |
-| Operations | `console/`, `scheduler.py`, `raid_recovery.py` | Lenh runtime, task, recovery |
-| Isolation | `utils/docker.py`, `docker/` | Chay code khong tin cay |
-| Games | `games/chess.py` | Co vua va UCI engine |
+| Runtime | `main.py`, `config.py` | Startup, event loop, Discord client, dispatcher |
+| Persona | `arona/prompt.py` | System prompt, character rules, voice/live prompts |
+| Memory | `utils/memory.py`, `msg_bank.py`, `vector_database.py` | Key-value memory, history, semantic retrieval |
+| Scoped memory | `channel_memory.py`, `guild_memory.py`, `impression.py` | Channel/guild context and user impressions |
+| Relationship | `affection/manager.py`, `mood.py`, `bond.py` | Emotional state, bond, prompt blocks |
+| Tools | `tool_schemas.py`, `tool_groups.py` | Gemini function declarations and TTL loading |
+| Integrations | `github.py`, `youtube.py`, `schale_db.py`, `wiki.py` | External service access |
+| Media | `attachment.py`, `text_utils.py`, media modules | Attachments, audio, images, and video |
+| Operations | `console/`, `scheduler.py`, `raid_recovery.py` | Runtime commands, tasks, recovery |
+| Isolation | `utils/docker.py`, `docker/` | Untrusted code execution |
+| Games | `games/chess.py` | Chess and UCI engine integration |
 
-## 4. Bot Discord va lifecycle
+## 4. Discord bot lifecycle
 
-### 4.1 Khoi dong
+### 4.1 Startup
 
-`main.py` thuc hien cac buoc tong quat:
+`main.py` changes the working directory, installs a crash hook, configures logging, loads `.env` and `config.py`, initializes state/memory/scheduler/affection, registers Discord handlers, and starts supporting services after `on_ready()`.
 
-1. Doi current working directory ve thu muc chua `main.py`.
-2. Cai `sys.excepthook` de ghi crash report.
-3. Cau hinh logging va loc bot/voice log qua nhieu.
-4. Nap `config.py`, `.env` va cac adapter.
-5. Khoi tao cac state runtime, thought-signature SQLite, memory, scheduler, affection va Discord client.
-6. Dang ky slash command/event handlers.
-7. Khi Discord ready, sync command, mo cac service phu tro va bat console/scheduler theo code hien tai.
+Important startup dependencies are local databases, external API keys, ffmpeg, optional browser sessions, and optional voice services.
 
-`on_ready()` la diem can kiem tra khi debug startup. Hanh vi chinh xac cua mot so service phu thuoc cac module duoc import va trang thai du lieu local.
+### 4.2 Message processing
 
-### 4.2 Xu ly message
+Important symbols in `main.py`:
 
-Cac symbol quan trong trong `main.py`:
+- `slash_arona()`: `/arona` slash-command entry point.
+- `on_ready()`: lifecycle hook after the Discord client becomes ready.
+- `on_message()`: filters and receives messages, commands, channels, and permissions.
+- `handle_message()`: main conversation pipeline.
+- `ask_gemini()`: sends requests, handles retry/fallback, and receives tool calls.
+- `execute_function()`: tool dispatcher.
+- `run_code()`: sends Python/shell execution to Docker.
+- `join_voice_channel()` and `leave_voice_channel()`: voice connection management.
+- `save_active_channels()` and `save_ignored_channels()`: persist channel lists.
 
-- `slash_arona()`: entrypoint cho slash command `/arona`.
-- `on_ready()`: lifecycle sau khi Discord client san sang.
-- `on_message()`: loc va tiep nhan message, channel, command va quyen.
-- `handle_message()`: pipeline hoi thoai chinh.
-- `ask_gemini()`: gui request, retry, fallback model/key va tiep nhan tool call.
-- `execute_function()`: dispatcher thuc thi tool.
-- `run_code()`: dua Python/shell vao Docker sandbox.
-- `join_voice_channel()`/`leave_voice_channel()`: quan ly voice connection.
-- `save_active_channels()`/`save_ignored_channels()`: persist danh sach channel.
+Expected pipeline:
 
-Pipeline mong doi:
+1. Receive a Discord message.
+2. Check mentions, ignored channels, permissions, and in-flight requests.
+3. Read attachments, text, history, and channel/guild context.
+4. Build a prompt from persona, memory, mood, bond, impressions, and time.
+5. Build Gemini tools: core tools are always available; groups use a TTL.
+6. Call Gemini.
+7. Dispatch returned function calls and send results back in later turns.
+8. Send a reply, embed, file, or audio.
+9. Save messages/state and update affection/bond.
 
-1. Nhan message tu Discord.
-2. Kiem tra bot mention, channel ignore, quyen va cac tin nhan dang xu ly.
-3. Doc attachment, text, history va context channel/guild.
-4. Tao prompt tu persona, memory, mood, bond, impression va thong tin thoi gian.
-5. Lay danh sach Gemini tools: core luon co; group duoc nap theo TTL.
-6. Goi Gemini.
-7. Neu Gemini tra function call, dispatch tool va gui ket qua ve model trong cac turn tiep theo.
-8. Gui phan hoi, embed, file hoac audio ve Discord.
-9. Luu message/state va cap nhat affection/bond.
+### 4.3 Retry, models, and quotas
 
-### 4.3 Retry, model va quota
+`config.py` defines default/fallback/rate-limit/lite/live models, retry and timeout limits, maximum function turns, free-tier limits, the 503 unstick mechanism, thought-signature handling, and optional Cloudflare Worker routing.
 
-`config.py` khai bao:
-
-- Model mac dinh, fallback, model khi rate limit va lite/live model.
-- `MAX_RETRIES`, `DEFAULT_TIMEOUT`, `MAX_FUNCTION_TURNS`.
-- Free-tier daily limit theo user va soft limit toan cuc.
-- Co che unstick request khi gap chuoi loi 503.
-- `INCLUDE_THOUGHT` va thought signature expiry.
-- Tuy chon Cloudflare Worker proxy qua `USE_CF_WORKER_PROXY`.
-
-Gemini key trong `GEMINI_API_KEY` co the la JSON list hoac string don; `main.py` chuan hoa ca hai dang thanh list de rotate.
+`GEMINI_API_KEY` may be a JSON list or a single string. `main.py` normalizes both forms into a list for key rotation.
 
 ### 4.4 Voice
 
-Voice co hai huong:
+- Discord voice receive/live: `discord-ext-voice-recv`, `AudioProcessor`, and `GeminiWebSocket`.
+- Text-to-speech and conversion: `arona/tts/tts.py`, `VoiceChangerBridge`, and RVC/Applio.
+- TTS default: `127.0.0.1:9880`.
+- Applio/RVC default: `127.0.0.1:6969`.
+- Reference audio and model paths are defined in `config.py`.
+- MoviePy is configured to use `ffmpeg.exe`.
 
-- Discord voice receive/live: `discord-ext-voice-recv`, `AudioProcessor`, `GeminiWebSocket`.
-- Text-to-speech va voice changer: `arona/tts/tts.py`, `VoiceChangerBridge`, RVC/Applio.
+Voice is optional and may require model weights, separate services, a desktop session, and a GPU.
 
-Cau hinh dang chu y:
+## 5. Gemini tools and features
 
-- TTS HTTP service mac dinh tai `127.0.0.1:9880`.
-- Applio/RVC service mac dinh tai `127.0.0.1:6969`.
-- Reference audio va model paths nam trong `config.py`.
-- `ffmpeg.exe` duoc cau hinh cho MoviePy; system PATH van can du cac tool audio/video neu module khac goi truc tiep.
+### 5.1 Tool mechanism
 
-Day la nhom tinh nang tuy chon va co the can desktop session, model weights, service rieng va GPU.
+`utils/tool_schemas.py` creates Gemini function declarations. `get_gemini_tools()` provides core web/memory/profile/weather/user/Blue Archive tools, meta-tools for loading groups, voice-session tools, current chess declarations, and the default-model `escalate` tool.
 
-## 5. Gemini tools va cac tinh nang
+Text-channel groups are loaded per channel and automatically unloaded after five incoming messages; loading a group refreshes the TTL. Voice groups remain available because voice sessions have no message stream for TTL tracking.
 
-### 5.1 Co che tool
+### 5.2 Tool groups
 
-`utils/tool_schemas.py` tao declaration cho Gemini function calling. `get_gemini_tools()` phan biet:
-
-- Core tools luon co: web, memory, profile, weather, user interaction, Blue Archive database.
-- Meta tools `load_tools`/`unload_tools` cho text channel.
-- Tool group duoc nap theo channel va tu dong het han sau 5 message; nap lai se refresh TTL.
-- Voice session co mot so group luon bat vi khong co message stream de tick TTL.
-- Chess declaration duoc tao lai de gan thong tin luot hien tai.
-- Model mac dinh co them tool `escalate`.
-
-### 5.2 Cac group
-
-| Group | Pham vi |
+| Group | Scope |
 |---|---|
-| `chess` | Doc ban co, di chuyen, phong cap, reset, gui anh ban co |
-| `scheduler` | Tin nhan hen gio, AI task, loop recurring, sua/xoa task |
-| `dev` | Doc skill, chay code, file staging/edit/send, workspace |
-| `github` | Tim repo, doc tree/file, tim chuoi, commit |
-| `blue_archive` | Gacha tracker, sinh nhat hoc sinh, Schale DB |
-| `media` | Reverse image, YouTube, nhan dien bai hat, tom tat channel |
-| `todo` | Danh sach viec theo channel |
-| `migration` | Tao key, lien ket/huy lien ket tai khoan Discord |
+| `chess` | Read board, make moves, promote pawns, reset, send board images |
+| `scheduler` | Scheduled messages, AI tasks, recurring loops, edit/delete actions |
+| `dev` | Read skills, run code, stage/edit/send files, workspace actions |
+| `github` | Search repositories, inspect trees/files, search strings, commits |
+| `blue_archive` | Gacha tracking, student birthdays, Schale DB |
+| `media` | Reverse image, YouTube, song recognition, channel summaries |
+| `todo` | Per-channel task lists |
+| `migration` | Link and unlink Discord accounts |
 
-### 5.3 Prompt va persona
+### 5.3 Prompt and persona
 
-`arona/prompt.py` la noi dong goi nhan vat, quy tac hoi thoai, anti-hallucination va huong dan su dung tool. Prompt khong phai la security boundary; cac tool van phai tu kiem tra quyen, input va scope.
+`arona/prompt.py` builds the persona, conversation rules, anti-hallucination rules, and tool-use guidance. The prompt is not a security boundary; tools must still validate permissions, input, and scope.
 
-`affection/manager.py` tao block bo sung cho prompt tu mood/bond/tag. Memory channel/guild va user information cung duoc chen vao context truoc khi goi Gemini.
+`affection/manager.py` adds mood, bond, and tag context. Channel/guild memory and user information are injected before the Gemini call.
 
-## 6. Memory va du lieu ben vung
+## 6. Memory and persistent data
 
-### 6.1 Cac lop memory
+### 6.1 Memory layers
 
-1. **User key-value memory**: thong tin co cau truc nhu ten, so thich, timezone.
-2. **Message history**: lich su hoi thoai theo user, dung cho recent context va semantic search.
-3. **Semantic memory**: fact/tom tat dai han luu trong ChromaDB.
-4. **Channel memory**: freeform memory theo Discord channel.
-5. **Guild memory**: freeform memory theo Discord server.
-6. **Impression**: an tuong/context ve nguoi dung.
-7. **Affection state**: mood toan cuc va bond theo user.
+1. **User key-value memory**: structured facts such as name, preferences, and timezone.
+2. **Message history**: per-user history for recent context and semantic search.
+3. **Semantic memory**: long-term facts and summaries in ChromaDB.
+4. **Channel memory**: free-form memory scoped to a Discord channel.
+5. **Guild memory**: free-form memory scoped to a Discord server.
+6. **Impressions**: context about users.
+7. **Affection state**: global mood and per-user bond.
 
-### 6.2 Database va file state
+### 6.2 Database and file state
 
-| Path | Du lieu/role |
+| Path | Data/role |
 |---|---|
-| `database/saved_information.db` | Saved information theo user |
-| `database/msg_bank.db` | Message history; `MessageBank` gioi han khoang 600 message/user |
-| `database/vector_db/` | Persistent ChromaDB, semantic memory va collection `msg_bank` |
-| `database/affection.db` | Mood global va bond |
-| `database/apikeys.db` | BYOK Gemini keys, quota, encryption metadata |
-| `database/schedule.db` | One-shot/recurring task va retry |
-| `database/channel_memory.db` | Memory theo channel |
-| `database/guild_memory.db` | Memory theo guild |
-| `database/migration_keys.db` | Key lien ket tai khoan |
-| `database/thought_sig.db` | Gemini thought signatures co expiry |
-| `database/active_channel.json` | Channel bot dang active |
-| `database/ignored_channel.json` | Channel bi bo qua |
-| `games/chess_games.json` | Trang thai game co vua |
-| `games/chess_engine_sessions.json` | Session UCI engine |
-| `database/files/persistent/` | File persist cho flow staging |
-| `logs/`, `crashreports/` | Log va crash dump |
-| `docker/workdir/`, `docker/output/` | Workspace va output cua executor |
+| `database/saved_information.db` | Per-user saved information |
+| `database/msg_bank.db` | Message history; about 600 messages/user |
+| `database/vector_db/` | Persistent ChromaDB and `msg_bank` collection |
+| `database/affection.db` | Global mood and user bond |
+| `database/apikeys.db` | BYOK keys, quota, encryption metadata |
+| `database/schedule.db` | One-shot/recurring tasks and retries |
+| `database/channel_memory.db` | Channel memory |
+| `database/guild_memory.db` | Guild memory |
+| `database/migration_keys.db` | Account migration keys |
+| `database/thought_sig.db` | Expiring Gemini thought signatures |
+| `database/active_channel.json` | Active bot channels |
+| `database/ignored_channel.json` | Ignored channels |
+| `games/chess_games.json` | Chess game state |
+| `games/chess_engine_sessions.json` | UCI engine sessions |
+| `database/files/persistent/` | Persistent staged files |
+| `logs/`, `crashreports/` | Logs and crash dumps |
+| `docker/workdir/`, `docker/output/` | Executor workspace and output |
 
-Duong dan database chinh duoc tao tu `_BASE` trong `config.py`, vi vay runtime khong nen phu thuoc current working directory; tuy nhien mot so path voice/log trong code van la relative path.
+Database paths are built from `_BASE` in `config.py`; some voice and log paths remain relative paths.
 
 ### 6.3 MessageBank
 
-`utils/msg_bank.py` dung `aiosqlite` cho row message va ChromaDB cho vector:
+`utils/msg_bank.py` uses `aiosqlite` for message rows and ChromaDB for vectors. Rows contain user, channel, guild, display name, content, bot flag, and timestamp. Older rows are removed after the per-user limit. New messages are embedded with `BAAI/bge-m3` on the configured device. `get_recent_messages()` returns oldest-first, `search_messages()` performs user-scoped semantic retrieval, and `merge_into()` supports account migration.
 
-- Moi row co user, channel, guild, display name, content, bot flag va timestamp.
-- Khi vuot gioi han, cac message cu hon bi xoa de giu toi da 600 row/user.
-- Message moi duoc encode bang embedding model `BAAI/bge-m3` tren CPU theo config hien tai.
-- `get_recent_messages()` tra oldest-first.
-- `search_messages()` tim semantic toi da trong scope cua mot user, sau do doc lai row tu SQLite.
-- `merge_into()` ho tro migration/merge data giua tai khoan.
-
-Khi sua schema hoac logic merge, phai kiem tra ca SQLite va vector collection de tranh orphan vector hoac mat context.
+Schema or merge changes must be tested against both SQLite and the vector collection to avoid orphaned vectors or lost context.
 
 ### 6.4 Migration
 
-`migrate_msgbank.py` danh cho migration message/vector tu DB cu sang layout hien tai. `utils/migration_keys.py` quan ly viec link tai khoan, trong do account moi co the dung data cua root account. Day la thao tac co tac dong du lieu lon, nen backup database va vector directory truoc khi chay.
+`migrate_msgbank.py` migrates message/vector data. `utils/migration_keys.py` manages account linking and root-account resolution. Back up SQLite and vector directories before migration.
 
-## 7. Affection, mood va bond
+## 7. Affection, mood, and bond
 
-| Module | Trach nhiem |
+| Module | Responsibility |
 |---|---|
-| `affection/manager.py` | Dieu phoi mood/bond, parse mood tag, tao context prompt |
-| `affection/mood.py` | Mood global, tick dinh ky, idle/sleep, CPU temperature |
-| `affection/bond.py` | Bond theo user, rank, cache RAM va flush SQLite |
-| `affection/__init__.py` | Khoi tao facade `affection` |
+| `affection/manager.py` | Coordinates mood/bond, parses mood tags, builds prompt context |
+| `affection/mood.py` | Global mood, periodic ticks, idle/sleep, CPU temperature |
+| `affection/bond.py` | Per-user bond, ranks, RAM cache, SQLite flush |
+| `affection/__init__.py` | Initializes the `affection` facade |
 
-Cac tham so dang chu y trong `config.py`:
+Important configuration includes a ten-second tick, bond flush every six ticks, sleep after one hour of inactivity, mood drift/decay, CPU-temperature deltas, and ranks from zero to Max with decreasing experience multipliers.
 
-- Tick moi 10 giay.
-- Flush bond moi 6 tick, xap xi 60 giay.
-- Sleep sau 1 gio idle.
-- Mood drift/decay va delta theo nhiet do CPU.
-- Rank bond tu 0 den Max, voi multiplier exp giam dan khi bond tang.
-
-Can xem day la domain state doc lap voi chat history: mood co tinh global, bond co scope user, con memory co nhieu scope.
+Mood is global, bond is user-scoped, and memory has several scopes.
 
 ## 8. Web control panel
 
-### 8.1 Backend `server.js`
+### 8.1 `server.js` backend
 
-Backend dung Express + session + Socket.IO. Cac thanh phan chinh:
+Important functions are `ensurePasswordHash()`, `requireAuth()`, `startBot()`, `restartBot()`, `killBot()`, `checkSocketRateLimit()`, and `appendLog()`.
 
-- `ensurePasswordHash()`: doc `pass.txt`, tao/doi `pass.hash` bang bcrypt.
-- `requireAuth()`: chan route protected khi chua authenticated.
-- `startBot()`, `restartBot()`, `killBot()`: quan ly child process Python.
-- `checkSocketRateLimit()`: gioi han event theo IP va loai event.
-- `appendLog()`: giu buffer toi da 100 dong cho client moi ket noi.
-
-Route va su kien quan sat duoc:
-
-| Loai | Ten | Chuc nang |
+| Type | Name | Responsibility |
 |---|---|---|
-| HTTP | `GET /login.html` | Trang dang nhap |
-| HTTP | `POST /login` | Xac thuc username/password |
-| HTTP | `GET /logout` | Huy session |
-| HTTP | `GET /api/auth/status` | Kiem tra session va bot status |
-| Static | `public/` | Tai frontend |
-| Socket | `start` | Khoi dong bot |
-| Socket | `stop` | Dung bot gracefully |
-| Socket | `restart` | Khoi dong lai |
-| Socket | `kill` | Ket thuc process |
-| Socket | `command` | Gui lenh vao stdin bot |
-| Socket | `toggleAutorestart` | Bat/tat tu khoi dong lai |
-| Socket | `loadLogs` | Doc log theo ten file |
-| Socket | `logFiles` | Danh sach log |
-| Socket | `status` | Trang thai process |
-| Socket | `output` | stdout/stderr realtime |
+| HTTP | `GET /login.html` | Login page |
+| HTTP | `POST /login` | Username/password authentication |
+| HTTP | `GET /logout` | Destroys the session |
+| HTTP | `GET /api/auth/status` | Returns session and bot status |
+| Static | `public/` | Serves frontend files |
+| Socket | `start`, `stop`, `restart`, `kill` | Bot process control |
+| Socket | `command` | Writes a command to bot stdin |
+| Socket | `toggleAutorestart` | Enables/disables automatic restart |
+| Socket | `loadLogs`, `logFiles` | Reads/list logs |
+| Socket | `status`, `output` | Process status and output stream |
 
-Server co cac rate limiter cho login, API, Socket.IO connection va request chung.
+Rate limiters exist for login, API requests, Socket.IO connections, and general requests.
 
 ### 8.2 Frontend
 
-`public/index.html` chua giao dien terminal, nut start/restart/kill, sidebar setting, auto-scroll, auto-restart va log dropdown. Giao dien su dung Socket.IO client duoc serve tai `/socket.io/socket.io.js`.
+`public/index.html` contains the terminal, process controls, sidebar settings, auto-scroll, auto-restart, and log selection. It uses the Socket.IO client at `/socket.io/socket.io.js`.
 
-`public/login.html` la login view. `public/style.css` la stylesheet bo sung neu view tham chieu den no. `public/script.js` chua mot client implementation khac, trong do goi `fetch('/logs')` va `fetch('/logs/:file')`; cac route HTTP tuong ung chua duoc xac nhan trong phan route da doc cua `server.js`. Co kha nang day la code cu hoac khong con duoc `index.html` dung.
+`public/login.html` is the login view. `public/style.css` is an additional stylesheet if referenced. `public/script.js` contains another client implementation that calls `fetch('/logs')` and `fetch('/logs/:file')`; matching HTTP routes were not confirmed in the inspected `server.js`. It may be legacy or unused because the inline script in `index.html` uses Socket.IO.
 
 ### 8.3 Process model
 
-Panel spawn Python voi mode unbuffered de lay output realtime. Khi bot crash, `autorestart` co the khoi dong lai. Quyen cua panel tuong duong quyen user dang chay Node, do do `command` va cac action process can duoc xem la privileged operations.
+The panel spawns Python in unbuffered mode so output can be streamed. Autorestart may start the bot again after a crash. Panel privileges are the privileges of the Node process user; `command` and process actions must therefore be treated as privileged operations.
 
-## 9. Docker sandbox va network
+## 9. Docker sandbox and network
 
 ### 9.1 Compose services
 
-`docker/docker-compose.yml` co ba service:
+`docker/docker-compose.yml` defines:
 
-- `warp`: Cloudflare WARP, privileged, `NET_ADMIN`/`NET_RAW`, killswitch.
-- `proxy`: tinyproxy port 8888, dung chung network namespace voi WARP.
-- `arona-executor`: worker chay code, cung network namespace, mount workdir/output.
+- `warp`: Cloudflare WARP, privileged, with `NET_ADMIN`/`NET_RAW` and the killswitch.
+- `proxy`: tinyproxy on port 8888, sharing the WARP network namespace.
+- `arona-executor`: code worker sharing the network namespace and mounting workdir/output.
 
-Executor:
-
-- Image Python 3.12 slim Debian Bookworm.
-- Co Python data/document libraries, Node.js/npm, compiler/debug/reverse-engineering tools, ffmpeg va file utilities.
-- Chay voi `read_only: true`.
-- `/tmp` va home la tmpfs voi `noexec,nosuid,nodev`.
-- Drop toan bo capability, chi giu `CHOWN`, `SETGID`, `SETUID`.
-- `no-new-privileges`.
-- Gioi han CPU 3.0 va RAM 8 GB theo Compose deploy resource config.
-- Mount `workdir`, `output`, entrypoint va DNS config.
+The executor uses Python 3.12 slim Debian Bookworm; includes data/document libraries, Node.js/npm, compiler/debug/reverse-engineering tools, ffmpeg, and file utilities; uses a read-only root filesystem; mounts `/tmp` and home as `noexec,nosuid,nodev` tmpfs; drops all capabilities except `CHOWN`, `SETGID`, and `SETUID`; enables `no-new-privileges`; and has Compose limits of 3 CPUs and 8 GB RAM.
 
 ### 9.2 `utils/docker.py`
 
-`AronaDocker` la adapter tu Python sang Docker CLI:
+`AronaDocker` checks the container, can wake Docker Desktop on Windows, creates channel/message workspaces, sanitizes filenames/message IDs, applies rate limits, runs Python/shell, collects output, and separates `OUTPUT_DIR` from `VIEW_DIR`.
 
-- Tu kiem tra container va co the danh thuc Docker Desktop tren Windows.
-- Tao workspace theo channel/message.
-- Sanitize filename/message id.
-- Gioi han tan suat code execution.
-- Chay Python/shell trong container va thu output.
-- Tach `OUTPUT_DIR` de gui file va `VIEW_DIR` de xem media noi bo.
-
-Model co the sinh code tuy y, do do Docker isolation khong phai tinh nang tuy chon neu bat tool `run_code`. Khong nen chay bot voi Docker socket duoc expose vao executor.
+Docker isolation is mandatory whenever `run_code` is enabled. The Docker daemon socket must not be exposed to the executor.
 
 ### 9.3 Network
 
-Executor di qua proxy chung voi WARP. Compose dat `HTTP_PROXY`, `HTTPS_PROXY`, npm proxy va `NO_PROXY`. Killswitch nam o WARP container; executor khong con capability network administration theo comment trong Dockerfile.
+The executor uses the shared WARP proxy. Compose configures HTTP/HTTPS proxy variables, npm proxy variables, and `NO_PROXY`. The killswitch lives in the WARP container; the executor no longer has network-administration capabilities according to the Dockerfile comments.
 
-## 10. Cong nghe va phu thuoc
+## 10. Technology and dependencies
 
 ### 10.1 Python
 
-`requirements.txt` pin hoac gioi han cac nhom sau:
-
-- Async/web: `aiohttp`, `requests`, `websockets`.
-- Discord: `discord.py` tu commit cu the va `discord-ext-voice-recv` tu Git commit.
-- Storage/AI: `aiosqlite`, `chromadb`, `sentence-transformers`, `torch`, `numpy`.
-- Embedding: `BAAI/bge-m3` duoc tai qua sentence-transformers khi runtime can.
-- Web extraction: BeautifulSoup, readability-lxml, markdownify, ddgs.
-- Media: OpenCV, Pillow, MoviePy, pydub, pyzbar, ShazamIO.
-- Video/web: Playwright, yt-dlp, YouTube transcript API.
-- Game/audio: python-chess, pygame, mido, trimesh.
-- Config: python-dotenv.
+`requirements.txt` covers async/web (`aiohttp`, `requests`, `websockets`), Discord, SQLite, ChromaDB, sentence-transformers, Torch, NumPy, BGE-M3 embeddings, web extraction, OpenCV/Pillow/MoviePy/pydub media, Playwright, yt-dlp, YouTube transcripts, python-chess, pygame, mido, trimesh, and python-dotenv.
 
 ### 10.2 Node.js
 
-`package.json` dung:
-
-- Express, body-parser.
-- Socket.IO va client.
-- express-session va express-socket.io-session.
-- bcrypt.
-- express-rate-limit.
-- dotenv, ansi-to-html.
-- Playwright trong devDependencies.
+`package.json` uses Express, body-parser, Socket.IO, sessions, bcrypt, express-rate-limit, dotenv, ansi-to-html, and Playwright as a development dependency.
 
 ### 10.3 System runtime
 
-README yeu cau:
+The README requires Python 3.10+ (3.11 recommended), Node.js, Java Runtime/JDK, Docker for sandbox features, and ffmpeg on PATH. Stockfish/UCI engine, Applio, GPT-SoVITS, and RVC may be required for optional features.
 
-- Python 3.10+, khuyen nghi 3.11.
-- Node.js.
-- Java Runtime/JDK cho `start.bat`.
-- Docker neu dung sandbox.
-- ffmpeg tren PATH.
-- Co the can Stockfish/UCI engine, Applio, GPT-SoVITS/RVC tuy tinh nang.
+The dedicated Docker image uses Python 3.12 and many apt packages; this does not mean the Windows host has those binaries installed.
 
-Docker image rieng dung Python 3.12 va nhieu apt package; khong dong nghia host Windows da co du cac binary do.
+## 11. Configuration and environment variables
 
-## 11. Cau hinh va bien moi truong
+### 11.1 `.env` variables
 
-### 11.1 Bien `.env`
+Real values from `.env` must never be committed.
 
-Mau nam trong `.env.example`. Gia tri that khong duoc commit.
+| Variable | Responsibility |
+|---|---|
+| `DISCORD_TOKEN` | Discord bot token |
+| `GEMINI_API_KEY` | JSON list or single Gemini key |
+| `APIKEY_ENCRYPT_SECRET` | Fernet key for BYOK user keys |
+| `CF_WORKER_URL` | Optional Cloudflare Worker proxy |
+| `SERP_API_KEY` | Reverse image/web service |
+| `SAUCENAO_API_KEY` | Anime/art reverse image search |
+| `GITHUB_TOKEN` | GitHub integration |
+| `GITHUB_ISSUES_TOKEN` | Issue-related actions |
+| `WEATHER_API_KEY` | Weather search |
+| `KLIPY_API_KEY`, `GIPHY_API_KEY` | GIF/media integrations |
 
-| Bien | Bat buoc/tuy chon | Vai tro |
-|---|---|---|
-| `DISCORD_TOKEN` | Bat buoc cho bot | Discord bot token |
-| `GEMINI_API_KEY` | Bat buoc cho AI | JSON list hoac mot key |
-| `APIKEY_ENCRYPT_SECRET` | Can cho BYOK | Fernet key ma hoa key nguoi dung |
-| `CF_WORKER_URL` | Tuy chon | Proxy Gemini qua Cloudflare Worker |
-| `SERP_API_KEY` | Tuy tinh nang | Reverse image/web service |
-| `SAUCENAO_API_KEY` | Tuy tinh nang | Reverse image anime/art |
-| `GITHUB_TOKEN` | Tuy tinh nang | GitHub integration |
-| `GITHUB_ISSUES_TOKEN` | Tuy tinh nang | Issue-related actions |
-| `WEATHER_API_KEY` | Tuy tinh nang | Weather search |
-| `KLIPY_API_KEY` | Tuy tinh nang | GIF/media |
-| `GIPHY_API_KEY` | Tuy tinh nang | GIF/media |
+`main.py` calls `load_dotenv(dotenv_path='.env')` and reads these values during import.
 
-`main.py` goi `load_dotenv(dotenv_path='.env')` va doc cac bien nay luc import.
+### 11.2 Static configuration in `config.py`
 
-### 11.2 Cau hinh tinh trong `config.py`
+Configuration covers Discord admins/ignore lists, Gemini models and limits, safety settings, logging, web/thought/GIF caches, scheduler retries, chess engine/ELO, Docker Desktop path, affection timing and mood thresholds, database paths, and voice/TTS/RVC model paths.
 
-- Discord: `ADMINS`, ignore list, inflight delay.
-- Gemini: model, temperature, timeout, retry, quota, safety settings, function turns.
-- Logging: log dir, file size/rotation count.
-- Cache: web crawl, thought signature, GIF.
-- Scheduler: so lan retry.
-- Chess: engine path, ELO, move time.
-- Docker: duong dan Docker Desktop tren Windows.
-- Affection: tick, sleep, mood drift/decay, temperature thresholds, rank.
-- Database: root path, SQLite path, ChromaDB path.
-- Voice: RVC model/index, Applio host/port, TTS URL, model weights va reference audio.
+Use `.env.example` as the template, keep secrets outside version control, check relative paths after process-launch changes, and evaluate vector compatibility when changing the embedding model.
 
-### 11.3 Quy tac van hanh config
+## 12. Installation and running
 
-- Dung `.env.example` lam mau, thay placeholder truoc khi chay.
-- Khong copy token, password, hash hoac Fernet key that vao repository.
-- Kiem tra cac relative path sau khi doi current directory hoac chay tu control panel.
-- Neu doi embedding model, phai danh gia kha nang tuong thich voi vector DB hien tai.
-
-## 12. Cai dat va chay
-
-### 12.1 Cai dat co ban tren Windows
+### 12.1 Basic Windows setup
 
 ```bat
 python -m venv .venv
@@ -568,16 +1017,16 @@ npm install
 copy .env.example .env
 ```
 
-Sau do dien `.env`, kiem tra `config.py`, cai ffmpeg va cac service voice tuy chon.
+Then configure `.env`, review `config.py`, install ffmpeg, and install optional voice services as needed.
 
-### 12.2 Chay bot va panel
+### 12.2 Run the bot and panel
 
 ```bat
 python main.py
 node server.js
 ```
 
-Panel mac dinh duoc README mo ta tai `http://localhost:3000`. `npm start` tuong duong `node server.js`.
+The README documents the panel at `http://localhost:3000`; `npm start` runs `node server.js`.
 
 ### 12.3 Launcher
 
@@ -585,131 +1034,122 @@ Panel mac dinh duoc README mo ta tai `http://localhost:3000`. `npm start` tuong 
 start.bat
 ```
 
-`start.bat` goi Java UI (`javaw ServerUI.java`) theo README. Can kiem tra JDK/runtime phu hop voi cach chay source Java tren may cu the.
+The README says that `start.bat` launches the Java UI with `javaw ServerUI.java`. Verify JDK compatibility on the target machine.
 
 ### 12.4 Docker
 
-Chay tu thu muc `docker/` theo layout Compose hien tai:
+From the `docker/` directory:
 
 ```bat
 docker compose up -d --build
 ```
 
-Truoc khi chay can xem lai mount path, WARP registration, proxy healthcheck va quyen Docker. Khong coi Docker Compose la deployment production neu chua co secret management, backup, monitoring va network policy bo sung.
+Review mount paths, WARP registration, proxy health checks, and Docker permissions first. This Compose setup is not a complete production deployment without secret management, backups, monitoring, and additional network policy.
 
-## 13. Script van hanh va bao tri
+## 13. Operations and maintenance scripts
 
-| Script | Chuc nang |
+| Script | Responsibility |
 |---|---|
-| `generate_msg.py` | Doc `git diff`, goi Gemini tao commit message, ghi `.commit_msg.txt` |
-| `sync.bat` | `git add`, chay generator, commit va push branch main |
-| `migrate_msgbank.py` | Migration SQLite/ChromaDB cua message bank |
-| `start.bat` | Mo Java server UI |
-| `utils/test_session_reuse.py` | Test/thuc nghiem session reuse |
-| `bond_editor.py` | Cong cu chinh sua bond |
-| `clean_context.py` | Don context/data tam |
-| `debug.py` | Bat/tat debug helper |
+| `generate_msg.py` | Reads `git diff`, asks Gemini for a commit message, writes `.commit_msg.txt` |
+| `sync.bat` | Runs add, message generation, commit, and push |
+| `migrate_msgbank.py` | Migrates message-bank SQLite/ChromaDB data |
+| `start.bat` | Opens the Java server UI |
+| `utils/test_session_reuse.py` | Direct session-reuse test/experiment |
+| `bond_editor.py` | Bond editing utility |
+| `clean_context.py` | Temporary context/data cleanup |
+| `debug.py` | Debug helper |
 
-Lenh migration duoc README ghi:
+Migration commands:
 
 ```bat
 python migrate_msgbank.py
 python migrate_msgbank.py --db database/msg_bank.db --chroma ./database/vector_db
 ```
 
-`sync.bat` can duoc xem lai truoc khi dung vi co thao tac `git push --force` theo code duoc quan sat. Khong nen chay tren branch co thay doi cua nguoi khac ma chua backup.
+Review `sync.bat` before use because the observed script contains `git push --force`.
 
-## 14. Kiem thu va quan sat
+## 14. Testing and observability
 
-### 14.1 Hien trang coverage
+### 14.1 Current coverage
 
-Hien chi xac nhan duoc test truc tiep:
+The only directly confirmed test file is:
 
 ```bat
 python utils/test_session_reuse.py
 ```
 
-Chua thay trong tree da doc:
+The inspected tree does not show formal pytest setup, Discord/Gemini integration tests, panel authentication tests, Docker-boundary tests, migration tests, or a CI workflow.
 
-- Bo pytest/test runner chinh thuc.
-- Test integration Discord/Gemini.
-- Test auth, session va Socket.IO command.
-- Test Docker sandbox boundary.
-- Test migration SQLite/ChromaDB.
-- CI workflow.
+### 14.2 Smoke-test checklist
 
-### 14.2 Checklist smoke test
+1. Import `config.py` and verify that `.env` values are not logged.
+2. Start `python main.py` with a suitable token/test guild.
+3. Test text, attachments, and a function call.
+4. Test saved information, recent history, and RAG save/query.
+5. Test scheduling and bot restart.
+6. Test panel login, Socket.IO, and log streaming.
+7. If `run_code` is enabled, test output/temp cleanup and container user.
+8. If voice is enabled, test TTS 9880, RVC 6969, ffmpeg, and permissions.
 
-1. Import `config.py` va kiem tra `.env` khong log secret.
-2. Khoi dong `python main.py` voi token/test guild phu hop.
-3. Gui message text don gian, attachment va function call.
-4. Kiem tra saved info, recent history, RAG save/query.
-5. Kiem tra scheduler va restart bot.
-6. Kiem tra login panel, Socket.IO va log streaming.
-7. Neu bat `run_code`, kiem tra output/temp cleanup va container user.
-8. Neu bat voice, kiem tra TTS 9880, RVC 6969, ffmpeg va audio permissions.
+### 14.3 Logs and crashes
 
-### 14.3 Log va crash
+- Bot logs are written under `logs/` according to configuration.
+- The crash handler writes `crashreports/crash_YYYYMMDD-HHMMSS.log`.
+- The panel keeps an in-memory log buffer and reads log files through Socket.IO.
+- Distinguish child-process stdout/stderr from persistent log files during debugging.
 
-- Bot log vao `logs/` theo cau hinh.
-- Crash handler ghi `crashreports/crash_YYYYMMDD-HHMMSS.log`.
-- Panel giu log buffer trong RAM va doc log file theo Socket.IO.
-- Khi debug, can phan biet stdout/stderr cua child process voi log file persistence.
+## 15. Security and threat model
 
-## 15. Bao mat va threat model
-
-Phan nay ghi lai hien trang can chu y cho maintainer. Day khong phai ket qua pentest.
+This section records issues visible in the current source. It is not a penetration-test report.
 
 ### 15.1 Control panel
 
-- `server.js` dang co log username, password va stored hash trong login flow. Day la thong tin nhay cam, can xoa ngay trong production.
-- Session secret dang hardcode trong source (`remote-panel-secret` trong code hien tai). Can dua vao environment secret.
-- Chua thay cau hinh production ro rang cho `httpOnly`, `secure`, `sameSite` cua cookie.
-- Chua thay CSRF protection cho login/control action.
-- `loadLogs` nhan ten file tu Socket.IO va ghep voi `logDir`; can validate basename/allowlist de tranh path traversal.
-- `command` cho phep gui lenh vao stdin cua bot; day la quyen dieu khien process, phai gioi han auth va audit.
-- Username dang login duoc hardcode trong server. Can dua vao cau hinh quan tri neu co nhieu operator.
-- Rate limit co ton tai nhung khong thay the cho reverse proxy, TLS va network access control.
+- `server.js` currently logs the username, password, and stored hash during login. Remove this in production.
+- The session secret is hardcoded as `remote-panel-secret`; move it to an environment secret.
+- Production cookie settings such as `httpOnly`, `secure`, and `sameSite` are not clearly configured.
+- CSRF protection was not observed for login/control actions.
+- `loadLogs` joins a client-supplied filename to `logDir`; validate with a basename/allowlist to prevent path traversal.
+- `command` writes to bot stdin and must be treated as privileged process control.
+- The login username is hardcoded; use administrative configuration for multiple operators.
+- Rate limiting does not replace TLS, a reverse proxy, or network access control.
 
-### 15.2 AI va code execution
+### 15.2 AI and code execution
 
-- `run_code` cho phep model tao Python/shell tuy y. Docker isolation la boundary bat buoc.
-- Khong expose Docker daemon socket vao worker.
-- Kiem tra mount `workdir/output`, file ownership, timeout, CPU/RAM va network egress.
-- WARP/proxy killswitch phai duoc coi la mot phan cua security design, khong tu dong an toan neu container/network thay doi.
-- Cac tool file va GitHub can validate path, URL, scope va data leakage.
+- `run_code` allows the model to generate arbitrary Python/shell code. Docker isolation is mandatory.
+- Do not expose the Docker daemon socket to the worker.
+- Verify mounts, ownership, timeouts, CPU/RAM limits, and network egress.
+- Treat the WARP/proxy killswitch as part of the security design and retest it after network changes.
+- File and GitHub tools must validate paths, URLs, scope, and data leakage.
 
-### 15.3 Secret va encryption
+### 15.3 Secrets and encryption
 
-- `.env`, `pass.txt`, `pass.hash`, database BYOK va log co the chua secret; phai nam trong ignore/permission policy phu hop.
-- Neu thieu `APIKEY_ENCRYPT_SECRET`, code BYOK co the tu sinh key runtime; sau restart co nguy co khong giai ma duoc du lieu cu. Can quy dinh secret bat buoc va backup an toan.
-- Khong ghi token, hash hay password vao log.
-- `generate_msg.py` co duong dan `.env` cung duoc ghi nhan la hardcode `C:\arona` trong code; can lam portable truoc khi dung tren may khac.
+- `.env`, `pass.txt`, `pass.hash`, BYOK databases, and logs may contain secrets and require suitable ignore/permission policies.
+- If `APIKEY_ENCRYPT_SECRET` is missing, BYOK code may generate a runtime key; existing data may become undecryptable after restart. Make the secret mandatory and back it up securely.
+- Never log tokens, hashes, or passwords.
+- `generate_msg.py` was observed to use a hardcoded `C:\arona` path for `.env`; make it portable before using another machine.
 
 ### 15.4 Runtime policy
 
-- `SAFETY_SETTINGS` trong `config.py` dang dat mot so threshold Gemini o `BLOCK_NONE`; day la lua chon policy co rui ro va can review theo use case.
-- Playwright co the chay `headless=False`; tren server khong co desktop session se loi hoac treo.
-- API key user-supplied va external URLs can duoc coi la untrusted input.
-- `sync.bat` co `git push --force`, co the ghi de remote history.
+- `SAFETY_SETTINGS` sets several Gemini thresholds to `BLOCK_NONE`; review this policy for the deployment use case.
+- Playwright may use `headless=False`; a server without a desktop session may fail or hang.
+- User-supplied API keys and external URLs are untrusted input.
+- `sync.bat` uses `git push --force`, which can overwrite remote history.
 
-## 16. Diem can xac minh
+## 16. Items requiring verification
 
-Cac muc duoi day khong nen xem la contract cho den khi maintainer test trong runtime:
+1. Exact lifecycle of `affection.initialize()`/`affection.start()` and whether tick tasks stop correctly during restart.
+2. Whether `public/script.js` is active or legacy; it calls HTTP `/logs` while the inline panel script uses Socket.IO.
+3. Whether HTTP log routes exist elsewhere.
+4. Actual database schema after long-running operation and migration.
+5. ChromaDB compatibility with the configured embedding model and package versions.
+6. Whether TTS 9880, Applio/RVC 6969, and model weights run on the same machine/process set.
+7. `wmi`/`psutil` imports used by mood code are not clearly listed in `requirements.txt`.
+8. The crash handler references `time` before its import during very early startup failures.
+9. Whether the Stockfish/UCI engine path and assets exist on the deployment host.
+10. Whether `ServerUI.java` runs with the command in `start.bat` on the selected JDK.
+11. Production deployment outside local Windows: TLS, reverse proxy, backups, monitoring, process supervision, and secret storage.
 
-1. Lifecycle chinh xac cua `affection.initialize()`/`affection.start()` va viec task tick dung khi restart.
-2. `public/script.js` co duoc dung hay la ban cu; no goi HTTP `/logs` trong khi panel inline script dung Socket.IO.
-3. Route log HTTP co ton tai trong phan code khac hay khong.
-4. Schema database thuc te sau khi bot da chay lau va migration da chay.
-5. Moi tuong thich cua `chromadb` voi embedding model va version trong requirements.
-6. TTS service 9880, Applio/RVC 6969 va model weights co duoc deploy cung may/process hay khong.
-7. `wmi`/`psutil` duoc import boi mood nhung khong thay ro trong requirements; can kiem tra dependency thuc te.
-8. Crash handler dung `time` trong luc import rat som truoc import `time`; can test nhom loi startup som.
-9. Stockfish/UCI engine path va asset co thuc su ton tai tren deployment host.
-10. Java `ServerUI.java` co chay duoc bang command trong `start.bat` tren JDK hien tai.
-11. Production deployment ngoai Windows local: TLS, reverse proxy, backup, monitoring, process supervisor va secret store chua duoc mo ta day du.
-
-## 17. Phu luc: symbol va entrypoint index
+## 17. Symbol and entry-point index
 
 ### Runtime
 
@@ -722,7 +1162,7 @@ Cac muc duoi day khong nen xem la contract cho den khi maintainer test trong run
 - `main.join_voice_channel`
 - `main.leave_voice_channel`
 
-### AI/tool
+### AI and tools
 
 - `arona.prompt.get_arona_prompt`
 - `arona.prompt.get_live_arona_prompt`
@@ -731,7 +1171,7 @@ Cac muc duoi day khong nen xem la contract cho den khi maintainer test trong run
 - `utils.malformed_recovery`
 - `utils.tool_status.get_function_execution_message`
 
-### Memory/data
+### Memory and data
 
 - `utils.msg_bank.MessageBank`
 - `utils.memory.SavedInformationManager`
@@ -747,7 +1187,7 @@ Cac muc duoi day khong nen xem la contract cho den khi maintainer test trong run
 - `affection.mood`
 - `affection.bond`
 
-### Operations/integration
+### Operations and integrations
 
 - `utils.scheduler`
 - `utils.docker.AronaDocker`
@@ -758,16 +1198,16 @@ Cac muc duoi day khong nen xem la contract cho den khi maintainer test trong run
 - `arona.tts.tts.text_to_speech`
 - `arona.voicechanger.VoiceChangerBridge`
 
-## 18. Quy trinh thay doi de xuat
+## 18. Recommended change workflow
 
-1. Xac dinh module owner va state/database bi anh huong.
-2. Tao backup cho SQLite, ChromaDB, JSON state va model config neu thay doi migration.
-3. Sua tool schema/prompt cung luc neu thay doi contract voi Gemini.
-4. Chay smoke test nho nhat truoc khi test full bot.
-5. Kiem tra log khong ro ri secret.
-6. Neu thay doi Docker, rebuild image va test resource/network policy.
-7. Cap nhat tai lieu nay khi them entrypoint, tool group, database, env var hoac service moi.
+1. Identify the owning module and affected state/database.
+2. Back up SQLite, ChromaDB, JSON state, and model configuration before migration changes.
+3. Update tool schemas and prompts together when changing the Gemini contract.
+4. Run the smallest relevant smoke test before a full bot test.
+5. Check logs for secret leakage.
+6. When changing Docker, rebuild the image and test resource/network policy.
+7. Update this document when adding an entry point, tool group, database, environment variable, or service.
 
 ---
 
-**Trang thai tai lieu:** Tong hop theo code hien co tai thoi diem tao tai lieu. Hay cap nhat phan "Diem can xac minh" sau moi lan thay doi runtime lon.
+**Document status:** Compiled from the current repository implementation. Update the verification section after major runtime changes.
