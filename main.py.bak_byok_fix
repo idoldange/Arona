@@ -4519,17 +4519,6 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       # skip them entirely and go straight to the free pool — no point burning a doomed
       # round re-trying (and backing off on) keys we already know are dead for today.
       _skip_own_keys = using_own_keys and _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id, False)
-      # Own key(s) (if present and not already known-dead) get first crack at every
-      # fallback model tier BEFORE the shared free-tier pool is even offered as an option.
-      # Held back here and spliced back in later (see the _BYOK_OWN_KEYS_EXHAUSTED branch
-      # in the round loop) once — and only once — the own key(s) all-429 on every model.
-      # Without this, mixing free keys into key_order from round 0 let a free key silently
-      # absorb the request on the (expensive) default model every time the own key hit a
-      # 429, burning the user's 30/day free-tier allowance instead of preserving it.
-      _deferred_free_keys = 0
-      if using_own_keys and not _skip_own_keys and num_own_keys > 0 and usable_free_keys:
-        _deferred_free_keys = usable_free_keys
-        usable_free_keys = 0
       # Own keys first (if BYOK and not already known-exhausted), then fall back into the
       # shared free pool starting from its own remembered index. See _build_key_order.
       key_order = _build_key_order(num_own_keys, usable_free_keys, byok_user_id, skip_own=_skip_own_keys)
@@ -4941,7 +4930,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 # (still respecting the free-quota gate computed at the top of this call).
                 keys = (own_keys + GEMINI_API_KEY) if using_own_keys else GEMINI_API_KEY
                 num_free_keys = len(keys) - num_own_keys
-                usable_free_keys = 0 if _deferred_free_keys else (num_free_keys if (not using_own_keys or byok_free_quota_available) else 0)
+                usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
 
                 if not keys:
                   return {"error": "403", "details": "All API keys have been suspended."}
@@ -5007,7 +4996,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 # (still respecting the free-quota gate computed at the top of this call).
                 keys = (own_keys + GEMINI_API_KEY) if using_own_keys else GEMINI_API_KEY
                 num_free_keys = len(keys) - num_own_keys
-                usable_free_keys = 0 if _deferred_free_keys else (num_free_keys if (not using_own_keys or byok_free_quota_available) else 0)
+                usable_free_keys = num_free_keys if (not using_own_keys or byok_free_quota_available) else 0
 
                 if not keys:
                   return {"error": "401", "details": "All API keys have been suspended."}
@@ -5078,18 +5067,6 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             if _bonus_rounds_used < _BONUS_ROUND_CAP:
               _bonus_round_pending = True  # make sure this model actually gets a shot before giving up
               _bonus_rounds_used += 1
-          # Own key(s) just got a fair shot on every fallback model tier and still all-429'd
-          # every time — NOW (and only now) open up the shared free-tier pool that was
-          # deliberately withheld from key_order up front (see _deferred_free_keys above).
-          if not _bonus_round_pending and _deferred_free_keys and own_keys_in_order == len(key_order):
-            _free_start = _LAST_WORKING_KEY_INDEX if 0 <= _LAST_WORKING_KEY_INDEX < _deferred_free_keys else 0
-            key_order = key_order + [num_own_keys + (_free_start + i) % _deferred_free_keys for i in range(_deferred_free_keys)]
-            console.log(f"[BYOK] User {byok_user_id}'s own key(s) exhausted on every fallback model — opening the shared free-tier pool ({_deferred_free_keys} keys) for this request, resetting to {DEFAULT_MODEL}", "WARN")
-            usable_free_keys = _deferred_free_keys
-            _deferred_free_keys = 0
-            model_name = DEFAULT_MODEL
-            _tpm_limited_keys.clear()
-            _bonus_round_pending = True
         else:
           _429_round_count = 0
         round_num += 1
