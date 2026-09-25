@@ -52,8 +52,10 @@ from utils.schale_db import *
 import shlex
 from config import *
 # Số lần thử lại tối đa với CÙNG 1 key khi gặp lỗi 503 trước khi mới chuyển sang key khác.
-# Nếu đã khai báo MAX_SAME_KEY_503_RETRIES trong config.py thì dùng giá trị đó, không thì mặc định 3.
-MAX_SAME_KEY_503_RETRIES = globals().get("MAX_SAME_KEY_503_RETRIES", 3)
+# Nếu đã khai báo MAX_SAME_KEY_503_RETRIES trong config.py thì dùng giá trị đó, không thì mặc định 5.
+MAX_SAME_KEY_503_RETRIES = globals().get("MAX_SAME_KEY_503_RETRIES", 15)
+# Số lần thử DEFAULT_MODEL khi gặp 503 trước khi mới fallback sang FALLBACK_MODEL (config trong config.py).
+DEFAULT_MODEL_503_RETRIES = globals().get("DEFAULT_MODEL_503_RETRIES", 3)
 import discord
 import re
 import unicodedata
@@ -118,6 +120,7 @@ from utils.tool_status import get_function_execution_message
 from utils.tool_schemas import get_gemini_tools
 from utils import tool_groups
 from utils.discord_ui import AskUserModal, MalformedRetryView, AskUserView
+from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_board_message, restore_board_views
 from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to_grid_table
 from dotenv import load_dotenv
 from arona.tts.tts import text_to_speech
@@ -4105,6 +4108,9 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
     _skip_own_keys = using_own_keys and _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id, False)
     key_order = _build_key_order(num_own_keys, num_free_keys, byok_user_id, skip_own=_skip_own_keys)
     blocked = 0
+    # 503s seen on DEFAULT_MODEL this call — only fall back to FALLBACK_MODEL after
+    # DEFAULT_MODEL_503_RETRIES of them instead of switching on the very first 503.
+    _default_model_503_retries = 0
     # PROHIBITED_CONTENT-style blocks (promptFeedback.blockReason) come from the safety
     # classifier judging the CONTENT of the prompt — the API key used is irrelevant, so
     # rotating through key_order chasing a different outcome is pointless and just burns
@@ -4190,10 +4196,12 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
         if resp.status in (500, 502, 503):
           # Don't rotate key — server errors are transient. Backoff on same key.
           if resp.status == 503 and model == DEFAULT_MODEL and use_smart_fallback:
-            console.log(f"[{model}] 503 on default model, falling back to {FALLBACK_MODEL}", "WARN")
-            model = FALLBACK_MODEL
-            if FALLBACK_MODEL == "gemini-2.5-flash":
-              payload["generationConfig"].pop("thinkingConfig", None)
+            _default_model_503_retries += 1
+            if _default_model_503_retries >= DEFAULT_MODEL_503_RETRIES:
+              console.log(f"[{model}] {_default_model_503_retries} 503s on default model, falling back to {FALLBACK_MODEL}", "WARN")
+              model = FALLBACK_MODEL
+              if FALLBACK_MODEL == "gemini-2.5-flash":
+                payload["generationConfig"].pop("thinkingConfig", None)
           _recovered = False
           for _bo in range(3):  # 1s → 2s → 4s
             _wait = 2 ** _bo
@@ -4557,6 +4565,10 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       _trailing_model_patched = False  # set when 400 "Requests ending with a model turn" gets auto-patched mid-retry
       _trailing_model_patch_attempts = 0  # cap patch retries so a genuinely unfixable payload doesn't loop forever
       _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
+      _consecutive_503_streak = 0  # persistent 503 streak (NOT reset by the decoy) — aborts the request when it exceeds MAX_CONSECUTIVE_503_ROUNDS
+      # 503s seen while on DEFAULT_MODEL — only fall back to FALLBACK_MODEL after
+      # DEFAULT_MODEL_503_RETRIES of them (instead of switching on the very first 503).
+      _default_model_503_count = 0
       # _overload_msg stored globally keyed by channel so send_reply can delete it
       # BYOK users usually only have 1-2 own keys, so give them more rounds to loop through
       # rate-limit/backoff windows (and through the free-pool fallback) instead of surfacing
@@ -4595,6 +4607,9 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         while key_pos < len(key_order):
           key_idx = key_order[key_pos]
           attempt_num += 1
+          if attempt_num > len(keys):
+            console.log(f"[{model_name}] Attempt {attempt_num} exceeded max ({len(keys)}) without exhausting key_order — aborting to avoid infinite loop.", "ERROR")
+            return {"error": "attempt_limit_exceeded", "details": f"Attempt count ({attempt_num}) exceeded max keys ({len(keys)}) in a single round."}
           if attempt_num > 1 and _same_key_503_retries == 0:
             console.log(f"[KEY_ROTATE] Round {round_num + 1}, switching to key {key_idx}", "WARN")
           _round_label = "Bonus round" if _is_bonus_round else f"Round {round_num + 1}/{effective_max_retries}"
@@ -4713,6 +4728,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
 
               await _remember_working_key(num_own_keys, byok_user_id, key_idx)
               _consecutive_503_count = 0
+              _consecutive_503_streak = 0
+              _default_model_503_count = 0
               break
 
             # Non-200 responses: capture body for diagnosis
@@ -4760,11 +4777,25 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               continue
             if resp.status == 503:
               _consecutive_503_count += 1
+              _consecutive_503_streak += 1
+              if MAX_CONSECUTIVE_503_ROUNDS and _consecutive_503_streak > MAX_CONSECUTIVE_503_ROUNDS:
+                console.log(f"[503-ABORT] {_consecutive_503_streak} consecutive 503s exceeded MAX_CONSECUTIVE_503_ROUNDS ({MAX_CONSECUTIVE_503_ROUNDS}), aborting request", "ERROR")
+                return {"error": "503", "details": last_error_detail}
               if UNSTICK_ON_503 and _consecutive_503_count >= UNSTICK_503_THRESHOLD:
                 console.log(f"[UNSTICK] {_consecutive_503_count} consecutive 503s, firing decoy request with different context", "WARN")
                 asyncio.create_task(fire_unstick_request())
                 _consecutive_503_count = 0  # reset so it can fire again after N more consecutive 503s
-              if round_num == 0 and model_name != RATE_LIMIT_MODEL:
+              if model_name == DEFAULT_MODEL:
+                # Keep retrying DEFAULT_MODEL until DEFAULT_MODEL_503_RETRIES 503s
+                # have been seen, only then fall back to FALLBACK_MODEL.
+                _default_model_503_count += 1
+                if _default_model_503_count >= DEFAULT_MODEL_503_RETRIES:
+                  console.log(f"[503] {_default_model_503_count} 503s on default model, falling back to {FALLBACK_MODEL}", "WARN")
+                  model_name = FALLBACK_MODEL
+                  if FALLBACK_MODEL == "gemini-2.5-flash":
+                    payload["generationConfig"].pop("thinkingConfig", None)
+                    _disable_thinking = True
+              elif round_num == 0 and model_name != RATE_LIMIT_MODEL:
                 console.log(f"503 on round 1, falling back to {FALLBACK_MODEL}", "WARN")
                 model_name = FALLBACK_MODEL
                 if FALLBACK_MODEL == "gemini-2.5-flash":
@@ -4789,11 +4820,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               # Retry the SAME key on 503 instead of rotating to the next one.
               # Only move on to the next key after MAX_SAME_KEY_503_RETRIES failed
               # attempts on this key, to avoid looping forever on a dead backend.
-              #_same_key_503_retries += 1
-              #if _same_key_503_retries >= MAX_SAME_KEY_503_RETRIES:
-              #  console.log(f"[503-RETRY] Key {key_idx} hit 503 {_same_key_503_retries}x in a row, giving up on this key", "WARN")
-              #  key_pos += 1
-              #  _same_key_503_retries = 0
+              _same_key_503_retries += 1
+              if _same_key_503_retries >= MAX_SAME_KEY_503_RETRIES:
+                console.log(f"[503-RETRY] Key {key_idx} hit 503 {_same_key_503_retries}x in a row, giving up on this key", "WARN")
+                key_pos += 1
+                _same_key_503_retries = 0
               continue
           
             if resp.status == 400:
@@ -5047,13 +5078,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           _free_pool_exhausted_this_round = usable_free_keys > 0 and _free_429_count == usable_free_keys
           _should_persist = (not using_own_keys) or _free_pool_exhausted_this_round
           _scope_note = "" if _should_persist else " (BYOK own-key only — switching locally for this user, NOT persisted globally)"
-          # If this user's own key(s) were actually part of key_order this round (i.e. not
-          # already skipped as known-exhausted) and the round still all-429'd, their own
-          # key(s) are exhausted for today too — remember it so their NEXT request skips
-          # straight to the free pool instead of re-discovering the same thing from scratch.
-          if using_own_keys and own_keys_in_order > 0 and not _BYOK_OWN_KEYS_EXHAUSTED.get(byok_user_id):
-            console.log(f"[BYOK] User {byok_user_id}'s own key(s) exhausted (all-429 this round) — will route straight to free pool for the rest of today", "WARN")
-            _BYOK_OWN_KEYS_EXHAUSTED[byok_user_id] = True
+          # NOTE: own key(s) are NOT marked exhausted here anymore — this is only the
+          # FIRST all-429 round, before the fallback model tiers below even get a shot.
+          # Marking exhausted this early used to make every future request today skip
+          # straight past a perfectly usable key+fallback-model combo (see the splice
+          # block below, which is the actually-correct place to mark exhaustion).
           if model_name != RATE_LIMIT_MODEL:
             console.log(f"[429-ALL] All {len(key_order)} keys returned 429, switching to {RATE_LIMIT_MODEL} early{_scope_note}", "WARN")
             model_name = RATE_LIMIT_MODEL
@@ -5085,6 +5114,14 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             _free_start = _LAST_WORKING_KEY_INDEX if 0 <= _LAST_WORKING_KEY_INDEX < _deferred_free_keys else 0
             key_order = key_order + [num_own_keys + (_free_start + i) % _deferred_free_keys for i in range(_deferred_free_keys)]
             console.log(f"[BYOK] User {byok_user_id}'s own key(s) exhausted on every fallback model — opening the shared free-tier pool ({_deferred_free_keys} keys) for this request, resetting to {DEFAULT_MODEL}", "WARN")
+            # THIS is the correct point to mark own key(s) exhausted for the rest of today:
+            # they just had a fair shot on every fallback model tier and still all-429'd
+            # every time. Marking it here (instead of on the first all-429 round, before
+            # the fallback tiers above were even tried) means a future request today only
+            # skips own keys if they're truly dead everywhere — not if they just needed
+            # _BYOK_LAST_WORKING_MODEL's fallback model, which they'll keep using normally.
+            if using_own_keys and own_keys_in_order > 0:
+              _BYOK_OWN_KEYS_EXHAUSTED[byok_user_id] = True
             usable_free_keys = _deferred_free_keys
             _deferred_free_keys = 0
             model_name = DEFAULT_MODEL
@@ -7828,6 +7865,7 @@ async def on_ready():
           mood_func=affection.parse_and_apply_mood_tag,
       ))
       await asyncio.sleep(1)  # Small delay to ensure all startup tasks are settled
+      await restore_board_views(client)
       console.log(f"Bot logged in: {client.user}", "INFO")
       elapsed = time.time() - server_start_time
       console.log(f"Done ({elapsed:.3f}s)! For help, type '\033[33mhelp\033[0m'", "INFO")
@@ -7886,7 +7924,7 @@ async def on_message(message):
       "- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n"
       "- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n"
       "- `!arona quota`: Check your remaining daily messages\n"
-      "- `!arona chess start/restart/stop [elo]`: Play chess  — `!arona chess move <move>` to play\n"
+      "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"
@@ -8232,45 +8270,113 @@ async def on_message(message):
     return
   
   # !arona chess start/restart/stop/move — local-engine chess, no Gemini calls
-  chess_start_match = re.match(r"^!arona\s+chess\s+start(?:\s+(\d+))?\s*$", message.content, re.IGNORECASE)
+  chess_start_match = re.match(r"^!arona\s+chess\s+start\s*(.*)$", message.content, re.IGNORECASE)
   if chess_start_match:
     console.log(f"User {message.author.display_name} used !arona chess start", "INFO")
-    elo_arg = chess_start_match.group(1)
-    success, msg = chess_manager.start_engine_game(message.channel.id, int(elo_arg) if elo_arg else None)
-    await send_with_retry(message.channel, msg)
+    if chess_manager.is_pvp_game(message.channel.id):
+      await send_with_retry(message.channel, "This channel has a PvP game running. Use `!arona chess stop` before starting a game vs the engine.")
+      return
+    args = chess_start_match.group(1).strip().split()
+    elo_arg = next((a for a in args if a.isdigit()), None)
+    color_arg = next((a.lower() for a in args if a.lower() in ("white", "black")), None)
+    success, msg = chess_manager.start_engine_game(message.channel.id, int(elo_arg) if elo_arg else None, user_color=color_arg)
     if success:
+      engine_started_lines = [msg]
+      if chess_manager.get_user_color(message.channel.id) == "black":
+        # Arona plays White, so Arona makes the opening move before the board shows.
+        eng_success, eng_msg, _ = await chess_manager.engine_play_move(message.channel.id)
+        engine_started_lines.append(eng_msg if eng_success else f"Engine move failed: {eng_msg}")
       board_img_b64 = chess_manager.get_board_image_base64(message.channel.id)
       image = base64.b64decode(board_img_b64)
       file = discord.File(BytesIO(image), filename="chess_board.png")
-      await message.channel.send(file=file)
+      view = ChessBoardView(message.channel.id, mode="engine")
+      view.message = await message.channel.send(content="\n".join(engine_started_lines), file=file, view=view)
+      remember_board_message(message.channel.id, view.message.id)
+    else:
+      await send_with_retry(message.channel, msg)
     return
 
-  chess_restart_match = re.match(r"^!arona\s+chess\s+restart(?:\s+(\d+))?\s*$", message.content, re.IGNORECASE)
+  chess_restart_match = re.match(r"^!arona\s+chess\s+restart\s*(.*)$", message.content, re.IGNORECASE)
   if chess_restart_match:
     console.log(f"User {message.author.display_name} used !arona chess restart", "INFO")
-    elo_arg = chess_restart_match.group(1)
-    success, msg = chess_manager.restart_engine_game(message.channel.id, int(elo_arg) if elo_arg else None)
-    await send_with_retry(message.channel, msg)
+    if chess_manager.is_pvp_game(message.channel.id):
+      await send_with_retry(message.channel, "This channel has a PvP game running. Use `!arona chess stop` before starting a game vs the engine.")
+      return
+    args = chess_restart_match.group(1).strip().split()
+    elo_arg = next((a for a in args if a.isdigit()), None)
+    color_arg = next((a.lower() for a in args if a.lower() in ("white", "black")), None)
+    success, msg = chess_manager.restart_engine_game(message.channel.id, int(elo_arg) if elo_arg else None, user_color=color_arg)
     if success:
+      engine_started_lines = [msg]
+      if chess_manager.get_user_color(message.channel.id) == "black":
+        eng_success, eng_msg, _ = await chess_manager.engine_play_move(message.channel.id)
+        engine_started_lines.append(eng_msg if eng_success else f"Engine move failed: {eng_msg}")
       board_img_b64 = chess_manager.get_board_image_base64(message.channel.id)
       image = base64.b64decode(board_img_b64)
       file = discord.File(BytesIO(image), filename="chess_board.png")
-      await message.channel.send(file=file)
+      view = ChessBoardView(message.channel.id, mode="engine")
+      view.message = await message.channel.send(content="\n".join(engine_started_lines), file=file, view=view)
+      remember_board_message(message.channel.id, view.message.id)
+    else:
+      await send_with_retry(message.channel, msg)
     return
 
   if message.content.lower().strip() == "!arona chess stop":
     console.log(f"User {message.author.display_name} used !arona chess stop", "INFO")
-    success, msg = chess_manager.stop_engine_game(message.channel.id)
+    if chess_manager.is_pvp_game(message.channel.id):
+      success, msg = chess_manager.stop_pvp_game(message.channel.id)
+    else:
+      success, msg = chess_manager.stop_engine_game(message.channel.id)
     await send_with_retry(message.channel, msg)
+    return
+
+  if message.content.lower().strip() == "!arona chess resign":
+    console.log(f"User {message.author.display_name} used !arona chess resign", "INFO")
+    channel_id = message.channel.id
+    resigning_side = None
+    if chess_manager.is_pvp_game(channel_id):
+      white_id, black_id = chess_manager.get_pvp_players(channel_id)
+      if message.author.id not in (white_id, black_id):
+        await send_with_retry(message.channel, "You are not a player in this game.")
+        return
+      resigning_side = "white" if message.author.id == white_id else "black"
+    success, msg = chess_manager.resign_game(channel_id, resigning_side=resigning_side)
+    await send_with_retry(message.channel, msg)
+    return
+
+  if message.content.lower().strip() == "!arona chess board":
+    console.log(f"User {message.author.display_name} used !arona chess board", "INFO")
+    channel_id = message.channel.id
+    is_pvp = chess_manager.is_pvp_game(channel_id)
+    if not (is_pvp or chess_manager.is_engine_game(channel_id)):
+      await send_with_retry(message.channel, "No active game running here. Start one with `!arona chess start [elo]` or `!arona chess challenge @user`.")
+      return
+    board_img_b64 = chess_manager.get_board_image_base64(channel_id)
+    image = base64.b64decode(board_img_b64)
+    file = discord.File(BytesIO(image), filename="chess_board.png")
+    view = ChessBoardView(channel_id, mode="pvp" if is_pvp else "engine")
+    view.message = await message.channel.send(file=file, view=view)
+    remember_board_message(channel_id, view.message.id)
     return
 
   chess_move_match = re.match(r"^!arona\s+chess\s+move\s+(.+)$", message.content, re.IGNORECASE)
   if chess_move_match:
     console.log(f"User {message.author.display_name} used !arona chess move", "INFO")
     channel_id = message.channel.id
-    if not chess_manager.is_engine_game(channel_id):
-      await send_with_retry(message.channel, "No local engine game running here. Start one with `!arona chess start [elo]`.")
+    is_pvp = chess_manager.is_pvp_game(channel_id)
+    is_engine = chess_manager.is_engine_game(channel_id)
+    if not (is_pvp or is_engine):
+      await send_with_retry(message.channel, "No active game running here. Start one with `!arona chess start [elo]` or `!arona chess challenge @user`.")
       return
+    if is_pvp:
+      white_id, black_id = chess_manager.get_pvp_players(channel_id)
+      if message.author.id not in (white_id, black_id):
+        await send_with_retry(message.channel, "You are not a player in this game.")
+        return
+      expected_id = chess_manager.get_pvp_turn_user_id(channel_id)
+      if message.author.id != expected_id:
+        await send_with_retry(message.channel, "It's not your turn yet.")
+        return
     move_str = chess_move_match.group(1).strip()
     success, msg, _ = chess_manager.play_user_move(channel_id, move_str)
     if not success:
@@ -8278,9 +8384,12 @@ async def on_message(message):
       return
     reply_lines = [msg]
     board = chess_manager._get_game(channel_id)
-    if not board.is_game_over():
+    if is_engine and not board.is_game_over():
       eng_success, eng_msg, _ = await chess_manager.engine_play_move(channel_id)
       reply_lines.append(eng_msg if eng_success else f"Engine move failed: {eng_msg}")
+    elif is_pvp and not board.is_game_over():
+      next_id = chess_manager.get_pvp_turn_user_id(channel_id)
+      reply_lines.append(f"It's <@{next_id}>'s turn.")
     board_img_b64 = chess_manager.get_board_image_base64(channel_id)
     image = base64.b64decode(board_img_b64)
     file = discord.File(BytesIO(image), filename="chess_board.png")
@@ -8288,14 +8397,42 @@ async def on_message(message):
     await message.channel.send(file=file)
     return
 
+  chess_challenge_match = re.match(r"^!arona\s+chess\s+challenge\s+<@!?(\d+)>\s*$", message.content, re.IGNORECASE)
+  if chess_challenge_match:
+    console.log(f"User {message.author.display_name} used !arona chess challenge", "INFO")
+    challenged_id = int(chess_challenge_match.group(1))
+    challenger_id = message.author.id
+    if challenged_id == challenger_id:
+      await send_with_retry(message.channel, "You can't challenge yourself.")
+      return
+    challenged_member = message.guild.get_member(challenged_id) if message.guild else None
+    if message.guild and challenged_member is None:
+      await send_with_retry(message.channel, "Couldn't find that user in this server.")
+      return
+    if challenged_member is not None and challenged_member.bot:
+      await send_with_retry(message.channel, "You can't challenge a bot.")
+      return
+    if chess_manager.is_engine_game(message.channel.id) or chess_manager.is_pvp_game(message.channel.id):
+      await send_with_retry(message.channel, "Another chess game is already running in this channel. Use `!arona chess stop` first.")
+      return
+    view = ChessChallengeView(message.channel.id, challenger_id, challenged_id)
+    view.message = await message.channel.send(
+      content=f"<@{challenged_id}>, <@{challenger_id}> challenged you to a chess game! Click to respond.",
+      view=view,
+    )
+    return
+
   if message.content.lower().startswith("!arona chess"):
     await send_with_retry(
       message.channel,
       "Usage:\n"
-      "`!arona chess start [elo]` — start a local-engine game (you play White)\n"
+      "`!arona chess start [elo] [white|black]` — start a game vs the engine (default White)\n"
+      "`!arona chess restart [elo] [white|black]` — reset the board, keep or replace elo/color\n"
+      "`!arona chess challenge @user` — challenge another member to PvP\n"
+      "`!arona chess board` — show the interactive click-to-move board for the current game\n"
       "`!arona chess move <move>` — play a move (UCI or SAN, e.g. `e2e4` or `Nf3`)\n"
-      "`!arona chess restart [elo]` — reset the board, keep or replace elo\n"
-      "`!arona chess stop` — end the local-engine game"
+      "`!arona chess resign` — resign the current game\n"
+      "`!arona chess stop` — end the current game (engine or PvP)"
     )
     return
   
@@ -8433,6 +8570,17 @@ async def on_message(message):
     call_kwargs["attachments"] = merged_atts if merged_atts else None
   
   can_send = not message.guild or message.channel.permissions_for(message.guild.me).send_messages
+  if not started:
+    console.log(f"[BOOT] Message from {message.author.display_name} arrived before boot finished; holding reply", "WARN")
+    if can_send:
+      await send_with_retry(
+        message.channel,
+        "Please wait, Arona is still booting up. Try again in a few seconds!",
+      )
+    else:
+      channel_name = getattr(message.channel, 'name', 'DM')
+      console.log(f"Arona does not have permission to send messages in {channel_name}", "WARN")
+    return
   if can_send:
       task = asyncio.create_task(handle_message(merged_msgs[-1], **call_kwargs))
   else:

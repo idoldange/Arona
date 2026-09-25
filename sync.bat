@@ -4,9 +4,11 @@ cd /d "C:\arona"
 
 echo [%date% %time%] Checking for Git repository changes...
 
-:: Check for changes
-git status --porcelain | findstr /r "^" >nul
-if %errorlevel% neq 0 (
+:: Check for changes (no ">nul" redirect — a shadow file named "nul" in the repo
+:: would otherwise swallow this output and git can never index such a file)
+set CHANGES=
+for /f %%i in ('git status --porcelain') do if not defined CHANGES set CHANGES=yes
+if not defined CHANGES (
     echo [%date% %time%] No changes detected. Nothing to commit.
     echo Waiting 30 seconds before exiting...
     timeout /t 30

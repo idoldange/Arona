@@ -26,10 +26,11 @@ from affection import mood as _mood
 from affection import bond as _bond
 
 _MOOD_TAG_RE = re.compile(
-    r"<mood>\s*(?P<v1>[+-]?\d+(?:\.\d+)?)\s*</mood>"   # canonical:  <mood>-5</mood>
+    r"<mood>\s*(?P<v1>[+-]?\d+(?:\.\d+)?)\s*</mood>"    # canonical:  <mood>-5</mood>
     r"|</mood>\s*\[(?P<v2>[+-]?\d+(?:\.\d+)?)\]"        # malformed:  </mood>[-5]
     r"|</mood>\s*(?P<v3>[+-]?\d+(?:\.\d+)?)>"           # malformed:  </mood>-5>
-    r"|</mood>\s*(?P<v4>[+-]?\d+(?:\.\d+)?)\s*</mood>", # malformed:  </mood>25</mood>
+    r"|</mood>\s*(?P<v4>[+-]?\d+(?:\.\d+)?)\s*</mood>"  # malformed:  </mood>25</mood>
+    r"|<:mood>\s*(?P<v5>[+-]?\d+(?:\.\d+)?)\s*</mood>", # malformed:  <:mood>30</mood>
     re.IGNORECASE,
 )
 

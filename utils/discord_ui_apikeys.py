@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import aiohttp
 import discord
 from utils import apikeys
@@ -49,17 +50,24 @@ class ApiKeyModal(discord.ui.Modal, title="Add Gemini API key(s)"):
             # so their next request actually tries the new key(s) from the start instead of
             # skipping past them (or resuming at a now-meaningless index into the old key
             # list) until midnight Pacific.
-            # Deferred import: main.py imports this module (for build_addkey_embed), so a
-            # top-level import here would be circular — importing inside the handler, once
-            # both modules are already fully loaded, avoids that.
-            try:
-                import main
-                _uid = str(user_id)
-                main._BYOK_OWN_KEYS_EXHAUSTED.pop(_uid, None)
-                main._BYOK_LAST_WORKING_MODEL.pop(_uid, None)
-                main._BYOK_LAST_WORKING_KEY_INDEX.pop(_uid, None)
-            except Exception:
-                pass
+            #
+            # IMPORTANT: the bot process is started as `python -u main.py`, so the running
+            # module lives in sys.modules["__main__"], NOT sys.modules["main"]. A plain
+            # `import main` here found no "main" entry, silently re-executed main.py as a
+            # brand-new, disconnected module, and popped from ITS fresh (empty) dicts —
+            # leaving the real, live _BYOK_OWN_KEYS_EXHAUSTED flag untouched. That was the
+            # actual bug: adding a key never cleared the exhausted state the running bot was
+            # using, so requests kept getting "byok_quota_exhausted" until the midnight
+            # Pacific reset. Grabbing sys.modules["__main__"] targets the real running module.
+            _main = sys.modules.get("__main__")
+            if _main is not None:
+                try:
+                    _uid = str(user_id)
+                    _main._BYOK_OWN_KEYS_EXHAUSTED.pop(_uid, None)
+                    _main._BYOK_LAST_WORKING_MODEL.pop(_uid, None)
+                    _main._BYOK_LAST_WORKING_KEY_INDEX.pop(_uid, None)
+                except Exception:
+                    pass
 
         lines = []
         if valid_keys:

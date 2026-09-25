@@ -12,10 +12,10 @@ INFLIGHT_DELAY   = 10.0                      # seconds to consider a follow-up m
 # ── Gemini API ───────────────────────────────────────────────
 
 DEFAULT_MODEL       = "gemini-3.6-flash"
-FALLBACK_MODEL      = "gemini-3.6-flash"     # 503
+FALLBACK_MODEL      = "gemini-3.5-flash-lite"# 503
 RATE_LIMIT_MODEL    = "gemini-3.5-flash-lite"# 429
 RATE_LIMIT_MODEL_   = "gemini-3.8-flash"     # 429 on RATE_LIMIT_MODEL
-LITE_MODEL          = "gemini-3.1-flash-lite"
+LITE_MODEL          = "gemini-3.5-flash-lite"
 LIVE_MODEL          = "gemini-3.1-flash-live-preview"
 DEFAULT_TEMPERATURE = 1.0
 MAX_RETRIES         = 1                      # rounds
@@ -31,10 +31,18 @@ VOICE_CALL_REF_TEXT = "せんせい、おつかれさまです！シロコせん
 FREE_TIER_DAILY_LIMIT   = 30                 # messages/day per user without own key(just use your own free key bro)
 GLOBAL_DAILY_SOFT_LIMIT = 0                  # total messages/day across all free-tier users, 0 = disabled
 
+# Retry DEFAULT_MODEL this many times on 503 before falling back to FALLBACK_MODEL
+# (instead of switching models on the very first 503)
+DEFAULT_MODEL_503_RETRIES = 3                # 503s on DEFAULT_MODEL before switching to FALLBACK_MODEL
+
 # Send decoy requests to break 503 loops
 UNSTICK_ON_503        = True                 # enable/disable the whole mechanism
 UNSTICK_503_THRESHOLD = 3                    # consecutive 503s (across rounds/keys) before firing
-UNSTICK_MODEL         = DEFAULT_MODEL        # decoy uses the main model to improve chances of recovery
+
+# Give up and report an error after this many consecutive 503s (across rounds/keys),
+# regardless of the unstick decoy mechanism. 0 disables the abort.
+MAX_CONSECUTIVE_503_ROUNDS = 6
+UNSTICK_MODEL         = FALLBACK_MODEL       # decoy uses the main model to improve chances of recovery
 
 MAX_FUNCTION_TURNS  = 100
 THINKING_MSG_DELAY  = 20                     # seconds before sending "thinking deeper" message
@@ -90,7 +98,8 @@ CHESS_ENGINE_PATH        = None
 CHESS_ENGINE_DEFAULT_ELO = 1500
 CHESS_ENGINE_MIN_ELO     = 400
 CHESS_ENGINE_MAX_ELO     = 3190
-CHESS_ENGINE_MOVE_TIME   = 1.0   # seconds engine "thinks" per move
+CHESS_ENGINE_MOVE_TIME   = 0.5   # seconds to let the user see their move before Arona starts thinking
+CHESS_ENGINE_THINK_TIME  = 60.0  # safety ceiling (seconds) per engine search; actual time scales with position complexity
 
 
 # ── Docker ───────────────────────────────────────────────────
