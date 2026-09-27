@@ -374,17 +374,33 @@ class ChessBoardView(discord.ui.View):
 
 class ChessChallengeView(discord.ui.View):
     """
-    Accept/Decline buttons for a PvP challenge (!arona chess challenge @user).
+    Accept/Decline buttons for a PvP challenge (!arona chess challenge @user [white|black]).
     Only the challenged user can respond; on accept it starts a PvP game and
-    sends a fresh interactive board.
+    sends a fresh interactive board. `challenger_color` picks which side the
+    challenger takes ("white" default, "black" otherwise); the challenged user
+    gets the other side.
     """
-    def __init__(self, channel_id: int, challenger_id: int, challenged_id: int, timeout: float = 120):
+    def __init__(self, channel_id: int, challenger_id: int, challenged_id: int,
+                 challenger_color: str = "white", timeout: float = 120):
         super().__init__(timeout=timeout)
         self.channel_id = channel_id
         self.challenger_id = challenger_id
         self.challenged_id = challenged_id
+        self.challenger_color = "black" if str(challenger_color).lower().startswith("b") else "white"
+        if self.challenger_color == "white":
+            self.white_id, self.black_id = challenger_id, challenged_id
+        else:
+            self.white_id, self.black_id = challenged_id, challenger_id
         self.message: discord.Message = None
         self.responded = False
+
+    def challenge_text(self) -> str:
+        """Announcement line naming who plays White and who plays Black."""
+        return (
+            f"<@{self.challenged_id}>, <@{self.challenger_id}> challenged you to a chess game! "
+            f"<@{self.challenger_id}> plays as **White**, <@{self.challenged_id}> plays as **Black**. "
+            f"Click to respond."
+        )
 
     async def _check_challenged(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.challenged_id:
@@ -398,7 +414,7 @@ class ChessChallengeView(discord.ui.View):
             return
         self.responded = True
         self.stop()
-        success, msg = chess_manager.start_pvp_game(self.channel_id, self.challenger_id, self.challenged_id)
+        success, msg = chess_manager.start_pvp_game(self.channel_id, self.white_id, self.black_id)
         await interaction.response.edit_message(content=msg, view=None)
         board_view = ChessBoardView(self.channel_id, mode="pvp")
         file = _board_file(self.channel_id)

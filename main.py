@@ -7924,7 +7924,8 @@ async def on_message(message):
       "- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n"
       "- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n"
       "- `!arona quota`: Check your remaining daily messages\n"
-      "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
+      "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
+      "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"
@@ -8397,11 +8398,19 @@ async def on_message(message):
     await message.channel.send(file=file)
     return
 
-  chess_challenge_match = re.match(r"^!arona\s+chess\s+challenge\s+<@!?(\d+)>\s*$", message.content, re.IGNORECASE)
+  chess_challenge_match = re.match(r"^!arona\s+chess\s+challenge\s+<@!?(\d+)>(?:\s+(\S+))?\s*$", message.content, re.IGNORECASE)
   if chess_challenge_match:
     console.log(f"User {message.author.display_name} used !arona chess challenge", "INFO")
     challenged_id = int(chess_challenge_match.group(1))
     challenger_id = message.author.id
+    color_arg = (chess_challenge_match.group(2) or "white").lower()
+    if color_arg in ("w", "white", "trang"):
+      challenger_color = "white"
+    elif color_arg in ("b", "black", "den"):
+      challenger_color = "black"
+    else:
+      await send_with_retry(message.channel, "Invalid color. Use `!arona chess challenge @user [white|black]`.")
+      return
     if challenged_id == challenger_id:
       await send_with_retry(message.channel, "You can't challenge yourself.")
       return
@@ -8415,9 +8424,9 @@ async def on_message(message):
     if chess_manager.is_engine_game(message.channel.id) or chess_manager.is_pvp_game(message.channel.id):
       await send_with_retry(message.channel, "Another chess game is already running in this channel. Use `!arona chess stop` first.")
       return
-    view = ChessChallengeView(message.channel.id, challenger_id, challenged_id)
+    view = ChessChallengeView(message.channel.id, challenger_id, challenged_id, challenger_color)
     view.message = await message.channel.send(
-      content=f"<@{challenged_id}>, <@{challenger_id}> challenged you to a chess game! Click to respond.",
+      content=view.challenge_text(),
       view=view,
     )
     return
@@ -8428,12 +8437,63 @@ async def on_message(message):
       "Usage:\n"
       "`!arona chess start [elo] [white|black]` — start a game vs the engine (default White)\n"
       "`!arona chess restart [elo] [white|black]` — reset the board, keep or replace elo/color\n"
-      "`!arona chess challenge @user` — challenge another member to PvP\n"
+      "`!arona chess challenge @user [white|black]` — challenge another member to PvP (you pick your side)\n"
       "`!arona chess board` — show the interactive click-to-move board for the current game\n"
       "`!arona chess move <move>` — play a move (UCI or SAN, e.g. `e2e4` or `Nf3`)\n"
       "`!arona chess resign` — resign the current game\n"
       "`!arona chess stop` — end the current game (engine or PvP)"
     )
+    return
+
+  tts_match = re.match(r"^!arona\s+tts(?:\s+(.*))?\s*$", message.content, re.IGNORECASE | re.DOTALL)
+  if tts_match:
+    console.log(f"User {message.author.display_name} used !arona tts", "INFO")
+    tts_input = (tts_match.group(1) or "").strip()
+    if not tts_input:
+      await send_with_retry(
+        message.channel,
+        "Usage: `!arona tts <text>`\n"
+        "Arona will speak the text out loud as an audio file.\n"
+        "Pitch control: put `↑` before a syllable to raise the pitch, `↓` to lower it "
+        "(e.g. `そ↑う`, `あ↓あ`).\n"
+        "Note: only Japanese is supported — no language filtering is applied, so other "
+        "languages are sent to the model as-is and will sound inaccurate."
+      )
+      return
+    if len(tts_input) > 500:
+      await send_with_retry(message.channel, "Text is too long — please keep it under 500 characters.")
+      return
+    # Keep pitch markers (↑ ↓) for the model; drop mood tags like the normal TTS path does
+    tts_input = re.sub(r"<mood>.*?</mood>", "", tts_input, flags=re.DOTALL).strip()
+    if not tts_input:
+      await send_with_retry(message.channel, "Nothing to speak after removing the mood tags.")
+      return
+    tts_status_msg = None
+    try:
+      tts_status_msg = await message.channel.send("-# Generating TTS audio...")
+    except Exception:
+      tts_status_msg = None
+    tts_data = await text_to_speech(tts_input, "ja")
+    if tts_status_msg:
+      try:
+        await tts_status_msg.delete()
+      except Exception as e:
+        console.log(f"Failed to delete TTS status message: {e}", "WARN")
+    if not tts_data:
+      await send_with_retry(message.channel, "-# TTS error: the TTS server is unavailable, please try again later.")
+      return
+    tts_filename = f"tts_{int(time.time())}-{str(uuid4())}.wav"
+    try:
+      tts_msg = await message.channel.send(
+        content=f"-# {tts_input}",
+        file=discord.File(BytesIO(tts_data), filename=tts_filename)
+      )
+      console.log(f"Sent TTS audio: {tts_filename}", "INFO")
+      for att in tts_msg.attachments:
+        console.log(f'<audio controls src="{att.url}" style="max-width:300px"></audio>')
+    except Exception as e:
+      console.log(f"Failed to send TTS audio: {e}", "ERROR")
+      await send_with_retry(message.channel, f"-# TTS error: {e}")
     return
   
   if message.content.lower().startswith("!arona raided"):
