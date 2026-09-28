@@ -1,6 +1,15 @@
 @echo off
 setlocal enabledelayedexpansion
-cd /d "C:\arona"
+:: Always run in this script's own folder (the repo root). The old hardcoded
+:: "cd /d C:\arona" pointed at a path that does not exist on this machine, so the
+:: cd failed silently and every git command below ran in whatever directory the
+:: script happened to be launched from -> "fatal: not a git repository", and
+:: "git add ." would have staged an unrelated folder.
+:: Use pushd, not "cd /d": this repo lives on a UNC path (\\server\share\arona) and
+:: cmd refuses a UNC path as a current directory ("CMD does not support UNC paths as
+:: current directories"). pushd transparently maps it to a temporary drive letter, so
+:: git and python resolve correctly; on a local path it behaves exactly like cd.
+pushd "%~dp0"
 
 echo [%date% %time%] Checking for Git repository changes...
 

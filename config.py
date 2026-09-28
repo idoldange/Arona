@@ -19,6 +19,16 @@ LITE_MODEL          = "gemini-3.5-flash-lite"
 LIVE_MODEL          = "gemini-3.1-flash-live-preview"
 DEFAULT_TEMPERATURE = 1.0
 MAX_RETRIES         = 1                      # rounds
+# Hard cap on the number of HTTP requests a single ask_gemini() call may send to the
+# Gemini API, counted across every key and every round. Distinct from MAX_RETRIES,
+# which only counts rounds — with N keys in the pool one round alone fans out into up
+# to N requests. -1 (default) = unlimited, so the normal chat path keeps its full
+# key-rotation behaviour; only callers that want a tighter budget pass max_attempts.
+MAX_ATTEMPTS        = -1                     # total API requests per ask_gemini call, -1 = unlimited
+# Request budget for the background personalization pass (utils/impression.py). Kept
+# separate from MAX_ATTEMPTS so the impression update can be given a tighter or looser
+# cap than a normal reply without touching the main chat path.
+IMPRESSION_MAX_ATTEMPTS = 3                  # API requests allowed per impression update
 DEFAULT_TIMEOUT     = 600                    # seconds
 ENABLE_FUNCTIONS    = True
 

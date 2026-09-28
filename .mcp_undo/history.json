@@ -100,5 +100,263 @@
     "path": "arona/tts/ttsapi/api_v2.py",
     "backup": "1790506776_dd8275fc_api_v2.py.bak",
     "ts": 1790506776.6162977
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790520397_67ebc3a1_api_v2.py.bak",
+    "ts": 1790520397.4080877
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790520404_1822537b_api_v2.py.bak",
+    "ts": 1790520404.460246
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790521046_d9296471_api_v2.py.bak",
+    "ts": 1790521046.328053
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790521383_6a153b1c_api_v2.py.bak",
+    "ts": 1790521383.82591
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790521396_43765104_api_v2.py.bak",
+    "ts": 1790521396.8166986
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790521412_8af2e40a_api_v2.py.bak",
+    "ts": 1790521412.5048373
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790551597_9cbb1893_api_v2.py.bak",
+    "ts": 1790551597.5471313
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790551609_a6d0689c_api_v2.py.bak",
+    "ts": 1790551609.6131248
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790551630_b3da1eae_api_v2.py.bak",
+    "ts": 1790551630.2005835
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790554527_9b5a6aba_api_v2.py.bak",
+    "ts": 1790554527.8839364
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790554552_f1c07353_api_v2.py.bak",
+    "ts": 1790554552.217412
+  },
+  {
+    "type": "create",
+    "path": "arona/tts/ttsapi/synth_engine.py",
+    "backup": null,
+    "ts": 1790556073.0829952
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790556095_8dfb7b4f_api_v2.py.bak",
+    "ts": 1790556095.6747305
+  },
+  {
+    "type": "create",
+    "path": "temp/synth_utau_payload.json",
+    "backup": null,
+    "ts": 1790556105.1038172
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/synth_engine.py",
+    "backup": "1790570027_f46d2e1f_synth_engine.py.bak",
+    "ts": 1790570027.534577
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790570040_68c7b205_api_v2.py.bak",
+    "ts": 1790570040.6035924
+  },
+  {
+    "type": "create",
+    "path": "temp/test_scale.ust",
+    "backup": null,
+    "ts": 1790570047.9843037
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790570419_8f408960_api_v2.py.bak",
+    "ts": 1790570419.9550939
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790570424_940fcca8_api_v2.py.bak",
+    "ts": 1790570424.0218925
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/synth_engine.py",
+    "backup": "1790570433_6da43445_synth_engine.py.bak",
+    "ts": 1790570433.871907
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/synth_engine.py",
+    "backup": "1790570440_1ce11e53_synth_engine.py.bak",
+    "ts": 1790570440.131186
+  },
+  {
+    "type": "create",
+    "path": "temp/analyze_synth.py",
+    "backup": null,
+    "ts": 1790570447.1378257
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/synth_engine.py",
+    "backup": "1790570534_a53c0615_synth_engine.py.bak",
+    "ts": 1790570534.4207337
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790570540_49196be9_api_v2.py.bak",
+    "ts": 1790570540.0165904
+  },
+  {
+    "type": "create",
+    "path": "temp/test_ref_steer.py",
+    "backup": null,
+    "ts": 1790570659.217635
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/synth_engine.py",
+    "backup": "1790570932_fa93d72e_synth_engine.py.bak",
+    "ts": 1790570932.805499
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790570940_173b496c_api_v2.py.bak",
+    "ts": 1790570940.2178898
+  },
+  {
+    "type": "create",
+    "path": "temp/ab_intelligibility.py",
+    "backup": null,
+    "ts": 1790570951.2316315
+  },
+  {
+    "type": "create",
+    "path": "temp/ablation.py",
+    "backup": null,
+    "ts": 1790571139.4411466
+  },
+  {
+    "type": "create",
+    "path": "temp/ablation2.py",
+    "backup": null,
+    "ts": 1790571280.6546383
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790571773_140938c2_api_v2.py.bak",
+    "ts": 1790571773.754957
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/synth_engine.py",
+    "backup": "1790571779_5d01a727_synth_engine.py.bak",
+    "ts": 1790571779.8598282
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790572241_db1aac1d_api_v2.py.bak",
+    "ts": 1790572241.3254228
+  },
+  {
+    "type": "create",
+    "path": "temp/final_check.py",
+    "backup": null,
+    "ts": 1790572250.1476455
+  },
+  {
+    "type": "create",
+    "path": "temp/bunny_part1.ust",
+    "backup": null,
+    "ts": 1790588021.3440664
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790588774_add89eaa_api_v2.py.bak",
+    "ts": 1790588774.7708485
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/synth_engine.py",
+    "backup": "1790588778_93977bf1_synth_engine.py.bak",
+    "ts": 1790588778.604456
+  },
+  {
+    "type": "create",
+    "path": "temp/prebuild_voicebank.py",
+    "backup": null,
+    "ts": 1790588784.8957
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790588950_bae34d9a_api_v2.py.bak",
+    "ts": 1790588950.6119883
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/ttsapi/api_v2.py",
+    "backup": "1790589446_556db459_api_v2.py.bak",
+    "ts": 1790589446.194482
+  },
+  {
+    "type": "edit",
+    "path": "arona/tts/tts.py",
+    "backup": "1790589453_e86c4ff8_tts.py.bak",
+    "ts": 1790589453.9799387
+  },
+  {
+    "type": "edit",
+    "path": "main.py",
+    "backup": "1790589469_ca072353_main.py.bak",
+    "ts": 1790589469.9770575
+  },
+  {
+    "type": "edit",
+    "path": "main.py",
+    "backup": "1790589510_b5b753c4_main.py.bak",
+    "ts": 1790589510.1245883
   }
 ]

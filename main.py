@@ -123,7 +123,8 @@ from utils.discord_ui import AskUserModal, MalformedRetryView, AskUserView
 from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_board_message, restore_board_views
 from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to_grid_table
 from dotenv import load_dotenv
-from arona.tts.tts import text_to_speech
+from arona.tts.tts import text_to_speech, synth_song, synth_lock
+from pydub import AudioSegment
 from affection import affection
 from utils.raid_recovery import handle_raided_command
 load_dotenv(dotenv_path=".env")
@@ -1547,6 +1548,12 @@ def extract_gemini_text(result: dict, history: list = None) -> str:
   all_image_data = []
 
   if isinstance(result, dict) and (result.get("_empty_stop") or result.get("_malformed_exhausted")):
+    return ""
+
+  # An error dict ({"error": ..., "details": ...}) has no "candidates" key, so indexing it
+  # below raised IndexError and dumped the whole raw dict to the user. Return "" instead —
+  # callers are expected to check for "error" and surface a proper message.
+  if isinstance(result, dict) and result.get("error"):
     return ""
 
   try:
@@ -3878,7 +3885,7 @@ def _patch_trailing_model_turn(history: list) -> str | None:
   history.append({"role": "user", "parts": [{"text": "(continue)"}]})
   return "appended placeholder user turn after trailing model turn"
 
-async def ask_gemini(model_name: str = None, text: str = "", attachments: list = None, temperature: float = None, max_retries: int = None, sys_prompt: bool = True, timeout: int = None, custom_sys_prompt:str=None, msg_history="", enable_functions: bool = True, max_function_turns: int = None, level: str = None, message: discord.Message = None, typing_pause_event: asyncio.Event = None, thinking_budget: int | None = None, rules=None, safety_note="") -> dict:
+async def ask_gemini(model_name: str = None, text: str = "", attachments: list = None, temperature: float = None, max_retries: int = None, max_attempts: int = None, sys_prompt: bool = True, timeout: int = None, custom_sys_prompt:str=None, msg_history="", enable_functions: bool = True, max_function_turns: int = None, level: str = None, message: discord.Message = None, typing_pause_event: asyncio.Event = None, thinking_budget: int | None = None, rules=None, safety_note="") -> dict:
   """
   Send a prompt to the Gemini API with smart key fallback.
 
@@ -3887,7 +3894,12 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
   - **text**: The input text prompt to send to the model.
   - **attachments**: A list of attachments to include in the request (optional).
   - **temperature**: Sampling temperature for response generation (default from config).
-  - **max_retries**: Maximum number of retries in case of API failure (default from config).
+  - **max_retries**: Maximum number of retry ROUNDS in case of API failure (default from config).
+  - **max_attempts**: Maximum number of HTTP requests this call may send in total, counted
+    across every key and every round. Default is `MAX_ATTEMPTS`, which is **-1 (unlimited)**,
+    so normal calls keep their full key-rotation behaviour; pass a number to cap the cost of a
+    call that would otherwise fan out over the whole key pool. When the cap is hit, the call
+    returns `{"error": "max_attempts_exceeded", ...}`.
   - **sys_prompt**: Whether to include a system prompt in the request (default: False).
   - **timeout**: Timeout for the API request in seconds (default from config).
   - **custom_sys_prompt**: A custom system prompt to override the default (optional).
@@ -3911,6 +3923,15 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
   _model_explicitly_requested = model_name != DEFAULT_MODEL
   temperature = temperature if temperature is not None else DEFAULT_TEMPERATURE
   max_retries = max_retries or MAX_RETRIES
+  # None -> config default; config default is -1 (unlimited). Normalize to an int so the
+  # budget checks never compare against None.
+  if max_attempts is None:
+    max_attempts = MAX_ATTEMPTS
+  if max_attempts is None:
+    max_attempts = -1
+  # Shared across every request this call makes (both the functions path and the legacy
+  # try_request path below), so the cap covers the whole call and not just one loop.
+  _attempt_budget = {"used": 0, "max": max_attempts}
   timeout = timeout or DEFAULT_TIMEOUT
   enable_functions = enable_functions if enable_functions is not None else ENABLE_FUNCTIONS
   max_function_turns = max_function_turns or MAX_FUNCTION_TURNS
@@ -4055,17 +4076,24 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
         }
       }
 
-  async def send_request(model: str, api_key: str, payload: dict):
+  async def send_request(model: str, api_key: str, payload: dict, budget: dict = None):
     full_model_name = f"models/{model}" if not model.startswith("models/") else model
     url = f"{base_url}/{full_model_name}:generateContent"
     headers = {
       "Content-Type": "application/json",
       "x-goog-api-key": api_key
       }
-
+  
     session = await session_manager.get_session()
     for attempt in range(3):  
       try:
+        # Consume one unit of the per-call request budget. Returned before the post so an
+        # exhausted budget never hits the network. Every retry inside this loop counts —
+        # each iteration is a real HTTP request.
+        if budget is not None:
+          if budget["max"] >= 0 and budget["used"] >= budget["max"]:
+            return None
+          budget["used"] += 1
         resp = await session.post(
           url, headers=headers, json=payload, timeout=timeout
         )
@@ -4123,11 +4151,20 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
 
     for attempt in range(1, effective_max_retries + 1):
       for key_idx in key_order:
+        # Hard request cap for this call. Checked before the key loop does any work so an
+        # exhausted budget stops immediately instead of spinning through every remaining key
+        # (each `continue` would just burn loop iterations without a request).
+        if _attempt_budget["max"] >= 0 and _attempt_budget["used"] >= _attempt_budget["max"]:
+          console.log(f"[{model}] Request budget exhausted ({_attempt_budget['used']}/{_attempt_budget['max']}), giving up.", "WARN")
+          return {"error": "max_attempts_exceeded", "details": f"Used {_attempt_budget['used']} of {_attempt_budget['max']} allowed API request(s)."}
         API_KEY = keys[key_idx]
         console.log(f"[{model}] Attempt {attempt}, Key {key_idx+1}/{len(keys)}", "INFO")
 
-        resp = await send_request(model, API_KEY, payload)
+        resp = await send_request(model, API_KEY, payload, _attempt_budget)
         if not resp:
+          if _attempt_budget["max"] >= 0 and _attempt_budget["used"] >= _attempt_budget["max"]:
+            console.log(f"[{model}] Request budget exhausted ({_attempt_budget['used']}/{_attempt_budget['max']}), giving up.", "WARN")
+            return {"error": "max_attempts_exceeded", "details": f"Used {_attempt_budget['used']} of {_attempt_budget['max']} allowed API request(s)."}
           continue
 
         if resp.status == 200:
@@ -4148,7 +4185,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
                 _prompt_block_retried = True
                 console.log(f"[{model}] Prompt blocked ({block_reason}), retrying once on the same key...", "WARN")
                 await asyncio.sleep(1.5)
-                resp = await send_request(model, API_KEY, payload)
+                resp = await send_request(model, API_KEY, payload, _attempt_budget)
                 if resp and resp.status == 200:
                   data = await resp.json()
                   _pf2 = data.get("promptFeedback", {})
@@ -4180,7 +4217,11 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
           text = await resp.text()
           #check: API key not valid. Please pass a valid API key.
           # if yes then switch key
-          if "API key not valid" in text:
+          _text_lower = text.lower()
+          if ("api key not valid" in _text_lower
+              or "api_key_invalid" in _text_lower
+              or "invalid api key" in _text_lower
+              or "unauthenticated" in _text_lower):
             console.log(f"[{model}] Key {key_idx+1} invalid, trying next", "WARN")
             await asyncio.sleep(3+attempt)  # Brief pause before next key
             continue
@@ -4217,8 +4258,11 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
                 _bust_token = os.urandom(8).hex()
                 _base = _parts[0]["text"].split("\n<!-- bust:")[0]
                 _parts[0]["text"] = _base + f"\n<!-- bust:{_bust_token} -->"
-            resp = await send_request(model, API_KEY, _bust_payload)
+            resp = await send_request(model, API_KEY, _bust_payload, _attempt_budget)
             if not resp:
+              if _attempt_budget["max"] >= 0 and _attempt_budget["used"] >= _attempt_budget["max"]:
+                console.log(f"[{model}] Request budget exhausted ({_attempt_budget['used']}/{_attempt_budget['max']}), giving up.", "WARN")
+                return {"error": "max_attempts_exceeded", "details": f"Used {_attempt_budget['used']} of {_attempt_budget['max']} allowed API request(s)."}
               continue
             if resp.status == 200:
               data = await resp.json()
@@ -4267,7 +4311,7 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
   
   return result
 
-async def _ask_gemini_with_functions(model_name: str, text: str, attachments, temperature: float, max_retries: int, sys_prompt: bool, timeout: int, custom_sys_prompt: str, msg_history, max_function_turns: int, level: str = None, message: Union[discord.Message, None] = None, typing_pause_event: asyncio.Event = None, thinking_budget: int | None = None, rules=None, safety_note="") -> dict:
+async def _ask_gemini_with_functions(model_name: str, text: str, attachments, temperature: float, max_retries: int, sys_prompt: bool, timeout: int, custom_sys_prompt: str, msg_history, max_function_turns: int, level: str = None, message: Union[discord.Message, None] = None, typing_pause_event: asyncio.Event = None, thinking_budget: int | None = None, rules=None, safety_note="", max_attempts: int = None, attempt_budget: dict = None) -> dict:
   """
   Handle function calls from the Gemini model.
 
@@ -4276,7 +4320,11 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
   - **text**: The input text prompt to send to the model.
   - **attachments**: A list of attachments to include in the request.
   - **temperature**: Sampling temperature for response generation.
-  - **max_retries**: Maximum number of retries in case of API failure.
+  - **max_retries**: Maximum number of retry ROUNDS in case of API failure.
+  - **max_attempts**: Maximum number of HTTP requests for this call. Default is `MAX_ATTEMPTS`
+    (-1 = unlimited); -1 means no cap.
+  - **attempt_budget**: Mutable `{"used", "max"}` box shared with the caller so the cap spans
+    the whole `ask_gemini` call. A fresh one is created if not supplied.
   - **sys_prompt**: Whether to include a system prompt in the request.
   - **timeout**: Timeout for the API request in seconds.
   - **custom_sys_prompt**: A custom system prompt to override the default.
@@ -4511,6 +4559,10 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     
       # Try request
       await _check_midnight_reset()
+      if attempt_budget is None:
+        _ma = MAX_ATTEMPTS if max_attempts is None else max_attempts
+        attempt_budget = {"used": 0, "max": -1 if _ma is None else _ma}
+      _attempt_budget = attempt_budget
       num_keys = len(keys)
       num_free_keys = num_keys - num_own_keys
       # BYOK users only draw against the shared free-tier quota once their own keys have
@@ -4605,6 +4657,12 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         attempt_num = 0
         _same_key_503_retries = 0  # consecutive 503s on the CURRENT key (reset when key changes)
         while key_pos < len(key_order):
+          # Hard cap on real HTTP requests for this call (distinct from max_retries, which
+          # only bounds rounds). Checked before any work so an exhausted budget stops the
+          # request instead of cycling through every remaining key.
+          if _attempt_budget["max"] >= 0 and _attempt_budget["used"] >= _attempt_budget["max"]:
+            console.log(f"[{model_name}] Request budget exhausted ({_attempt_budget['used']}/{_attempt_budget['max']}), giving up.", "WARN")
+            return {"error": "max_attempts_exceeded", "details": f"Used {_attempt_budget['used']} of {_attempt_budget['max']} allowed API request(s)."}
           key_idx = key_order[key_pos]
           attempt_num += 1
           if attempt_num > len(keys):
@@ -4650,6 +4708,9 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
 
             thinking_task = asyncio.create_task(_send_thinking_msg())
             try:
+              # Charge the per-call request budget for this actual HTTP request. Also covers
+              # the same-key 503 retries further down, which each issue another request.
+              _attempt_budget["used"] += 1
               resp = await session.post(url, json=payload, headers=headers, timeout=timeout)
               if debug_enabled:
                 console.log(f"Raw response: {await resp.text()}", "DEBUG")
@@ -4907,7 +4968,16 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
               #log payload for 400 errors to help diagnose malformed requests
               #console.log(f"400 Bad Request for key {key_idx}. Payload: {json.dumps(payload)}", "DEBUG")
 
-              if "API key not valid" in body_text:
+              # Rotate to the next key on any invalid/unauthenticated-key 400. Google
+              # phrases this several ways ("API key not valid", the API_KEY_INVALID reason
+              # code, "Unauthenticated", "invalid API key"), and missing one of them used to
+              # abort the entire key loop on a plain bad-key response.
+              _body_lower_400 = _body_lower  # already lowercased at the top of this 400 block
+              if ("api key not valid" in _body_lower_400
+                  or "api_key_invalid" in _body_lower_400
+                  or "invalid api key" in _body_lower_400
+                  or "unauthenticated" in _body_lower_400
+                  or ("permission_denied" in _body_lower_400 and "api key" in _body_lower_400)):
                 console.log(f"[400] Key {key_idx+1} invalid, trying next", "WARN")
                 key_pos += 1 
                 _same_key_503_retries = 0
@@ -5129,6 +5199,27 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
             _bonus_round_pending = True
         else:
           _429_round_count = 0
+        # Own key(s) failed this round for a NON-429 reason while the shared free-tier pool
+        # is still being withheld from key_order (see _deferred_free_keys above). The splice
+        # in the all-429 branch above only fires on 429, so without this the request dies
+        # with "No response from model" while dozens of usable keys sit idle — e.g. one BYOK
+        # key with an invalid value 400s, key_order (own-keys-only) is exhausted, and the
+        # pool is never offered. Deliberately narrow: only key-level rejections (400/401/403)
+        # and connection errors open the pool. Transient 503s keep their own same-key retry
+        # budget, and a 429 is handled above, so neither should silently burn free-tier quota.
+        _own_keys_rejected = bool(last_error_detail) and bool(
+          re.search(r"HTTP (?:400|401|403) from model", last_error_detail)
+          or "Exception for key" in last_error_detail
+        )
+        if _deferred_free_keys and _own_keys_rejected and own_keys_in_order and own_keys_in_order == len(key_order):
+          _free_start = _LAST_WORKING_KEY_INDEX if 0 <= _LAST_WORKING_KEY_INDEX < _deferred_free_keys else 0
+          key_order = key_order + [num_own_keys + (_free_start + i) % _deferred_free_keys for i in range(_deferred_free_keys)]
+          console.log(f"[BYOK] User {byok_user_id}'s own key(s) were rejected this round ({last_error_detail}) — opening the shared free-tier pool ({_deferred_free_keys} keys) for this request", "WARN")
+          usable_free_keys = _deferred_free_keys
+          _deferred_free_keys = 0
+          _tpm_limited_keys.clear()
+          # Guarantee the pool actually gets a round even if the retry budget is already spent.
+          _bonus_round_pending = True
         round_num += 1
 
       if not response and not _schema_stripped and not _thinking_stripped and not _context_stripped and not _func_resp_patched and not _misplaced_call_patched and not _trailing_model_patched:
@@ -5567,7 +5658,9 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           text="",
           attachments=attachments,
           temperature=temperature,
-          max_retries=max_retries,
+      max_retries=max_retries,
+      max_attempts=max_attempts,
+      attempt_budget=_attempt_budget,
           sys_prompt=sys_prompt,
           timeout=timeout,
           custom_sys_prompt=custom_sys_prompt,
@@ -7662,6 +7755,24 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
       if isinstance(raw_reply, dict) and (raw_reply.get("_malformed_exhausted") or raw_reply.get("_empty_stop")):
         console.log("===== [END MESSAGE] =====", "INFO")
         return
+      if isinstance(raw_reply, dict) and raw_reply.get("error"):
+        # Last-resort net: any error code the branches above don't cover (e.g. "400",
+        # "403", "401", "No response from model", "attempt_limit_exceeded"). Without this
+        # the dict fell through to extract_gemini_text and the user got the raw
+        # {"error": ..., "details": ...} JSON pasted into the channel.
+        _err_code = raw_reply.get("error")
+        _err_detail = str(raw_reply.get("details") or "")
+        if _err_code in ("400", "401", "403"):
+          await send_with_retry(message.channel, "Arona's API keys were all rejected by Google, so she couldn't answer. Check `!arona listkeys` and re-add valid key(s) with `!arona addkey`.")
+        elif _err_code in ("attempt_limit_exceeded", "max_attempts_exceeded"):
+          await send_with_retry(message.channel, "Arona ran out of API key attempts before getting a response. Please try again in a moment.")
+        else:
+          await send_with_retry(message.channel, "Arona couldn't get a response from the AI servers right now. Please try again in a few minutes.")
+        console.log(f"Unhandled Gemini error '{_err_code}': {_err_detail}", "ERROR")
+        console.log(f"Model used: {model_name}", "INFO")
+        console.log(f"Prompt: {reply_text}", "DEBUG")
+        console.log("===== [END MESSAGE] =====", "INFO")
+        return
       # Include this turn's own reply_context AND raw current-turn content (neither is
       # part of `history`) so a Referencing-to echo of either — the message Arona is
       # directly replying to, OR Gemini hallucinating/duplicating the CURRENT message's
@@ -7926,6 +8037,7 @@ async def on_message(message):
       "- `!arona quota`: Check your remaining daily messages\n"
       "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
       "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
+      "- `!arona synth` (+ attach a `.ust` / `.json` / `.txt` file): Arona sings a UTAU project (can take several minutes)\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"
@@ -8496,6 +8608,112 @@ async def on_message(message):
       await send_with_retry(message.channel, f"-# TTS error: {e}")
     return
   
+  synth_match = re.match(r"^!arona\s+synth(?:\s+(.*))?\s*$", message.content, re.IGNORECASE | re.DOTALL)
+  if synth_match:
+    console.log(f"User {message.author.display_name} used !arona synth", "INFO")
+    synth_opts_raw = (synth_match.group(1) or "").strip()
+    synth_atts = [a for a in message.attachments if a.filename.lower().endswith((".ust", ".json", ".txt"))]
+    if not synth_atts:
+      await send_with_retry(
+        message.channel,
+        "Usage: `!arona synth [options]` with a `.ust`, `.json` or `.txt` file attached.\n"
+        "JSON = array of notes like `[{\"lyric\":\"よ\",\"noteNumber\":65,\"length\":240}, ...]` (length in ms, `R` = rest); "
+        "UST = a normal UTAU project (any encoding).\n"
+        "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `gap_ms`, `overlap_ms`, `clarity`, `pitch_natural`.\n"
+        "Japanese hiragana/katakana lyrics only. New syllables are recorded on first use, so the first song can take a few minutes."
+      )
+      return
+    synth_allowed = {"transpose", "auto_octave", "voice_center", "gap_ms", "overlap_ms", "clarity", "pitch_natural", "pitch_mode"}
+    synth_opts = {}
+    for tok in synth_opts_raw.split():
+      if "=" in tok:
+        k, v = tok.split("=", 1)
+        if k.lower() in synth_allowed and v:
+          synth_opts[k.lower()] = v
+    att = synth_atts[0]
+    if att.size > 1024 * 1024:
+      await send_with_retry(message.channel, "That file is too large (max 1 MB).")
+      return
+    if synth_lock.locked():
+      await send_with_retry(message.channel, "-# Another synth job is still running, please wait for it to finish.")
+      return
+    async with synth_lock:
+      try:
+        raw = await att.read()
+        body, ctype = raw, "application/octet-stream"  # UST: server decodes utf-8 / Shift-JIS itself
+        # Decide whether this is really JSON. A UST file is a text format that always opens
+        # with a "[#VERSION]" section header, so a leading "[" is NOT a JSON signal — sniffing
+        # on "[" alone sent every UST to json.loads(), which died on the "[#VERSION]" header
+        # with "Expecting value: line 1 column 2 (char 1)".
+        fname_lower = att.filename.lower()
+        # NOTE: bytes.lstrip() takes a SET of byte values, not a prefix, so it can never be
+        # used to trim a multi-byte BOM — strip the BOM explicitly first, then whitespace.
+        _probe = raw[3:] if raw[:3] == b"\xef\xbb\xbf" else raw
+        _probe = _probe.lstrip(b" \r\n\t")
+        _is_ust = fname_lower.endswith(".ust") or _probe[:2] == b"[#"
+        # A JSON array's first element can only start with these (value/token openers), which
+        # also rules out UTAU's "#".
+        _json_array_starters = (b"{", b'"', b"[", b"-", b"t", b"f", b"n", b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9")
+        looks_json = not _is_ust and (
+          fname_lower.endswith(".json")
+          or _probe[:1] == b"{"
+          or (_probe[:1] == b"[" and _probe[1:2] in _json_array_starters)
+        )
+        if looks_json:
+          try:
+            parsed = json.loads(raw.decode("utf-8-sig"))
+          except UnicodeDecodeError:
+            raise ValueError("This doesn't look like valid JSON — it may be a Shift-JIS `.ust` file. Re-save it as UTF-8 `.ust`, or attach it as `.ust`.")
+          except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON at line {e.lineno}, column {e.colno} — expected a notes array like `[{{\"lyric\":\"よ\",\"noteNumber\":65,\"length\":240}}]`. If this is a UTAU project, attach it as a `.ust` file instead.")
+          if isinstance(parsed, list):
+            parsed = {"notes": parsed}
+          if not isinstance(parsed, dict):
+            raise ValueError("JSON must be an array of notes or an object with a `notes` array")
+          parsed.update({k: (float(v) if re.fullmatch(r"-?\d+(\.\d+)?", v) else v) for k, v in synth_opts.items()})
+          body, ctype, synth_opts = json.dumps(parsed).encode("utf-8"), "application/json", {}
+      except Exception as e:
+        await send_with_retry(message.channel, f"-# Couldn't read that file: {e}")
+        return
+      synth_status = None
+      try:
+        synth_status = await message.channel.send("-# Synthesizing... this can take several minutes.")
+      except Exception:
+        synth_status = None
+      audio, used_transpose, synth_err = await synth_song(body, ctype, synth_opts)
+      if synth_status:
+        try:
+          await synth_status.delete()
+        except Exception as e:
+          console.log(f"Failed to delete synth status message: {e}", "WARN")
+      if not audio:
+        await send_with_retry(message.channel, f"-# Synth error: {synth_err}")
+        return
+      out_name = f"synth_{int(time.time())}-{str(uuid4())}.wav"
+      if len(audio) > 9 * 1024 * 1024:  # Discord upload limit -> compress
+        try:
+          def _to_mp3(data):
+            buf = BytesIO()
+            AudioSegment.from_wav(BytesIO(data)).export(buf, format="mp3", bitrate="128k")
+            return buf.getvalue()
+          audio = await asyncio.to_thread(_to_mp3, audio)
+          out_name = out_name[:-4] + ".mp3"
+        except Exception as e:
+          console.log(f"Synth mp3 conversion failed: {e}", "ERROR")
+      try:
+        note = f" (transposed {int(used_transpose):+d} semitones)" if used_transpose not in (None, "", "0") else ""
+        synth_msg = await message.channel.send(
+          content=f"-# ♪ {att.filename}{note}",
+          file=discord.File(BytesIO(audio), filename=out_name)
+        )
+        console.log(f"Sent synth audio: {out_name}", "INFO")
+        for a in synth_msg.attachments:
+          console.log(f'<audio controls src="{a.url}" style="max-width:300px"></audio>')
+      except Exception as e:
+        console.log(f"Failed to send synth audio: {e}", "ERROR")
+        await send_with_retry(message.channel, f"-# Synth error: {e}")
+    return
+  
   if message.content.lower().startswith("!arona raided"):
     await handle_raided_command(message)
     return
@@ -8696,7 +8914,7 @@ async def on_voice_state_update(member, before, after):
 
             # Unintentional disconnect (4017, network blip, etc.) — auto-reconnect
             async def _reconnect():
-                MAX_ATTEMPTS = 3
+                _RECONNECT_MAX_ATTEMPTS = 3
                 RETRY_DELAY  = 5.0   # seconds between attempts
 
                 if not _voice_reconnect_user or not _voice_reconnect_text_ch:
@@ -8714,7 +8932,7 @@ async def on_voice_state_update(member, before, after):
                 except Exception:
                     pass
 
-                for attempt in range(1, MAX_ATTEMPTS + 1):
+                for attempt in range(1, _RECONNECT_MAX_ATTEMPTS + 1):
                     await asyncio.sleep(RETRY_DELAY)
                     console.log(f"[RECONNECT] Attempt {attempt}/{MAX_ATTEMPTS}...", "INFO")
 

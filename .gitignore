@@ -273,6 +273,7 @@ server-logs/
 
 
 .mcp_undo/
+.mcp_undo/history.json
 
 # Windows reserved device names (git can never index these)
 nul
@@ -297,3 +298,4 @@ lpt6
 lpt7
 lpt8
 lpt9
+.mcp_undo/history.json

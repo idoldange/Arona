@@ -1,0 +1,10 @@
+# Batch files MUST be checked out with CRLF endings.
+# cmd.exe parses .bat/.cmd files by seeking through a byte-offset table that assumes
+# every newline is 2 bytes (CRLF). With LF-only endings that table drifts and cmd
+# starts executing garbage — commands lose leading characters, e.g.
+#   setlocal -> tlocal,  cd /d -> /d,  echo -> cho
+# followed by "is not recognized as an internal or external command" errors.
+# Any editor or script that rewrites these files with LF-only breaks them, so pin the
+# endings here rather than relying on the local core.autocrlf setting.
+*.bat text eol=crlf
+*.cmd text eol=crlf
