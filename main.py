@@ -3984,6 +3984,10 @@ async def ask_gemini(model_name: str = None, text: str = "", attachments: list =
       attachments=attachments,
       temperature=temperature,
       max_retries=max_retries,
+      max_attempts=max_attempts,
+      # Share the same mutable budget box as the legacy path below, so one
+      # max_attempts value caps every request this call makes across both paths.
+      attempt_budget=_attempt_budget,
       sys_prompt=sys_prompt,
       timeout=timeout,
       custom_sys_prompt=custom_sys_prompt,
@@ -5653,14 +5657,21 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
         if func_msg:
           await _delete_func_msg(func_msg)
           func_msg = []
+        # ask_gemini has no attempt_budget parameter, so the shared box cannot be
+        # handed down directly. Pass the *remaining* count as max_attempts instead:
+        # ask_gemini seeds a fresh box with it, which keeps the caller's overall cap
+        # spanning the escalation. -1 stays -1 (unlimited).
+        if _attempt_budget["max"] < 0:
+          _remaining_attempts = -1
+        else:
+          _remaining_attempts = max(0, _attempt_budget["max"] - _attempt_budget["used"])
         return await ask_gemini(
           model_name=model_name,  # same model, only thinking level changes
           text="",
           attachments=attachments,
           temperature=temperature,
-      max_retries=max_retries,
-      max_attempts=max_attempts,
-      attempt_budget=_attempt_budget,
+          max_retries=max_retries,
+          max_attempts=_remaining_attempts,
           sys_prompt=sys_prompt,
           timeout=timeout,
           custom_sys_prompt=custom_sys_prompt,
