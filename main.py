@@ -46,6 +46,7 @@ from utils.memory import memory
 from utils.migration_keys import get_or_create_key, reset_key, resolve_id, link_account, unlink_account, is_linked, delete_key
 from utils import apikeys
 from utils.discord_ui_apikeys import build_addkey_embed, build_listkeys_embed
+from utils.discord_ui_affection import build_bond_embed, AffectionView
 server_start_time = time.time()
 import os
 from utils.schale_db import *
@@ -8315,6 +8316,13 @@ async def on_message(message):
       return
     embed = discord.Embed(title="Key removed", description=f"Removed key `{apikeys.mask_key(removed)}`.", color=discord.Color.green())
     await send_with_retry(message.channel, embed=embed)
+    return
+
+  # !arona bond (alias: !arona mood) — bond rank + Arona's current mood, with a button for the user's own saved memory (ephemeral)
+  if message.content.lower().strip() in ("!arona bond", "!arona mood"):
+    console.log(f"User {message.author.display_name} used !arona bond", "INFO")
+    view = AffectionView()
+    view.message = await message.channel.send(embed=build_bond_embed(message.author), view=view)
     return
 
   if message.content.lower() == "!arona quota":
