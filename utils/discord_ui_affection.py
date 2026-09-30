@@ -26,6 +26,28 @@ _MOOD_COLOR = {
 }
 
 
+_IMPRESSION_KEY = "__impression__"
+
+
+def _pretty_key(key: str) -> str:
+    """user_favorite_food -> User Favorite Food"""
+    words = key.replace("_", " ").split()
+    return " ".join(w[:1].upper() + w[1:] for w in words) or key
+
+
+def _build_text(data: dict, impression: str | None, markdown: bool) -> str:
+    parts = []
+    if impression:
+        parts.append(("### Personalization note\n" if markdown else "[Personalization note]\n") + impression)
+    if data:
+        entries = [
+            (f"**{_pretty_key(k)}**: {v}" if markdown else f"{_pretty_key(k)}: {v}")
+            for k, v in data.items()
+        ]
+        parts.append(("### Saved information\n" if markdown else "[Saved information]\n") + "\n\n".join(entries))
+    return "\n\n".join(parts)
+
+
 def _bar(frac: float, length: int = 10) -> str:
     frac = max(0.0, min(1.0, frac))
     filled = round(frac * length)
@@ -68,7 +90,7 @@ def build_bond_embed(user: discord.abc.User) -> discord.Embed:
         mood_lines.append("😴 Sleeping")
 
     embed = discord.Embed(
-        title=f"{user.display_name} × Arona",
+        title=f"{user.display_name}",
         color=_MOOD_COLOR.get(mood_lbl, discord.Color.blurple()),
     )
     embed.add_field(name="💙 Bond", value="\n".join(bond_lines), inline=False)
@@ -91,19 +113,22 @@ class AffectionView(discord.ui.View):
             await interaction.response.send_message("Arona hasn't saved anything about you yet.", ephemeral=True)
             return
 
-        text = "\n\n".join(f"**{k}**: {v}" for k, v in data.items())
+        data = dict(data)
+        total = len(data)
+        impression = data.pop(_IMPRESSION_KEY, None)
+        text = _build_text(data, impression, markdown=True)
         if len(text) <= 4000:
             embed = discord.Embed(
-                title=f"Saved memory ({len(data)})",
+                title=f"Saved memory ({total})",
                 description=text,
                 color=discord.Color.blurple(),
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            plain = "\n\n".join(f"{k}: {v}" for k, v in data.items())
+            plain = _build_text(data, impression, markdown=False)
             file = discord.File(io.BytesIO(plain.encode("utf-8")), filename="saved_memory.txt")
             await interaction.response.send_message(
-                f"Saved memory ({len(data)} entries) is too long to display, sent as a file.",
+                f"Saved memory ({total} entries) is too long to display, sent as a file.",
                 file=file,
                 ephemeral=True,
             )
