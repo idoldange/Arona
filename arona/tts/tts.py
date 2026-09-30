@@ -80,7 +80,9 @@ async def synth_song(body: bytes, content_type: str, params: dict | None = None,
                                 headers={"Content-Type": content_type}, timeout=timeout) as response:
             if response.status == 200:
                 audio = await response.read()
-                console.log(f"Synth generated (Size: {len(audio)})")
+                _keys = ("Notes", "Unique", "Hit", "Miss", "Attempts", "TtsSec", "DspSec", "TotalSec", "Device")
+                _st = "  ".join(f"{k}={response.headers.get('X-Synth-' + k)}" for k in _keys)
+                console.log(f"Synth generated (Size: {len(audio)}) {_st}")
                 return audio, response.headers.get("X-Synth-Transpose"), None
             err = (await response.text())[:500]
             console.log(f"Synth API ERROR:: {response.status} - {err}", "ERROR")

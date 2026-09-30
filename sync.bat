@@ -1,3 +1,4 @@
+exit
 @echo off
 setlocal enabledelayedexpansion
 :: Always run in this script's own folder (the repo root). The old hardcoded

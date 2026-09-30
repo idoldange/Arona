@@ -194,7 +194,7 @@ cython_debug/
 .cursorindexingignore
 
 #TTS api
-!arona/tts/ttsapi/
+arona/tts/ttsapi/
 
 # Pass
 pass.txt
@@ -204,8 +204,8 @@ pass.hash
 logs/
 
 # TTS api(GPT SoVITS, you can download and run it separately.)
-!arona/tts/ttsapi/
-!arona/voice_changer/
+arona/tts/ttsapi/
+arona/voice_changer/
 
 # Backup
 backup/
