@@ -66,7 +66,7 @@ async def text_to_speech(text: str, lang: str = "ja") -> str:
             return ""
 
 
-SYNTH_TIMEOUT_S = 1800  # /synth can be slow (first time each syllable is recorded); >= 10 min required
+SYNTH_TIMEOUT_S = 3600  # /synth can be slow (first time each syllable is recorded); >= 10 min required
 synth_lock = asyncio.Lock()
 
 
