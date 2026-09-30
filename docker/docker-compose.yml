@@ -90,7 +90,7 @@ services:
       # mount đè /home/sandboxuser -> dùng env var thay thế, sống sót qua tmpfs.
       - npm_config_proxy=http://127.0.0.1:8888
       - npm_config_https-proxy=http://127.0.0.1:8888
-      - npm_config_noproxy=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - npm_config_noproxy=localhost,127.0.0.1
     volumes:
       - ./workdir:/app/workdir
       - ./output:/app/output

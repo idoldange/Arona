@@ -10,15 +10,24 @@ fi
 echo "[Arona-Guard] Khởi động lá chắn Kivotos..."
 
 # 1. KILL SWITCH: Chặn đứng IP thật thoát ra ngoài
+iptables -F OUTPUT
 iptables -P OUTPUT DROP
 iptables -P FORWARD DROP
 
 # 2. MỞ CÁC ĐƯỜNG MÁU
 iptables -A OUTPUT -o lo -j ACCEPT # Loopback nội bộ
 iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT # Allow response packets
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT # DNS UDP
-iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT # DNS TCP
-iptables -A OUTPUT -d 1.1.1.1 -j ACCEPT # Ép DNS Google/Cloudflare
+
+# CHẶN MẠNG NỘI BỘ trước mọi rule ACCEPT bên dưới
+for NET in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do
+  iptables -A OUTPUT -d "$NET" -j REJECT --reject-with icmp-net-prohibited
+done
+
+# DNS chỉ tới resolver public
+for NS in 1.1.1.1 8.8.8.8; do
+  iptables -A OUTPUT -p udp -d "$NS" --dport 53 -j ACCEPT
+  iptables -A OUTPUT -p tcp -d "$NS" --dport 53 -j ACCEPT
+done
 iptables -A OUTPUT -p icmp --icmp-type echo-request -j ACCEPT # Cho phép ping (ICMP Echo Request) để kiểm tra kết nối mạng
 
 # 3. MỞ CỔNG CHO WARP TUNNEL
