@@ -14,20 +14,17 @@ services:
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv6.conf.default.disable_ipv6=1
+      # Cho phep user thuong (worker) ping bang ICMP datagram socket, khong can NET_RAW
+      - net.ipv4.ping_group_range=0 2147483647
     dns:
       - 1.1.1.1
       - 8.8.8.8
     volumes:
-      - ./warp-killswitch.sh:/usr/local/bin/warp-killswitch.sh:ro
-    command: >
-      sh -c "warp-cli --accept-tos registration new && 
-             warp-cli --accept-tos mode warp && 
-             warp-cli --accept-tos dns set-protocol https && 
-             warp-cli --accept-tos tunnel endpoint set engage.cloudflareclient.com:443 &&
-             warp-cli --accept-tos connect &&
-             chmod +x /usr/local/bin/warp-killswitch.sh &&
-             /usr/local/bin/warp-killswitch.sh &&
-             sleep infinity"
+      - ./arona-guard.sh:/usr/local/bin/arona-guard.sh:ro
+    # Image caomingjun/warp co entrypoint co dinh va BO QUA `command:`, nen truoc day
+    # killswitch khong he chay. Ep chay guard truoc, roi exec entrypoint goc cua image.
+    # Neu guard fail thi container thoat (restart: always se thu lai) -> khong chay ho.
+    entrypoint: ["/bin/bash", "-c", "tr -d '\\r' < /usr/local/bin/arona-guard.sh | sh && exec /entrypoint.sh"]
 
   # Container Proxy: Cho phép mọi Port
   proxy:

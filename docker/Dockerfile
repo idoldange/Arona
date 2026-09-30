@@ -161,6 +161,11 @@ RUN mkdir -p /home/sandboxuser/.config/matplotlib && \
 
 RUN chmod -R 755 $(python3 -c "import site; print(site.getsitepackages()[0])") 2>/dev/null || true
 
+# ping: bo file capability cap_net_raw. Worker chay cap_drop ALL + no-new-privileges
+# nen neu giu file cap thi exec ping bi "operation not permitted".
+# Thay vao do ping dung ICMP datagram socket (sysctl ping_group_range dat o service warp).
+RUN setcap -r /usr/bin/ping 2>/dev/null || true
+
 # Allow sandboxuser to pip install without root.
 # PIP_USER=1 → installs to ~/.local (which is tmpfs /home/sandboxuser at runtime → ephemeral, acceptable for sandbox).
 ENV PIP_USER=1
