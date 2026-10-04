@@ -7,7 +7,7 @@ Arona is an AI Discord bot built in Python, featuring intelligent conversation, 
 ## Key Features
 
 - AI Discord bot with text and voice interaction
-- TTS and voice changer support (including experimental integration with Applio / GPT-SoVITS / RVC)
+- TTS and voice changer support (including experimental integration with Applio / GPT-SoVITS (please use [this fork](https://huggingface.co/idoldange/arona-gptsovits)) / RVC)
 - Affection, mood, and bond system for the Arona character
 - Memory management per channel / guild / user
 - Integrations with Gemini, GitHub, YouTube, weather, and reverse image search
