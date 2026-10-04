@@ -193,9 +193,6 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-#TTS api
-arona/tts/ttsapi/
-
 # Pass
 pass.txt
 pass.hash

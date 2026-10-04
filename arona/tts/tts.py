@@ -9,6 +9,8 @@ from pydub import AudioSegment, silence
 import json
 import os
 import hashlib
+import re
+import unicodedata
 from config import *
 import time
 import base64
@@ -31,7 +33,156 @@ def _init_():
 _init_()
 
 gpu_lock = asyncio.Semaphore(4) # Actually TTS use CPU(in my case)
+# Tieng Viet -> chu Han (Quang Dong, text_lang="yue"): model chi hoc ja nhung GPT-SoVITS doc duoc yue,
+# tieng Cantonese gan tieng Viet (thanh dieu, am cuoi) nen 'viet lai' cach doc bang chu Han la nghe on nhat.
+#  - VI_LEXICON : cum tu ghi de (khoa = tieng Viet KHONG DAU, chu thuong). Uu tien cao nhat. Them/sua trong
+#                 bang vi_lexicon cua database/vi_yue.db (hoac o day).
+#  - vi_syllable: bang am tiet (base, thanh) -> chu Han, sinh boi temp/vi_yue_build.py, luu trong database/vi_yue.db.
+VI_LEXICON = {
+    "anh do mixi": "晏度咪西",
+    "do mixi": "度咪西",
+    "mixi": "咪西",
+}
+VI_LANG = "yue"
+_VI_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "database", "vi_yue.db")
+_VI_SYL = {}
+_VI_TONES = {"\u0300": 1, "\u0301": 2, "\u0309": 3, "\u0303": 4, "\u0323": 5}  # huyen sac hoi nga nang (ngang = 0)
+_LATIN_WORD_RE = re.compile(r"[A-Za-z\u0110\u0111\u00c0-\u1ef9]+")
+_VI_DIACRITIC_RE = re.compile(
+    r"\w*[ăâđêôơưĂÂĐÊÔƠƯàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ]\w*"
+)
+
+
+def _fold_vi(s: str) -> str:
+    """Bo dau + lowercase, GIU NGUYEN do dai (moi ky tu -> 1 ky tu) de index khop voi chuoi goc."""
+    out = []
+    for ch in s:
+        if ch in "đĐ":
+            out.append("d")
+            continue
+        base = "".join(c for c in unicodedata.normalize("NFD", ch) if not unicodedata.combining(c))
+        out.append((base[:1] or ch).lower())
+    return "".join(out)
+
+
+def _compile_vi_re():
+    global _VI_RE
+    _VI_RE = re.compile(
+        r"(?<![a-z0-9])(?:" + "|".join(r"\s+".join(map(re.escape, k.split())) for k in sorted(VI_LEXICON, key=len, reverse=True)) + r")(?![a-z0-9])"
+    )
+
+
+def load_vi_db():
+    """(Re)load database/vi_yue.db -> _VI_SYL va VI_LEXICON. Goi lai sau khi sua DB."""
+    try:
+        import sqlite3
+        con = sqlite3.connect(_VI_DB)
+        _VI_SYL.clear()
+        for base, tone, hanzi in con.execute("SELECT base, tone, hanzi FROM vi_syllable"):
+            _VI_SYL[(base, tone)] = hanzi
+        for key, hanzi in con.execute("SELECT key, hanzi FROM vi_lexicon"):
+            VI_LEXICON[key] = hanzi
+        con.close()
+        console.log(f"VI->yue DB loaded: {len(_VI_SYL)} syllables, {len(VI_LEXICON)} lexicon", "INFO")
+    except Exception as e:
+        console.log(f"VI->yue DB not loaded ({_VI_DB}): {e}", "WARN")
+    _compile_vi_re()
+
+
+load_vi_db()
+
+
+def _vi_syllable_hanzi(word: str):
+    """'tày' / 'Tay' / 'đo' -> chu Han, hoac None neu khong phai am tiet Viet trong bang."""
+    chars, tone = [], 0
+    for c in unicodedata.normalize("NFD", word.lower()):
+        if c in _VI_TONES:
+            tone = _VI_TONES[c]
+        else:
+            chars.append(c)
+    return _VI_SYL.get((unicodedata.normalize("NFC", "".join(chars)), tone))
+
+
+def _convert_vi_words(chunk: str, lang: str, vi_context: bool):
+    """chunk khong chua cum lexicon: tu Viet (co dau, hoac khong dau khi ca cau co tieng Viet) -> chu Han.
+    Tra ve [(text, lang)], cac tu Viet lien nhau gop thanh 1 doan yue."""
+    pieces, pos = [], 0   # ("vi", hanzi) | ("raw", text)
+    for m in _LATIN_WORD_RE.finditer(chunk):
+        w = m.group(0)
+        hz = None
+        if _VI_DIACRITIC_RE.fullmatch(w) or vi_context:
+            hz = _vi_syllable_hanzi(w)
+        if hz is None:
+            continue
+        if m.start() > pos:
+            pieces.append(("raw", chunk[pos:m.start()]))
+        pieces.append(("vi", hz))
+        pos = m.end()
+    if pos < len(chunk):
+        pieces.append(("raw", chunk[pos:]))
+    segs, buf, i = [], "", 0
+    def flush_buf():
+        nonlocal buf
+        if buf:
+            segs.append((buf, VI_LANG))
+            buf = ""
+    for i, (kind, val) in enumerate(pieces):
+        if kind == "vi":
+            buf += val
+        elif buf and not re.search(r"\w", val) and i + 1 < len(pieces) and pieces[i + 1][0] == "vi":
+            buf += re.sub(r"\s+", "", val)        # dau cau giua 2 tu Viet: giu lai, bo khoang trang
+        else:
+            flush_buf()
+            if re.search(r"\w", val):
+                segs.append((val.strip(), lang))
+    flush_buf()
+    return segs
+
+
+def split_vietnamese(text: str, lang: str):
+    """[(doan, text_lang)] - cum trong VI_LEXICON va am tiet Viet (bang vi_syllable) -> chu Han (yue),
+    phan con lai giu nguyen lang."""
+    folded = _fold_vi(text)
+    vi_context = bool(_VI_DIACRITIC_RE.search(text))
+    segs, pos = [], 0
+    for m in _VI_RE.finditer(folded):
+        segs += _convert_vi_words(text[pos:m.start()], lang, vi_context)
+        segs.append((VI_LEXICON[re.sub(r"\s+", " ", m.group(0))], VI_LANG))
+        pos = m.end()
+    segs += _convert_vi_words(text[pos:], lang, vi_context)
+    return segs or [(text, lang)]
+
+
 async def text_to_speech(text: str, lang: str = "ja") -> str:
+    segs = split_vietnamese(text, lang)
+    if len(segs) == 1 and segs[0][1] == lang and segs[0][0] == text.strip():
+        _vi_words = [m.group(0) for m in _VI_DIACRITIC_RE.finditer(text)]
+        if _vi_words:  # co chu cai tieng Viet nhung khong doi duoc (khong co trong bang) -> frontend ja khong doc duoc
+            console.log(f"TTS: tieng Viet khong co trong bang vi_syllable/vi_lexicon (se doc rat sai): {_vi_words}", "WARN")
+        return await _tts_single(text, lang)
+    if any(l == VI_LANG for _, l in segs):
+        console.log(f"TTS tieng Viet -> {segs}", "INFO")
+    parts = []
+    for seg_text, seg_lang in segs:
+        audio = await _tts_single(seg_text, seg_lang)
+        if not audio:
+            return ""
+        parts.append(AudioSegment.from_file(BytesIO(audio)))
+    if len(parts) == 1:
+        return _export_wav(parts[0])
+    merged = parts[0]
+    for p in parts[1:]:
+        merged += AudioSegment.silent(duration=60, frame_rate=merged.frame_rate) + p
+    return _export_wav(merged)
+
+
+def _export_wav(seg) -> bytes:
+    buf = BytesIO()
+    seg.export(buf, format="wav")
+    return buf.getvalue()
+
+
+async def _tts_single(text: str, lang: str = "ja") -> str:
     
     async with gpu_lock:
         preset = TTS_REF
@@ -80,7 +231,7 @@ async def synth_song(body: bytes, content_type: str, params: dict | None = None,
                                 headers={"Content-Type": content_type}, timeout=timeout) as response:
             if response.status == 200:
                 audio = await response.read()
-                _keys = ("Notes", "Unique", "Hit", "Miss", "Attempts", "TtsSec", "DspSec", "TotalSec", "Device")
+                _keys = ("Phrases", "Aligned", "Notes", "Unique", "Hit", "Miss", "Attempts", "TtsSec", "DspSec", "TotalSec", "Device")
                 _st = "  ".join(f"{k}={response.headers.get('X-Synth-' + k)}" for k in _keys)
                 console.log(f"Synth generated (Size: {len(audio)}) {_st}")
                 return audio, response.headers.get("X-Synth-Transpose"), None

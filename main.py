@@ -8049,7 +8049,7 @@ async def on_message(message):
       "- `!arona quota`: Check your remaining daily messages\n"
       "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
       "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
-      "- `!arona synth` (+ attach a `.ust` / `.json` / `.txt` file): Arona sings a UTAU project (can take several minutes)\n"
+      "- `!arona synth` (+ attach a `.ust` file): Arona sings a UTAU project (can take several minutes)\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"
@@ -8631,13 +8631,11 @@ async def on_message(message):
   if synth_match:
     console.log(f"User {message.author.display_name} used !arona synth", "INFO")
     synth_opts_raw = (synth_match.group(1) or "").strip()
-    synth_atts = [a for a in message.attachments if a.filename.lower().endswith((".ust", ".json", ".txt"))]
+    synth_atts = [a for a in message.attachments if a.filename.lower().endswith(".ust")]
     if not synth_atts:
       await send_with_retry(
         message.channel,
-        "Usage: `!arona synth [options]` with a `.ust`, `.json` or `.txt` file attached.\n"
-        "JSON = array of notes like `[{\"lyric\":\"よ\",\"noteNumber\":65,\"length\":240}, ...]` (length in ms, `R` = rest); "
-        "UST = a normal UTAU project (any encoding).\n"
+        "Usage: `!arona synth [options]` with a `.ust` file attached (a normal UTAU project, any encoding).\n"
         "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `gap_ms`, `overlap_ms`, `clarity`, `pitch_natural`.\n"
         "Japanese hiragana/katakana lyrics only. New syllables are recorded on first use, so the first song can take a few minutes."
       )
@@ -8653,47 +8651,26 @@ async def on_message(message):
     if att.size > 1024 * 1024:
       await send_with_retry(message.channel, "That file is too large (max 1 MB).")
       return
-    if synth_lock.locked():
-      await send_with_retry(message.channel, "-# Another synth job is still running, please wait for it to finish.")
+    # Doc file TRUOC khi xep hang (link attachment co the het han neu phai cho lau)
+    try:
+      raw = await att.read()
+      body, ctype = raw, "application/octet-stream"  # UST: server decodes utf-8 / Shift-JIS itself
+    except Exception as e:
+      await send_with_retry(message.channel, f"-# Couldn't read that file: {e}")
       return
-    async with synth_lock:
+    # Dang co job khac -> xep hang (asyncio.Lock cap theo thu tu FIFO) thay vi bao loi
+    queue_msg = None
+    if synth_lock.locked():
       try:
-        raw = await att.read()
-        body, ctype = raw, "application/octet-stream"  # UST: server decodes utf-8 / Shift-JIS itself
-        # Decide whether this is really JSON. A UST file is a text format that always opens
-        # with a "[#VERSION]" section header, so a leading "[" is NOT a JSON signal — sniffing
-        # on "[" alone sent every UST to json.loads(), which died on the "[#VERSION]" header
-        # with "Expecting value: line 1 column 2 (char 1)".
-        fname_lower = att.filename.lower()
-        # NOTE: bytes.lstrip() takes a SET of byte values, not a prefix, so it can never be
-        # used to trim a multi-byte BOM — strip the BOM explicitly first, then whitespace.
-        _probe = raw[3:] if raw[:3] == b"\xef\xbb\xbf" else raw
-        _probe = _probe.lstrip(b" \r\n\t")
-        _is_ust = fname_lower.endswith(".ust") or _probe[:2] == b"[#"
-        # A JSON array's first element can only start with these (value/token openers), which
-        # also rules out UTAU's "#".
-        _json_array_starters = (b"{", b'"', b"[", b"-", b"t", b"f", b"n", b"0", b"1", b"2", b"3", b"4", b"5", b"6", b"7", b"8", b"9")
-        looks_json = not _is_ust and (
-          fname_lower.endswith(".json")
-          or _probe[:1] == b"{"
-          or (_probe[:1] == b"[" and _probe[1:2] in _json_array_starters)
-        )
-        if looks_json:
-          try:
-            parsed = json.loads(raw.decode("utf-8-sig"))
-          except UnicodeDecodeError:
-            raise ValueError("This doesn't look like valid JSON — it may be a Shift-JIS `.ust` file. Re-save it as UTF-8 `.ust`, or attach it as `.ust`.")
-          except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON at line {e.lineno}, column {e.colno} — expected a notes array like `[{{\"lyric\":\"よ\",\"noteNumber\":65,\"length\":240}}]`. If this is a UTAU project, attach it as a `.ust` file instead.")
-          if isinstance(parsed, list):
-            parsed = {"notes": parsed}
-          if not isinstance(parsed, dict):
-            raise ValueError("JSON must be an array of notes or an object with a `notes` array")
-          parsed.update({k: (float(v) if re.fullmatch(r"-?\d+(\.\d+)?", v) else v) for k, v in synth_opts.items()})
-          body, ctype, synth_opts = json.dumps(parsed).encode("utf-8"), "application/json", {}
-      except Exception as e:
-        await send_with_retry(message.channel, f"-# Couldn't read that file: {e}")
-        return
+        queue_msg = await message.channel.send("-# Another synth job is running — queued, I'll start yours as soon as it's done.")
+      except Exception:
+        queue_msg = None
+    async with synth_lock:
+      if queue_msg:
+        try:
+          await queue_msg.delete()
+        except Exception as e:
+          console.log(f"Failed to delete synth queue message: {e}", "WARN")
       synth_status = None
       try:
         synth_status = await message.channel.send("-# Synthesizing... this can take several minutes.")

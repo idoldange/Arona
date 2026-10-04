@@ -1,5 +1,5 @@
 """
-synth_align.py - can chinh am tiet <-> note cho /synth (nhanh phrase cua NotAh trong api_v2.py).
+synth_align.py - can chinh am tiet <-> note cho /synth (nhanh phrase cua idoldange trong api_v2.py).
 
 Van de cu: TTS ca cau xong KEO GIAN DEU toan bo audio cho bang tong do dai note. Ranh gioi am tiet
 that trong audio khong bao gio trung ranh gioi note -> am tiet nam sai note, pitch (gan theo vi tri

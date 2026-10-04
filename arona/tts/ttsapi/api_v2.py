@@ -811,7 +811,8 @@ class Synth_Request(BaseModel):
     humanize: float = 0.0  # 0 = off; slow +-4 cent pitch jitter (perfectly steady F0 = robotic)
     syllable_align: bool = True  # canh am tiet <-> note: tach am tiet trong audio TTS roi dat nguyen am vao dung beat (synth_align); False = keo gian deu ca audio
     align_glide: float = 3.0  # do muot pitch (frame) khi canh am tiet
-    align_tol: int = 0  # so am tiet dem duoc trong audio duoc phep lech so nhom note bao nhieu (0 = phai khop tuyyet doi)
+    align_tol: int = None  # None = chi bo canh am tiet khi audio dem < 35% so nhom note; so nguyen = lech toi da cho phep (cu: 0)
+    take_attempts: int = 4  # so lan TTS lai toi da khi phrase ra tieng tho/im lang/do dai la
 
 def _synth_check_params(req: dict):
     if not req.get("notes"):
@@ -1214,8 +1215,15 @@ async def _notah_generate_audio(text, text_lang, req_note, req, sr):
 # Ky tu kana: _NOTAH_KANA la mora co the dem duoc, _NOTAH_KANA_SMALL (ya/yu/yo nho, ki/un) chi
 # la phu am cua mora truoc nen khong dem, _NOTAH_KANA_LONG (tranh ' dai) khong tao mora moi.
 _NOTAH_KANA = set("あいうえおかきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもやゆよらりるれろわゐゑをんアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヰヱヲンヴァィゥェォヴァ")
-_NOTAH_KANA_SMALL = set("ゃゅょャュョぁぃぅぇぉァィゥェォ")
+_NOTAH_KANA_SMALL = set("ゃゅょゎャュョヮぁぃぅぇぉァィゥェォ")
 _NOTAH_KANA_LONG = set("ー～〜")
+
+
+def _idoldange_is_kana(ch):
+    # Toan bo hiragana (U+3041-3096) + katakana (U+30A1-30FA). Set liet ke tay truoc day thieu
+    # ca dakuten (が, ガ, ザ, ダ, バ, パ...) nen dem sai so am tiet -> khong canh duoc am tiet.
+    o = ord(ch)
+    return 0x3041 <= o <= 0x3096 or 0x30A1 <= o <= 0x30FA
 
 
 def _notah_expected_units(text):
@@ -1228,7 +1236,7 @@ def _notah_expected_units(text):
     for ch in letters:
         if ch in _NOTAH_KANA_LONG or ch in _NOTAH_KANA_SMALL:
             continue
-        if ch in _NOTAH_KANA:
+        if _idoldange_is_kana(ch):
             has_kana, count = True, count + 1
     if has_kana:
         return count
@@ -1249,13 +1257,95 @@ def _notah_phrase_text(phrase_notes):
             parts.append(t)
     if not parts:
         return ""
-    has_kana = any(ch in _NOTAH_KANA or ch in _NOTAH_KANA_SMALL or ch in _NOTAH_KANA_LONG
+    has_kana = any(_idoldange_is_kana(ch) or ch in _NOTAH_KANA_LONG
                    for p in parts for ch in p)
     return "".join(parts) if has_kana else " ".join(parts)
 
 
+_IDOLDANGE_MELISMA = re.compile(r"[+\-‐-―ー～〜]+")
+
+
+def _idoldange_clean_lyric(lyric, text_lang="ja"):
+    """Lam sach lyric cua note truoc khi dua cho TTS. Ky tu la (息, ＼, ', R2, "a R"...) bi TTS doc
+    thanh tieng tho/ha hoi hoac mat tieng -> bien thanh nghi (R). Tieng Nhat: chi giu kana."""
+    ly = str(lyric or "").strip()
+    if not ly:
+        return "R"
+    if " " in ly:
+        ly = ly.split()[-1]          # alias VCV "a ka" -> "ka"
+    if re.fullmatch(r"[Rr]\d*", ly):
+        return "R"
+    if _IDOLDANGE_MELISMA.fullmatch(ly):
+        return "-"                   # note keo dai am tiet truoc
+    if text_lang == "ja":
+        kept = "".join(ch for ch in ly if _idoldange_is_kana(ch) or ch in _NOTAH_KANA_LONG or ch in "+-")
+        return kept if any(_idoldange_is_kana(ch) for ch in kept) else "R"
+    if re.fullmatch(r"[A-Za-z]{1,3}", ly):
+        return "R"
+    return ly
+
+
+def _idoldange_take_ok(audio, f0, sr, n_units):
+    """(score, ok) cua mot lan TTS. TTS cau ngan hay ra tieng tho / im lang / keo dai bat thuong:
+    thieu huu thanh (voiced thap) hoac do dai moi mora ngoai khoang hop ly."""
+    dur = len(audio) / float(sr)
+    if dur < 0.05:
+        return 0.0, False
+    voiced = float(np.mean(f0 > 1.0)) if len(f0) else 0.0
+    per = dur / float(max(1, n_units))
+    score = voiced - (0.5 if per > 0.40 else 0.0) - (0.3 if per < 0.04 else 0.0)
+    return score, (voiced >= 0.55 and 0.04 <= per <= 0.40)
+
+
+async def _idoldange_best_take(phrase_text, n_units, text_lang, req_note, req, sr, frame_period, attempts=4):
+    """TTS toi da `attempts` lan, lay lan dau dat chuan (hoac lan tot nhat)."""
+    best = None
+    for a in range(max(1, attempts)):
+        r = req
+        if a > 0:
+            s0 = req.get("seed", -1)
+            r = dict(req)
+            r["seed"] = (int(s0) + a) if (s0 is not None and int(s0) >= 0) else -1
+        try:
+            audio = await _notah_generate_audio(phrase_text, text_lang, req_note, r, sr)
+            x, f0, times = _notah_extract_f0(audio, sr, frame_period)
+        except Exception:
+            traceback.print_exc()
+            continue
+        score, ok = _idoldange_take_ok(audio, f0, sr, n_units)
+        if best is None or score > best[0]:
+            best = (score, audio, x, f0, times, a)
+        if ok:
+            break
+        print(f"  [take] '{phrase_text}' lan {a + 1}: voiced/do dai khong dat (score {score:.2f}) -> thu lai")
+    if best is None:
+        raise RuntimeError("TTS failed for phrase: " + phrase_text)
+    return best[1], best[2], best[3], best[4], best[5]
+
+
+def _idoldange_place(out, audio, start, lead, exp_len, sr, fade_ms=6.0, tail_ms=30.0):
+    """Dat audio cua phrase vao timeline TUYET DOI (mau). `start` = mau cua beat dau phrase, `lead` =
+    so mau audio nam truoc beat dau (phu am an vao phan nghi). Cat o dung do dai phrase (+duoi ngan)
+    nen sai so do dai tung phrase khong bao gio cong don; fade 2 dau chong click."""
+    seg = np.nan_to_num(np.asarray(audio, dtype=np.double))
+    seg = seg[:lead + exp_len + int(sr * tail_ms / 1000.0)].copy()
+    a0 = start - lead
+    if a0 < 0:
+        seg = seg[-a0:]
+        a0 = 0
+    n = len(seg)
+    if n == 0 or a0 >= len(out):
+        return
+    f = min(int(sr * fade_ms / 1000.0), n // 2)
+    if f > 0:
+        seg[:f] *= np.linspace(0.0, 1.0, f)
+        seg[-f:] *= np.linspace(1.0, 0.0, f)
+    end = min(len(out), a0 + n)
+    out[a0:end] += seg[:end - a0]
+
+
 async def _notah_process(phrase_notes, text_lang, req_note, req, sr, frame_period=10,
-                         f0_up_key=0, pre_frames=0):
+                         f0_up_key=0, pre_frames=0, stats=None):
     """Tra ve (audio, lead_samples, aligned). `lead_samples` la phan audio nam TRUOC beat dau
     phrase (synth_align an phu am cua am tiet dau vao phan nghi truoc) - caller phai noi no
     vao duoi phan nghi do, xem _notah_attach_phrase."""
@@ -1263,8 +1353,11 @@ async def _notah_process(phrase_notes, text_lang, req_note, req, sr, frame_perio
     if not phrase_text.strip(): return np.zeros(0), 0, False
     print(f"Đang hát câu: {phrase_text}")
 
-    audio = await _notah_generate_audio(phrase_text, text_lang, req_note, req, sr)
-    x, f0, times = _notah_extract_f0(audio, sr, frame_period)
+    audio, x, f0, times, retries = await _idoldange_best_take(
+        phrase_text, _notah_expected_units(phrase_text), text_lang, req_note, req, sr, frame_period,
+        attempts=int(req.get("take_attempts", 4)))
+    if stats is not None:
+        stats["retries"] = stats.get("retries", 0) + retries
 
     # Moi note -> (lyric, notenum, do dai ms). ms dung dung cong thuc ticks -> ms cua NotAh,
     # build_groups lam tròn TICH LUY nen tong do dai phrase khong bao gio troi.
@@ -1291,9 +1384,13 @@ async def _notah_process(phrase_notes, text_lang, req_note, req, sr, frame_perio
                 sp = pw.cheaptrick(x, f0, times, sr)
                 ap = pw.d4c(x, f0, times, sr)
                 est_audio = synth_align.count_units(x, sr, f0, fp=frame_period)
-                tol = int(req.get("align_tol", 0))
-                if abs(est_audio - len(groups)) > tol:
-                    print(f"  [align] audio co {est_audio} am tiet != {len(groups)} nhom note"
+                tol = req.get("align_tol")
+                # count_units dem thung lung nang luong -> hat lien (nguyen am noi nhau) luon dem THIEU
+                # (thuc te ~65% K), nen gate abs(diff)<=0 chi cho qua ~14% phrase. DP segment luon chia du
+                # K doan dua tren so mora trong text (da khop) -> chi bo khi audio dem qua it (rac/im lang).
+                bad = (est_audio < max(1, int(0.35 * len(groups)))) if tol is None                     else (abs(est_audio - len(groups)) > int(tol))
+                if bad:
+                    print(f"  [align] audio co {est_audio} am tiet qua lech {len(groups)} nhom note"
                           f" -> keo gian deu")
                 else:
                     units = synth_align.split_units(x, sr, f0, sp, ap, len(groups), fp=frame_period)
@@ -1362,50 +1459,61 @@ async def _notah_render(req):
     import time as _time
 
     try:
-        output, current = [], []
-
         check_res = _synth_check_params(req)
         if check_res is not None: return check_res
-        print(req)
+        print({k: v for k, v in req.items() if k not in ("notes", "ust")}, f"({len(req['notes'])} notes)")
 
         text_lang = req.get("text_lang").lower()
         req_note = dict(req)
         frame_period = 10
+
+        # Lam sach lyric (ky tu la / R2 / 息 ... -> nghi) truoc khi chia phrase.
+        notes = []
+        for n in req["notes"]:
+            n = dict(n)
+            n["Lyric"] = _idoldange_clean_lyric(n.get("Lyric", "R"), text_lang)
+            notes.append(n)
+
         f0_up_key = req.get("transpose")
-        if f0_up_key is None: 
-            _p = sorted(n["NoteNum"] for n in req["notes"] if n.get("Lyric", "R").upper() != "R" and "NoteNum" in n)
+        if f0_up_key is None:
+            _p = sorted(n["NoteNum"] for n in notes if n["Lyric"] != "R" and "NoteNum" in n)
             f0_up_key = int(12 * round((req.get("voice_center", 66.0) - _p[len(_p) // 2]) / 12.0)) if (_p and req.get("auto_octave", True)) else 0
-        
+
         media_type = req.get("media_type", "wav")
         sr = 32000 # Theo config gốc của gpt sovits thì nó là 32k
-        hop = int(round(sr * frame_period / 1000.0))   # samples / frame (frame_period ms)
         _st = {"notes": 0, "hit": 0, "miss": 0, "attempts": 0, "tts": 0.0, "dsp": 0.0,
-                   "t0": _time.time(), "uniq": set(), "phrases": 0, "aligned": 0}
+                   "t0": _time.time(), "uniq": set(), "phrases": 0, "aligned": 0, "retries": 0}
 
-        rest_frames = 0   # so frame nghi ngay truoc phrase hien tai (phu am am tiet dau an vao)
-        for note in req["notes"]:
-            lyric = str(note.get("Lyric", "R") or "").strip()
-            if lyric == "" or lyric.upper() == "R":
-                if current:
-                    audio, lead, aligned = await _notah_process(current, text_lang, req_note, req, sr, frame_period, f0_up_key, rest_frames)
-                    _notah_attach_phrase(output, audio, lead)
-                    _st["phrases"] += 1
-                    _st["aligned"] += int(aligned)
-                    current = []
+        def _ms(n):
+            return n.get("Length", 0) * (60000.0 / n.get("Tempo", 120.0) / 480.0)
 
-                nfr = max(0, int(round(note.get("Length", 0) * (60000.0 / note.get("Tempo", 120.0) / 480.0)
-                                     / frame_period)))   # ticks -> ms -> frame
-                output.append(np.zeros(nfr * hop, dtype=np.double))
-                rest_frames = nfr
-            else: current.append(note)
+        # TIMELINE TUYET DOI: moi phrase co thoi diem bat dau tinh tu tong do dai moi note truoc no.
+        # Cach cu noi tiep cac doan audio (rest lam tron frame + pw.synthesize hut ~1 frame/phrase)
+        # nen lech do dai cong don het bai.
+        phrases, cur, cur_start, cur_pre, acc_ms, rest_acc = [], [], 0.0, 0.0, 0.0, 0.0
+        for note in notes:
+            if note["Lyric"] == "R":
+                if cur:
+                    phrases.append((cur, cur_start, cur_pre))
+                    cur = []
+                rest_acc += _ms(note)
+            else:
+                if not cur:
+                    cur_start, cur_pre, rest_acc = acc_ms, rest_acc, 0.0
+                cur.append(note)
+            acc_ms += _ms(note)
+        if cur: phrases.append((cur, cur_start, cur_pre))
 
-        if current: 
-            audio, lead, aligned = await _notah_process(current, text_lang, req_note, req, sr, frame_period, f0_up_key, rest_frames)
-            _notah_attach_phrase(output, audio, lead)
+        total_n = int(round(acc_ms * sr / 1000.0))
+        output = np.zeros(total_n, dtype=np.double)
+        for pnotes, start_ms, pre_ms in phrases:
+            audio, lead, aligned = await _notah_process(
+                pnotes, text_lang, req_note, req, sr, frame_period, f0_up_key,
+                int(round(pre_ms / frame_period)), _st)
+            _idoldange_place(output, audio, int(round(start_ms * sr / 1000.0)), lead,
+                         int(round(sum(_ms(n) for n in pnotes) * sr / 1000.0)), sr)
             _st["phrases"] += 1
             _st["aligned"] += int(aligned)
-
-        output = np.concatenate(output)
         peak = float(np.abs(output).max()) if len(output) else 0.0
         if peak > 0: output /= peak * 0.98
         output = _notah_reverb(output, sr, decay=0.10, delay_ms=48.0)
@@ -1417,6 +1525,7 @@ async def _notah_render(req):
             "X-Synth-Transpose": str(f0_up_key),
             "X-Synth-Phrases": str(_st["phrases"]),
             "X-Synth-Aligned": str(_st["aligned"]),
+            "X-Synth-Retries": str(_st["retries"]),
             "X-Synth-Notes": str(_st["notes"]),
             "X-Synth-Unique": str(len(_st["uniq"])),
             "X-Synth-Hit": str(_st["hit"]),
