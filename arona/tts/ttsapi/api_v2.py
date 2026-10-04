@@ -791,7 +791,7 @@ class Synth_Request(BaseModel):
     base_notenum: int = 60  # MIDI note the ref_audio/prompt_text is assumed to sing at
     top_k: int = 5
     top_p: float = 1
-    temperature: float = 1
+    temperature: float = 0.7  # thap hon (cu: 1) -> phat am on dinh, it hoi tho/lung bung
     text_split_method: str = "cut0"
     batch_size: int = 1
     seed: int = -1
@@ -1108,8 +1108,6 @@ def _notah_parse_ust(data):
             if current_note and "Length" in current_note:
                 lyric = current_note.get("Lyric", "R").strip()
 
-                if " " in lyric: lyric = lyric.split()[-1]
-                if lyric.upper() != "R" and re.fullmatch(r"[A-Za-z\-\u2010-\u2015]{1,3}", lyric): lyric = "R"
                 if not lyric: lyric = "R"
 
                 current_note["Lyric"] = lyric
@@ -1135,8 +1133,6 @@ def _notah_parse_ust(data):
     if current_note and "Length" in current_note:
         lyric = current_note.get("Lyric", "R").strip()
 
-        if " " in lyric: lyric = lyric.split()[-1]
-        if lyric.upper() != "R" and re.fullmatch(r"[A-Za-z\-\u2010-\u2015]{1,3}", lyric): lyric = "R"
         if not lyric: lyric = "R"
 
         current_note["Lyric"] = lyric
@@ -1226,8 +1222,22 @@ def _idoldange_is_kana(ch):
     return 0x3041 <= o <= 0x3096 or 0x30A1 <= o <= 0x30FA
 
 
-def _notah_expected_units(text):
+def _idoldange_en_syllables(text):
+    """Uoc luong so am tiet tieng Anh (dem cum nguyen am, tru 'e' cam cuoi tu). Du dung de so voi so note."""
+    total = 0
+    for w in re.findall(r"[A-Za-z']+", text or ""):
+        w = w.lower()
+        n = len(re.findall(r"[aeiouy]+", w))
+        if n > 1 and w.endswith("e") and not w.endswith(("le", "ee", "ye")):
+            n -= 1
+        total += max(1, n)
+    return total
+
+
+def _notah_expected_units(text, lang=None):
     """So am tiet ma TTS se tao ra tu `text` - dung de kiem tra co khop so nhom am tiet khong."""
+    if lang == "en":
+        return _idoldange_en_syllables(text)
     letters = [ch for ch in (text or "") if ch.isalpha()]
     if not letters:
         return 0
@@ -1249,43 +1259,79 @@ def _notah_expected_units(text):
 def _notah_phrase_text(phrase_notes):
     """Noi text cua mot phrase de dua cho TTS. Kana noi lien nhau, chu Latin tach bang
     dau cach - noi truc tiep "xin"+"chao" thanh "xinchao" se bi TTS doc thanh MOT am tiet,
-    lech hoan toan so am tiet cua note."""
-    parts = []
+    lech hoan toan so am tiet cua note. Tieng Anh: lyric "hel-" / "-lo" (dau '-' o cuoi/dau)
+    la cac manh cua MOT tu -> noi lien khong cach."""
+    parts = []  # (text, join_prev)
+    glue = False
     for n in phrase_notes:
-        t = str(n.get("Lyric", "") or "").replace("+", "").replace("-", "").strip()
+        raw = str(n.get("Lyric", "") or "").strip()
+        t = raw.replace("+", "").replace("-", "").strip()
         if t:
-            parts.append(t)
+            parts.append((t, glue or (raw.startswith("-") and len(raw) > 1)))
+            glue = raw.endswith("-") and len(raw) > 1
     if not parts:
         return ""
     has_kana = any(_idoldange_is_kana(ch) or ch in _NOTAH_KANA_LONG
-                   for p in parts for ch in p)
-    return "".join(parts) if has_kana else " ".join(parts)
+                   for p, _ in parts for ch in p)
+    if has_kana:
+        return "".join(p for p, _ in parts)
+    out = parts[0][0]
+    for t, jp in parts[1:]:
+        out += t if jp else " " + t
+    return out
 
 
 _IDOLDANGE_MELISMA = re.compile(r"[+\-‐-―ー～〜]+")
 
 
+try:
+    import jaconv as _jaconv
+except Exception:  # khong co jaconv -> khong ho tro romaji (lyric romaji bi bo qua nhu cu)
+    _jaconv = None
+
+
+def _idoldange_romaji_to_kana(token):
+    """Romaji -> katakana bang jaconv. Tra None neu khong phai romaji hop le: phu am le cua VCV
+    ("t", "k", "ch"...) jaconv doi thanh 'っ' / 'っう' nen phai loai."""
+    if _jaconv is None or not re.fullmatch(r"[A-Za-z']+", token or ""):
+        return None
+    t = re.sub(r"[^a-z]", "", token.lower())
+    if not t:
+        return None
+    t = {"si": "shi"}.get(t, t)      # jaconv doi "si" -> 'っい'
+    kana = _jaconv.alphabet2kana(t)
+    if re.search(r"[a-z]", kana):    # con chu cai khong doi duoc
+        return None
+    if kana.startswith("っ") and not re.match(r"([a-z])\1", t):
+        return None                  # phu am le / "wi" "we" "ch"... hong
+    if kana.endswith("っ") or "っっ" in kana or all(c in "っー" for c in kana):
+        return None
+    return _jaconv.hira2kata(kana)
+
+
 def _idoldange_clean_lyric(lyric, text_lang="ja"):
     """Lam sach lyric cua note truoc khi dua cho TTS. Ky tu la (息, ＼, ', R2, "a R"...) bi TTS doc
-    thanh tieng tho/ha hoi hoac mat tieng -> bien thanh nghi (R). Tieng Nhat: chi giu kana."""
+    thanh tieng tho/ha hoi hoac mat tieng -> bien thanh nghi (R).
+    - ja: giu kana; lyric romaji ("ka", "shi", "kya"...) doi sang katakana; phu am le -> R.
+    - en (va ngon ngu khac): dua thang cho TTS."""
     ly = str(lyric or "").strip()
     if not ly:
         return "R"
-    if " " in ly:
-        ly = ly.split()[-1]          # alias VCV "a ka" -> "ka"
-    if re.fullmatch(r"[Rr]\d*", ly):
-        return "R"
+    toks = ly.split()
+    if re.fullmatch(r"[Rr]\d*", toks[-1]):
+        return "R"                   # "a R", "i R" (duoi VCV) / "R2"
     if _IDOLDANGE_MELISMA.fullmatch(ly):
         return "-"                   # note keo dai am tiet truoc
-    if text_lang == "ja":
+    if text_lang in ("ja", "all_ja"):
+        ly = toks[-1]                # alias VCV "a ka" -> "ka"
         kept = "".join(ch for ch in ly if _idoldange_is_kana(ch) or ch in _NOTAH_KANA_LONG or ch in "+-")
-        return kept if any(_idoldange_is_kana(ch) for ch in kept) else "R"
-    if re.fullmatch(r"[A-Za-z]{1,3}", ly):
-        return "R"
+        if any(_idoldange_is_kana(ch) for ch in kept):
+            return kept
+        return _idoldange_romaji_to_kana(ly) or "R"
     return ly
 
 
-def _idoldange_take_ok(audio, f0, sr, n_units):
+def _idoldange_take_ok(audio, f0, sr, n_units, min_voiced=0.55):
     """(score, ok) cua mot lan TTS. TTS cau ngan hay ra tieng tho / im lang / keo dai bat thuong:
     thieu huu thanh (voiced thap) hoac do dai moi mora ngoai khoang hop ly."""
     dur = len(audio) / float(sr)
@@ -1294,7 +1340,7 @@ def _idoldange_take_ok(audio, f0, sr, n_units):
     voiced = float(np.mean(f0 > 1.0)) if len(f0) else 0.0
     per = dur / float(max(1, n_units))
     score = voiced - (0.5 if per > 0.40 else 0.0) - (0.3 if per < 0.04 else 0.0)
-    return score, (voiced >= 0.55 and 0.04 <= per <= 0.40)
+    return score, (voiced >= min_voiced and 0.04 <= per <= 0.40)
 
 
 async def _idoldange_best_take(phrase_text, n_units, text_lang, req_note, req, sr, frame_period, attempts=4):
@@ -1312,7 +1358,7 @@ async def _idoldange_best_take(phrase_text, n_units, text_lang, req_note, req, s
         except Exception:
             traceback.print_exc()
             continue
-        score, ok = _idoldange_take_ok(audio, f0, sr, n_units)
+        score, ok = _idoldange_take_ok(audio, f0, sr, n_units, 0.40 if text_lang == "en" else 0.55)
         if best is None or score > best[0]:
             best = (score, audio, x, f0, times, a)
         if ok:
@@ -1354,7 +1400,7 @@ async def _notah_process(phrase_notes, text_lang, req_note, req, sr, frame_perio
     print(f"Đang hát câu: {phrase_text}")
 
     audio, x, f0, times, retries = await _idoldange_best_take(
-        phrase_text, _notah_expected_units(phrase_text), text_lang, req_note, req, sr, frame_period,
+        phrase_text, _notah_expected_units(phrase_text, text_lang), text_lang, req_note, req, sr, frame_period,
         attempts=int(req.get("take_attempts", 4)))
     if stats is not None:
         stats["retries"] = stats.get("retries", 0) + retries
@@ -1376,7 +1422,7 @@ async def _notah_process(phrase_notes, text_lang, req_note, req, sr, frame_perio
     # duoc trong audio cung bang do (DP luon chia du K doan nen khong tu bao loi so lieu am tiet
     # thieu). Lech thi giu L2 - L2 luon ra dung cao do va khong bao gio sai pitch.
     if req.get("syllable_align", True) and len(groups) >= 2:
-        est_txt = _notah_expected_units(phrase_text)
+        est_txt = _notah_expected_units(phrase_text, text_lang)
         if est_txt != len(groups):
             print(f"  [align] text co {est_txt} am tiet != {len(groups)} nhom note -> keo gian deu")
         else:

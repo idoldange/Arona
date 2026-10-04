@@ -217,7 +217,7 @@ async def _tts_single(text: str, lang: str = "ja") -> str:
             return ""
 
 
-SYNTH_TIMEOUT_S = 3600  # /synth runs TTS per phrase (~5 min for a 4 min song on a GTX 1650); only counts while the job runs, not while queued
+SYNTH_TIMEOUT_S = 3600  # /synth can be slow (first time each syllable is recorded); >= 10 min required
 synth_lock = asyncio.Lock()
 
 
@@ -231,7 +231,7 @@ async def synth_song(body: bytes, content_type: str, params: dict | None = None,
                                 headers={"Content-Type": content_type}, timeout=timeout) as response:
             if response.status == 200:
                 audio = await response.read()
-                _keys = ("Phrases", "Aligned", "Retries", "TotalSec", "Device")
+                _keys = ("Phrases", "Aligned", "Notes", "Unique", "Hit", "Miss", "Attempts", "TtsSec", "DspSec", "TotalSec", "Device")
                 _st = "  ".join(f"{k}={response.headers.get('X-Synth-' + k)}" for k in _keys)
                 console.log(f"Synth generated (Size: {len(audio)}) {_st}")
                 return audio, response.headers.get("X-Synth-Transpose"), None

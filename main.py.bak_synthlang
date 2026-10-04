@@ -8636,19 +8636,17 @@ async def on_message(message):
       await send_with_retry(
         message.channel,
         "Usage: `!arona synth [options]` with a `.ust` file attached (a normal UTAU project, any encoding).\n"
-        "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `lang=ja|en` (default `ja`), `temperature` (default 0.7), `top_k`, `voice_center`, `auto_octave`.\n"
-        "Japanese lyrics: hiragana/katakana or romaji (`ka`, `shi`, `kya`...). English: `lang=en`, one syllable per note; "
-        "split a word across notes with `-` (e.g. `hel-` + `lo`)."
+        "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `gap_ms`, `overlap_ms`, `clarity`, `pitch_natural`.\n"
+        "Japanese hiragana/katakana lyrics only. New syllables are recorded on first use, so the first song can take a few minutes."
       )
       return
-    synth_allowed = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang", "lang"}
+    synth_allowed = {"transpose", "auto_octave", "voice_center", "gap_ms", "overlap_ms", "clarity", "pitch_natural", "pitch_mode"}
     synth_opts = {}
     for tok in synth_opts_raw.split():
       if "=" in tok:
         k, v = tok.split("=", 1)
         if k.lower() in synth_allowed and v:
-          _key = "text_lang" if k.lower() == "lang" else k.lower()
-          synth_opts[_key] = {"jp": "ja", "japanese": "ja", "english": "en", "eng": "en"}.get(v.lower(), v) if _key == "text_lang" else v
+          synth_opts[k.lower()] = v
     att = synth_atts[0]
     if att.size > 1024 * 1024:
       await send_with_retry(message.channel, "That file is too large (max 1 MB).")
