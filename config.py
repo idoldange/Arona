@@ -222,6 +222,83 @@ API_URL = "http://127.0.0.1:9880"
 GPT_MODEL_PATH = "GPT_weights_v2Pro/arona-e20.ckpt"
 SOVITS_MODEL_PATH = "SoVITS_weights_v2Pro/arona_e25_s175.pth"
 
+# Emotion refs: tag `[emotion]` trong text TTS -> chon 1 ref ngau nhien trong list cua emotion do.
+# `[default]` = TTS_DEFAULT_EMOTION. Ref dat o ttsapi/output/slicer_opt/ (ref_path tinh tu thu muc ttsapi).
+TTS_DEFAULT_EMOTION = "neutral"
+TTS_REFS = {
+    "neutral": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0011208960_0011442560.wav",
+            "prompt_text": "さらに、今回の降臨大祭では、降臨大祭特設ホームページが開設されます。",
+            "prompt_lang": "ja",
+        },
+    ],
+    "happy": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0001079040_0001239040.wav",
+            "prompt_text": "先生こんにちは。アロナチャンネル特別版のお時間です。",
+            "prompt_lang": "ja",
+        },
+    ],
+    "excited": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0018751680_0018960320.wav",
+            "prompt_text": "あとはノアさん!ノアさんはどんな活躍を見せてくれるんでしょうか?",
+            "prompt_lang": "ja",
+        },
+    ],
+    "warm": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0012851200_0012992320.wav",
+            "prompt_text": "先生はご自分に合った形で手に入れてくださいね",
+            "prompt_lang": "ja",
+        },
+    ],
+    "worried": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0015770240_0016010560.wav",
+            "prompt_text": "SRT特殊学園は現在少し立ち位置が微妙な学校なので心配していたんですが",
+            "prompt_lang": "ja",
+        },
+    ],
+    "shy": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0021707840_0021864640.wav",
+            "prompt_text": "あ、コホン、他には…そうですね…",
+            "prompt_lang": "ja",
+        },
+    ],
+    "playful": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0022026240_0022163840.wav",
+            "prompt_text": "どうでしょう?上手くないですか?えへへ",
+            "prompt_lang": "ja",
+        },
+    ],
+    "longing": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0019301440_0019460480.wav",
+            "prompt_text": "運動会に参加したいなぁかけっこ",
+            "prompt_lang": "ja",
+        },
+    ],
+    "surprised": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0002554560_0002720000.wav",
+            "prompt_text": "芸術の秋ちょっと待ってくださいね",
+            "prompt_lang": "ja",
+        },
+    ],
+    "tsundere": [
+        {
+            "ref_path": "output/slicer_opt/2.wav_0002278400_0002402240.wav",
+            "prompt_text": "ではなくて、ほら、先生",
+            "prompt_lang": "ja",
+        },
+    ],
+}
+
+# Fallback neu TTS_REFS thieu emotion
 TTS_REF = {
     "ref_path": "output/slicer_opt/2.wav_0020727040_0020837440.wav",
     "prompt_text": "どうですか先生? 頑張れそうですか?",

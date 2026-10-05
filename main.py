@@ -124,7 +124,8 @@ from utils.discord_ui import AskUserModal, MalformedRetryView, AskUserView
 from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_board_message, restore_board_views
 from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to_grid_table
 from dotenv import load_dotenv
-from arona.tts.tts import text_to_speech, synth_song, synth_lock
+from arona.tts.tts import text_to_speech, synth_song, synth_lock, strip_emotion_tags
+from config import TTS_REFS as _TTS_REFS_LIST
 from pydub import AudioSegment
 from affection import affection
 from utils.raid_recovery import handle_raided_command
@@ -6653,7 +6654,7 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
     # If the entire message is just the TTS tag (nothing else), keep the inner
     # text as the visible message instead of sending an empty string.
     if re.fullmatch(r"\s*<tts>.*?</tts>\s*", new_content, re.DOTALL):
-      new_content = tts_text
+      new_content = strip_emotion_tags(tts_text)
     else:
       new_content = re.sub(r"<tts>.*?</tts>", "", new_content, flags=re.DOTALL).strip()
   
@@ -6794,7 +6795,7 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
         # remove <mood>
         tts_text = re.sub(r"<mood>.*?</mood>", "", tts_text, flags=re.DOTALL) 
         tts_msg = await channel.send(
-          content=f"-# {tts_text}",
+          content=f"-# {strip_emotion_tags(tts_text)}",
           file=discord.File(BytesIO(tts_data), filename=tts_filename)
         )
         console.log(f"Sent TTS audio: {tts_filename}", "INFO")
@@ -8587,6 +8588,8 @@ async def on_message(message):
         "Arona will speak the text out loud as an audio file.\n"
         "Pitch control: put `↑` before a syllable to raise the pitch, `↓` to lower it "
         "(e.g. `そ↑う`, `あ↓あ`).\n"
+        f"Emotion tags: put `[emotion]` before the part that should change voice, e.g. `[happy]こんにちは[shy]えっと…`. "
+        f"Available: {', '.join('`[' + k + ']`' for k in _TTS_REFS_LIST)}, `[default]` (= neutral).\n"
         "Note: only Japanese is supported — no language filtering is applied, so other "
         "languages are sent to the model as-is and will sound inaccurate."
       )
@@ -8616,7 +8619,7 @@ async def on_message(message):
     tts_filename = f"tts_{int(time.time())}-{str(uuid4())}.wav"
     try:
       tts_msg = await message.channel.send(
-        content=f"-# {tts_input.replace('\n', '\\n')}",
+        content=f"-# {strip_emotion_tags(tts_input).replace(chr(10), chr(92) + 'n')}",
         file=discord.File(BytesIO(tts_data), filename=tts_filename)
       )
       console.log(f"Sent TTS audio: {tts_filename}", "INFO")

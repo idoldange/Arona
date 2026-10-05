@@ -15,6 +15,45 @@ from config import *
 import time
 import base64
 from utils.http_session import session_manager
+import random
+
+# ---- Emotion tags: `[happy]text[shy]text` -> moi doan doc bang ref audio cua emotion (config.TTS_REFS) ----
+# `[default]` = TTS_DEFAULT_EMOTION (neutral). Text truoc tag dau tien cung la default. Tag la ten khong co trong TTS_REFS -> giu nguyen nhu text.
+_EMO_TAG_RE = re.compile(r"\[\s*([A-Za-z_]+)\s*\]")
+
+
+def _emotion_keys():
+    return {k.lower() for k in TTS_REFS} | {"default"}
+
+
+def split_emotion(text: str):
+    """'[happy]abc[shy]def' -> [('happy', 'abc'), ('shy', 'def')]. Doan rong bi bo."""
+    keys = _emotion_keys()
+    segs, pos, cur = [], 0, TTS_DEFAULT_EMOTION
+    for m in _EMO_TAG_RE.finditer(text):
+        tag = m.group(1).lower()
+        if tag not in keys:
+            continue
+        chunk = text[pos:m.start()].strip()
+        if chunk:
+            segs.append((cur, chunk))
+        cur = TTS_DEFAULT_EMOTION if tag == "default" else tag
+        pos = m.end()
+    chunk = text[pos:].strip()
+    if chunk:
+        segs.append((cur, chunk))
+    return segs
+
+
+def strip_emotion_tags(text: str) -> str:
+    """Bo cac tag [emotion] hop le (dung de hien thi caption/noi dung, khong de gui vao TTS)."""
+    keys = _emotion_keys()
+    return _EMO_TAG_RE.sub(lambda m: "" if m.group(1).lower() in keys else m.group(0), text).strip()
+
+
+def _pick_ref(emotion: str | None):
+    refs = TTS_REFS.get((emotion or TTS_DEFAULT_EMOTION).lower()) or TTS_REFS.get(TTS_DEFAULT_EMOTION)
+    return random.choice(refs) if refs else TTS_REF
 
 async def _get_shared_session():
     return await session_manager.get_session()
@@ -153,18 +192,18 @@ def split_vietnamese(text: str, lang: str):
     return segs or [(text, lang)]
 
 
-async def text_to_speech(text: str, lang: str = "ja") -> str:
+async def _text_to_speech_one(text: str, lang: str = "ja", emotion: str | None = None) -> str:
     segs = split_vietnamese(text, lang)
     if len(segs) == 1 and segs[0][1] == lang and segs[0][0] == text.strip():
         _vi_words = [m.group(0) for m in _VI_DIACRITIC_RE.finditer(text)]
         if _vi_words:  # co chu cai tieng Viet nhung khong doi duoc (khong co trong bang) -> frontend ja khong doc duoc
             console.log(f"TTS: tieng Viet khong co trong bang vi_syllable/vi_lexicon (se doc rat sai): {_vi_words}", "WARN")
-        return await _tts_single(text, lang)
+        return await _tts_single(text, lang, emotion)
     if any(l == VI_LANG for _, l in segs):
         console.log(f"TTS tieng Viet -> {segs}", "INFO")
     parts = []
     for seg_text, seg_lang in segs:
-        audio = await _tts_single(seg_text, seg_lang)
+        audio = await _tts_single(seg_text, seg_lang, emotion)
         if not audio:
             return ""
         parts.append(AudioSegment.from_file(BytesIO(audio)))
@@ -176,16 +215,36 @@ async def text_to_speech(text: str, lang: str = "ja") -> str:
     return _export_wav(merged)
 
 
+async def text_to_speech(text: str, lang: str = "ja") -> str:
+    """Ho tro tag [emotion] (ten trong config.TTS_REFS, [default] = neutral): moi doan doc bang ref cua emotion do."""
+    segs = split_emotion(text)
+    if not segs:
+        return ""
+    if len(segs) == 1:
+        return await _text_to_speech_one(segs[0][1], lang, segs[0][0])
+    console.log(f"TTS emotion segments: {[(e, t[:20]) for e, t in segs]}", "INFO")
+    parts = []
+    for emo, chunk in segs:
+        audio = await _text_to_speech_one(chunk, lang, emo)
+        if not audio:
+            return ""
+        parts.append(AudioSegment.from_file(BytesIO(audio)))
+    merged = parts[0]
+    for p in parts[1:]:
+        merged += AudioSegment.silent(duration=80, frame_rate=merged.frame_rate) + p
+    return _export_wav(merged)
+
+
 def _export_wav(seg) -> bytes:
     buf = BytesIO()
     seg.export(buf, format="wav")
     return buf.getvalue()
 
 
-async def _tts_single(text: str, lang: str = "ja") -> str:
+async def _tts_single(text: str, lang: str = "ja", emotion: str | None = None) -> str:
     
     async with gpu_lock:
-        preset = TTS_REF
+        preset = _pick_ref(emotion)
         
         params = {
             "text": text,
