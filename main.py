@@ -8591,8 +8591,8 @@ async def on_message(message):
         "languages are sent to the model as-is and will sound inaccurate."
       )
       return
-    if len(tts_input) > 500:
-      await send_with_retry(message.channel, "Text is too long — please keep it under 500 characters.")
+    if len(tts_input) > 1500:
+      await send_with_retry(message.channel, "Text is too long — please keep it under 1500 characters.")
       return
     # Keep pitch markers (↑ ↓) for the model; drop mood tags like the normal TTS path does
     tts_input = re.sub(r"<mood>.*?</mood>", "", tts_input, flags=re.DOTALL).strip()
@@ -8616,7 +8616,7 @@ async def on_message(message):
     tts_filename = f"tts_{int(time.time())}-{str(uuid4())}.wav"
     try:
       tts_msg = await message.channel.send(
-        content=f"-# {tts_input}",
+        content=f"-# {tts_input.replace('\n', '\\n')}",
         file=discord.File(BytesIO(tts_data), filename=tts_filename)
       )
       console.log(f"Sent TTS audio: {tts_filename}", "INFO")
