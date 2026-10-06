@@ -219,8 +219,8 @@ RVC_APPLIO_SR      = 48000
 # ── Text-to-Speech (TTS) ─────────────────────────────────────
 
 API_URL = "http://127.0.0.1:9880"
-GPT_MODEL_PATH = "GPT_weights_v2Pro/arona-e20.ckpt"
-SOVITS_MODEL_PATH = "SoVITS_weights_v2Pro/arona_e25_s175.pth"
+GPT_MODEL_PATH = "GPT_weights_v2ProPlus/arona-new-e50.ckpt"#"GPT_weights_v2Pro/arona-e20.ckpt"
+SOVITS_MODEL_PATH = "SoVITS_weights_v2ProPlus/arona-new_e25_s300.pth"#"SoVITS_weights_v2Pro/arona_e25_s175.pth" #just testing 
 
 # Emotion refs: tag `[emotion]` trong text TTS -> chon 1 ref ngau nhien trong list cua emotion do.
 # `[default]` = TTS_DEFAULT_EMOTION. Ref dat o ttsapi/output/slicer_opt/ (ref_path tinh tu thu muc ttsapi).

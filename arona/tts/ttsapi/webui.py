@@ -1977,6 +1977,6 @@ with gr.Blocks(title="GPT-SoVITS WebUI", analytics_enabled=False, js=js, css=css
         inbrowser=True,
         share=is_share,
         server_port=webui_port_main,
-        allowed_paths=["C:\\", "D:\\", "E:\\", "F:\\", "Z:\\"],
+        allowed_paths=["C:\\", "D:\\", "E:\\", "F:\\", "Z:\\", "//"],
         # quiet=True,
     )
