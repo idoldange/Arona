@@ -8,7 +8,7 @@
 
 Phan loai track (xem classify_track): tag trong ten track `[vocal]` `[inst]` `[drums]` `[gm=25]` `[sf=weeds]` (dau ngoac []/()/{} deu duoc),
 neu khong co tag thi doan theo tu khoa trong ten track / ten singer / phonemizer ("piano", "guitar", "strings", "drums", ...);
-track khong co singer -> instrument (piano); con lai -> vocal.
+track co lyric -> vocal; neu khong co lyric thi track khong co singer -> instrument (piano), con lai -> vocal.
 """
 import asyncio
 import io
@@ -170,7 +170,7 @@ def parse_ustx(body: bytes) -> UProject:
                     pos=base + int(n["position"]),
                     dur=dur,
                     tone=int(n["tone"]),
-                    lyric=str(n.get("lyric") if n.get("lyric") not in (None, "") else "a"),
+                    lyric=str(n.get("lyric") or ""),
                 ))
             except Exception:
                 continue
@@ -241,7 +241,7 @@ _DRUM_LYRIC = {
 
 def classify_track(t: UTrack) -> None:
     """Dien t.role / t.program / t.drums / t.sf_hint. Tu khoa chi khop voi TEN TRACK (khong khop ten singer: voicebank nhu
-    'Adrien Piano' van la vocal). Singer rong/None -> instrument (piano)."""
+    'Adrien Piano' van la vocal). Track co lyric luon la vocal; neu khong co lyric, singer rong/None -> instrument (piano)."""
     tags = _parse_tags(t.name)
     hay = _TAG_RE.sub(" ", t.name)
     t.sf_hint = str(tags["sf"]) if tags.get("sf") not in (None, True) else None
@@ -272,7 +272,9 @@ def classify_track(t: UTrack) -> None:
                     role = "inst"
                 break
 
-    if role is None:
+    if any(note.lyric.strip() for note in t.notes):
+        role = "vocal"
+    elif role is None:
         role = "inst" if t.singer.strip().lower() in _NO_SINGER else "vocal"
     t.role = role
     t.drums = drums
