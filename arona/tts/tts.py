@@ -275,30 +275,4 @@ async def _tts_single(text: str, lang: str = "ja", emotion: str | None = None) -
             console.log(f"TTS connection error: {e}", "ERROR")
             return ""
 
-
-SYNTH_TIMEOUT_S = 3600  # /synth runs TTS per phrase (~5 min for a 4 min song on a GTX 1650); only counts while the job runs, not while queued
-synth_lock = asyncio.Lock()
-
-
-async def synth_song(body: bytes, content_type: str, params: dict | None = None, timeout_s: int = SYNTH_TIMEOUT_S):
-    """POST a UST (raw) or JSON body to the GPT-SoVITS /synth endpoint.
-    Returns (wav_bytes, transpose_str, None) on success or (None, None, error_message)."""
-    timeout = aiohttp.ClientTimeout(total=timeout_s, sock_read=timeout_s)
-    try:
-        session = await _get_shared_session()
-        async with session.post(API_URL + "/synth", data=body, params=params or {},
-                                headers={"Content-Type": content_type}, timeout=timeout) as response:
-            if response.status == 200:
-                audio = await response.read()
-                _keys = ("Phrases", "Aligned", "Retries", "TotalSec", "Device")
-                _st = "  ".join(f"{k}={response.headers.get('X-Synth-' + k)}" for k in _keys)
-                console.log(f"Synth generated (Size: {len(audio)}) {_st}")
-                return audio, response.headers.get("X-Synth-Transpose"), None
-            err = (await response.text())[:500]
-            console.log(f"Synth API ERROR:: {response.status} - {err}", "ERROR")
-            return None, None, f"{response.status}: {err}"
-    except asyncio.TimeoutError:
-        return None, None, f"timed out after {timeout_s // 60} minutes"
-    except Exception as e:
-        console.log(f"Synth connection error: {e}", "ERROR")
-        return None, None, f"connection error: {e}"
+# NOTE: logic synth (synth_song, synth_lock, USTX/soundfont) da chuyen sang arona/tts/synth.py

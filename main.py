@@ -124,7 +124,9 @@ from utils.discord_ui import AskUserModal, MalformedRetryView, AskUserView
 from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_board_message, restore_board_views
 from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to_grid_table
 from dotenv import load_dotenv
-from arona.tts.tts import text_to_speech, synth_song, synth_lock, strip_emotion_tags
+from arona.tts.tts import text_to_speech, strip_emotion_tags
+from arona.tts.synth import synth_song, synth_lock, list_soundfonts
+import arona.tts.synth as _synth_mod
 from config import TTS_REFS as _TTS_REFS_LIST
 from pydub import AudioSegment
 from affection import affection
@@ -8050,7 +8052,7 @@ async def on_message(message):
       "- `!arona quota`: Check your remaining daily messages\n"
       "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
       "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
-      "- `!arona synth` (+ attach a `.ust` file): Arona sings a UTAU project (can take several minutes)\n"
+      "- `!arona synth` (+ attach a `.ust` or `.ustx` file): Arona sings a UTAU/OpenUtau project (instrument tracks use soundfonts; can take several minutes)\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"
@@ -8634,18 +8636,22 @@ async def on_message(message):
   if synth_match:
     console.log(f"User {message.author.display_name} used !arona synth", "INFO")
     synth_opts_raw = (synth_match.group(1) or "").strip()
-    synth_atts = [a for a in message.attachments if a.filename.lower().endswith(".ust")]
+    synth_atts = [a for a in message.attachments if a.filename.lower().endswith((".ust", ".ustx"))]
     if not synth_atts:
       await send_with_retry(
         message.channel,
-        "Usage: `!arona synth [options]` with a `.ust` file attached (a normal UTAU project, any encoding).\n"
+        "Usage: `!arona synth [options]` with a `.ust` (UTAU) or `.ustx` (OpenUtau) file attached (any encoding).\n"
         "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `lang=ja|en` (default `ja`), `temperature` (default 0.7), `top_k`, `voice_center`, `auto_octave`.\n"
         "Japanese lyrics: hiragana/katakana or romaji (`ka`, `shi`, `kya`...). English: `lang=en`, one syllable per note; "
         "split a word across notes with `-` (e.g. `hel-` + `lo`).\n"
-        "ARPAbet lyrics (CVVC English banks: `w aa` + `aa l`, `k ih` + `ih ng`...) are auto-detected and sung as English."
+        "ARPAbet lyrics (CVVC English banks: `w aa` + `aa l`, `k ih` + `ih ng`...) are auto-detected and sung as English.\n"
+        "**.ustx**: vocal tracks are sung by Arona, instrument tracks are rendered with a soundfont and everything is mixed. "
+        "Tag a track name to override: `[vocal]` `[inst]` `[drums]` `[gm=25]` `[sf=weeds]` (otherwise guessed from the name: piano, guitar, strings...; no singer = piano). "
+        "Extra options: `sf=<soundfont>` (default for instrument tracks), `inst_db=<dB>` (default -3), `inst=0` (skip instrument tracks), `vocals=0` (skip vocal tracks).\n"
+        f"Soundfonts: {', '.join(list_soundfonts()) or 'none installed'}"
       )
       return
-    synth_allowed = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang", "lang"}
+    synth_allowed = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang", "lang", "sf", "inst", "inst_db", "vocals"}
     synth_opts = {}
     for tok in synth_opts_raw.split():
       if "=" in tok:
@@ -8654,8 +8660,8 @@ async def on_message(message):
           _key = "text_lang" if k.lower() == "lang" else k.lower()
           synth_opts[_key] = {"jp": "ja", "japanese": "ja", "english": "en", "eng": "en"}.get(v.lower(), v) if _key == "text_lang" else v
     att = synth_atts[0]
-    if att.size > 1024 * 1024:
-      await send_with_retry(message.channel, "That file is too large (max 1 MB).")
+    if att.size > (6 if att.filename.lower().endswith(".ustx") else 1) * 1024 * 1024:
+      await send_with_retry(message.channel, "That file is too large (max 1 MB for .ust, 6 MB for .ustx).")
       return
     # Doc file TRUOC khi xep hang (link attachment co the het han neu phai cho lau)
     try:
@@ -8705,7 +8711,7 @@ async def on_message(message):
       try:
         note = f" (transposed {int(used_transpose):+d} semitones)" if used_transpose not in (None, "", "0") else ""
         synth_msg = await message.channel.send(
-          content=f"-# ♪ {att.filename}{note}",
+          content=f"-# ♪ {att.filename}{note}" + (f"\n-# {_synth_mod.last_synth_info}" if _synth_mod.last_synth_info else ""),
           file=discord.File(BytesIO(audio), filename=out_name)
         )
         console.log(f"Sent synth audio: {out_name}", "INFO")

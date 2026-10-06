@@ -302,3 +302,7 @@ lpt9
 *tcl
 arona/tts/ttsapi/runtime
 *.wav
+# Soundfonts: file lon, tai ve tu nguon ngoai (xem soundfonts/SOURCES.md); chi giu default.sf2 trong repo
+soundfonts/*
+!soundfonts/default.sf2
+!soundfonts/SOURCES.md
