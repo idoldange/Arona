@@ -1234,7 +1234,7 @@ def _idoldange_en_syllables(text):
     return total
 
 
-def _notah_expected_units(text, lang=None):
+def _notah_expected_units_base(text, lang=None):
     """So am tiet ma TTS se tao ra tu `text` - dung de kiem tra co khop so nhom am tiet khong."""
     if lang == "en":
         return _idoldange_en_syllables(text)
@@ -1256,7 +1256,7 @@ def _notah_expected_units(text, lang=None):
     return len(toks) if toks else len(letters)
 
 
-def _notah_phrase_text(phrase_notes):
+def _notah_phrase_text_base(phrase_notes):
     """Noi text cua mot phrase de dua cho TTS. Kana noi lien nhau, chu Latin tach bang
     dau cach - noi truc tiep "xin"+"chao" thanh "xinchao" se bi TTS doc thanh MOT am tiet,
     lech hoan toan so am tiet cua note. Tieng Anh: lyric "hel-" / "-lo" (dau '-' o cuoi/dau)
@@ -1329,6 +1329,113 @@ def _idoldange_clean_lyric(lyric, text_lang="ja"):
             return kept
         return _idoldange_romaji_to_kana(ly) or "R"
     return ly
+
+
+# ---------------------------------------------------------------------------------------------
+# ARPAbet lyric (voicebank English CVVC/VCCV, vd "Adrien Piano": "w aa" = CV, "aa l" = VC tail, "n t", "aa" keo dai,
+# "- ih"). Dua thang cho TTS tieng Anh thi no doc tung CHU CAI ("w aa aa l k ih ...") -> tieng tho / noi nhanh, dong
+# thoi so am tiet != so nhom note nen synth_align bi bo (keo gian deu). Cach xu ly:
+#  1. Ghep chuoi phoneme cua phrase, bo phoneme bi chong o cho noi CV|VC ("w aa" + "aa l" -> w aa l).
+#  2. Note co nguyen am (sau khi bo phan chong) = am tiet moi; tail VC / cum phu am / nguyen am keo dai -> lyric "-"
+#     (melisma) de build_groups gop vao am tiet truoc => so nhom note = so am tiet.
+#  3. Dang ky 1 "tu gia" vao tu dien g2p cua GPT-SoVITS voi dung chuoi phoneme do -> TTS doc DUNG phoneme, khong phu
+#     thuoc cmudict / chinh ta (lyric ARPAbet cua singer hay lech cmudict: "w aa l k ih ng", "m eh m r iy"...).
+_ARPA_VOWELS = frozenset('aa ae ah ao aw ay eh er ey ih iy ow oy uh uw'.split())
+_ARPA_CONS = frozenset('b ch d dh f g hh jh k l m n ng p r s sh t th v w y z zh'.split())
+_ARPA_PHONES = _ARPA_VOWELS | _ARPA_CONS
+_ARPA_UNITS = {}  # tu gia -> so am tiet
+
+
+def _arpa_is_rest(ly):
+    return (not ly) or bool(re.fullmatch(r'R\d*', ly))   # chi 'R' viet HOA la nghi; 'r' thuong la phoneme
+
+
+def _arpa_detect(notes):
+    valid = total = 0
+    has_vowel = False
+    for n in notes:
+        ly = str(n.get('Lyric', '') or '').strip()
+        if _arpa_is_rest(ly):
+            continue
+        total += 1
+        toks = [t.lower() for t in ly.split() if t != '-']
+        if not toks:
+            valid += 1   # note keo dai '-'
+        elif all(t in _ARPA_PHONES for t in toks):
+            valid += 1
+            has_vowel = has_vowel or any(t in _ARPA_VOWELS for t in toks)
+    return total >= 4 and has_vowel and valid >= 0.9 * total
+
+
+def _arpa_prepare(notes):
+    """Gan n['_ph'] (phoneme sau khi bo phan chong) va viet lai Lyric: note mo am tiet moi giu phoneme, con lai -> '-'."""
+    out, prev_last = [], None
+    for n0 in notes:
+        n = dict(n0)
+        ly = str(n.get('Lyric', '') or '').strip()
+        if _arpa_is_rest(ly):
+            n['Lyric'] = 'R'
+            prev_last = None
+            out.append(n)
+            continue
+        raw = ly.split()
+        lead_dash = bool(raw) and raw[0] == '-'
+        toks = [t for t in (x.lower() for x in raw) if t in _ARPA_PHONES]
+        if toks and toks[0] == prev_last and not lead_dash:
+            toks = toks[1:]
+        new_syl = any(t in _ARPA_VOWELS for t in toks)
+        if toks:
+            prev_last = toks[-1]
+        n['_ph'] = toks
+        n['Lyric'] = ' '.join(toks) if new_syl else '-'
+        out.append(n)
+    return out
+
+
+def _arpa_phrase_phones(phrase_notes):
+    """Chuoi phoneme (co stress) cua phrase theo kieu g2p_en/GPT-SoVITS, hoac None neu khong phai phrase ARPAbet."""
+    if not any('_ph' in n for n in phrase_notes):
+        return None
+    out = []
+    for n in phrase_notes:
+        long_syl = n.get('Length', 0) * (60000.0 / n.get('Tempo', 120.0) / 480.0) >= 300.0
+        for t in n.get('_ph', []):
+            if t in _ARPA_VOWELS:
+                if t in ('ah', 'er'):   # am yeu (the, a, her...) -> stress 0 neu note ngan
+                    out.append(t.upper() + ('1' if long_syl else '0'))
+                else:
+                    out.append(t.upper() + '1')
+            else:
+                out.append(t.upper())
+    return out or None
+
+
+def _arpa_register(phones):
+    import hashlib
+    from text import english as _en
+    h = hashlib.md5(' '.join(phones).encode()).hexdigest()[:10]
+    name = 'zzq' + ''.join(chr(97 + int(c, 16)) for c in h)   # chi gom chu cai thuong -> qua duoc text_normalize
+    _en._g2p.cmu[name] = [list(phones)]
+    _ARPA_UNITS[name] = sum(1 for p in phones if p[-1] in '012')
+    print('  [arpa]', name, ' '.join(phones))
+    return name
+
+
+def _arpa_units(text):
+    m = re.search(r'zzq[a-p]{10}', text or '')
+    return _ARPA_UNITS.get(m.group(0)) if m else None
+
+
+def _notah_expected_units(text, lang=None):
+    n = _arpa_units(text)
+    return n if n else _notah_expected_units_base(text, lang)
+
+
+def _notah_phrase_text(phrase_notes):
+    ph = _arpa_phrase_phones(phrase_notes)
+    if ph:
+        return _arpa_register(ph)
+    return _notah_phrase_text_base(phrase_notes)
 
 
 def _idoldange_take_ok(audio, f0, sr, n_units, min_voiced=0.55):
@@ -1510,6 +1617,10 @@ async def _notah_render(req):
         print({k: v for k, v in req.items() if k not in ("notes", "ust")}, f"({len(req['notes'])} notes)")
 
         text_lang = req.get("text_lang").lower()
+        arpa_mode = _arpa_detect(req["notes"])
+        if arpa_mode:
+            text_lang = "en"
+            print("[synth] lyric la ARPAbet (CVVC/VCCV English) -> doc bang phoneme truc tiep, text_lang=en")
         req_note = dict(req)
         frame_period = 10
 
@@ -1517,9 +1628,11 @@ async def _notah_render(req):
         notes = []
         for n in req["notes"]:
             n = dict(n)
-            n["Lyric"] = _idoldange_clean_lyric(n.get("Lyric", "R"), text_lang)
+            n["Lyric"] = n.get("Lyric", "R") if arpa_mode else _idoldange_clean_lyric(n.get("Lyric", "R"), text_lang)
             notes.append(n)
 
+        if arpa_mode:
+            notes = _arpa_prepare(notes)
         f0_up_key = req.get("transpose")
         if f0_up_key is None:
             _p = sorted(n["NoteNum"] for n in notes if n["Lyric"] != "R" and "NoteNum" in n)

@@ -8641,7 +8641,8 @@ async def on_message(message):
         "Usage: `!arona synth [options]` with a `.ust` file attached (a normal UTAU project, any encoding).\n"
         "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `lang=ja|en` (default `ja`), `temperature` (default 0.7), `top_k`, `voice_center`, `auto_octave`.\n"
         "Japanese lyrics: hiragana/katakana or romaji (`ka`, `shi`, `kya`...). English: `lang=en`, one syllable per note; "
-        "split a word across notes with `-` (e.g. `hel-` + `lo`)."
+        "split a word across notes with `-` (e.g. `hel-` + `lo`).\n"
+        "ARPAbet lyrics (CVVC English banks: `w aa` + `aa l`, `k ih` + `ih ng`...) are auto-detected and sung as English."
       )
       return
     synth_allowed = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang", "lang"}
