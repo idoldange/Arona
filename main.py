@@ -125,7 +125,7 @@ from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_
 from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to_grid_table
 from dotenv import load_dotenv
 from arona.tts.tts import text_to_speech, strip_emotion_tags
-from arona.tts.synth import synth_song, synth_lock, list_soundfonts
+from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts
 import arona.tts.synth as _synth_mod
 from config import TTS_REFS as _TTS_REFS_LIST
 from pydub import AudioSegment
@@ -8640,7 +8640,8 @@ async def on_message(message):
     if not synth_atts:
       await send_with_retry(
         message.channel,
-        "Usage: `!arona synth [options]` with a `.ust` (UTAU) or `.ustx` (OpenUtau) file attached (any encoding).\n"
+        "Usage: `!arona synth [options]` with one or more `.ust` (UTAU) or `.ustx` (OpenUtau) files attached (any encoding). "
+        "Multiple files are synthesized as separate tracks and mixed together.\n"
         "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `lang=ja|en` (default `ja`), `temperature` (default 0.7), `top_k`, `voice_center`, `auto_octave`.\n"
         "Japanese lyrics: hiragana/katakana or romaji (`ka`, `shi`, `kya`...). English: `lang=en`, one syllable per note; "
         "split a word across notes with `-` (e.g. `hel-` + `lo`).\n"
@@ -8659,17 +8660,18 @@ async def on_message(message):
         if k.lower() in synth_allowed and v:
           _key = "text_lang" if k.lower() == "lang" else k.lower()
           synth_opts[_key] = {"jp": "ja", "japanese": "ja", "english": "en", "eng": "en"}.get(v.lower(), v) if _key == "text_lang" else v
-    att = synth_atts[0]
-    if att.size > (6 if att.filename.lower().endswith(".ustx") else 1) * 1024 * 1024:
-      await send_with_retry(message.channel, "That file is too large (max 1 MB for .ust, 6 MB for .ustx).")
-      return
+    synth_inputs = []
     # Doc file TRUOC khi xep hang (link attachment co the het han neu phai cho lau)
-    try:
-      raw = await att.read()
-      body, ctype = raw, "application/octet-stream"  # UST: server decodes utf-8 / Shift-JIS itself
-    except Exception as e:
-      await send_with_retry(message.channel, f"-# Couldn't read that file: {e}")
-      return
+    for att in synth_atts:
+      if att.size > (6 if att.filename.lower().endswith(".ustx") else 1) * 1024 * 1024:
+        await send_with_retry(message.channel, f"File `{att.filename}` is too large (max 1 MB for .ust, 6 MB for .ustx).")
+        return
+      try:
+        raw = await att.read()
+      except Exception as e:
+        await send_with_retry(message.channel, f"-# Couldn't read `{att.filename}`: {e}")
+        return
+      synth_inputs.append((att.filename, raw, "application/octet-stream"))
     # Dang co job khac -> xep hang (asyncio.Lock cap theo thu tu FIFO) thay vi bao loi
     queue_msg = None
     if synth_lock.locked():
@@ -8688,7 +8690,11 @@ async def on_message(message):
         synth_status = await message.channel.send("-# Synthesizing... this can take several minutes.")
       except Exception:
         synth_status = None
-      audio, used_transpose, synth_err = await synth_song(body, ctype, synth_opts)
+      if len(synth_inputs) == 1:
+        _, body, ctype = synth_inputs[0]
+        audio, used_transpose, synth_err = await synth_song(body, ctype, synth_opts)
+      else:
+        audio, used_transpose, synth_err = await synth_multiple_tracks(synth_inputs, synth_opts)
       if synth_status:
         try:
           await synth_status.delete()
@@ -8710,8 +8716,11 @@ async def on_message(message):
           console.log(f"Synth mp3 conversion failed: {e}", "ERROR")
       try:
         note = f" (transposed {int(used_transpose):+d} semitones)" if used_transpose not in (None, "", "0") else ""
+        source_label = synth_atts[0].filename if len(synth_atts) == 1 else f"{len(synth_atts)} tracks: " + ", ".join(a.filename for a in synth_atts)
+        if len(source_label) > 500:
+          source_label = source_label[:497] + "..."
         synth_msg = await message.channel.send(
-          content=f"-# ♪ {att.filename}{note}" + (f"\n-# {_synth_mod.last_synth_info}" if _synth_mod.last_synth_info else ""),
+          content=f"-# ♪ {source_label}{note}" + (f"\n-# {_synth_mod.last_synth_info}" if _synth_mod.last_synth_info else ""),
           file=discord.File(BytesIO(audio), filename=out_name)
         )
         console.log(f"Sent synth audio: {out_name}", "INFO")

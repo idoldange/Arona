@@ -589,3 +589,43 @@ async def synth_song(body: bytes, content_type: str, params: dict | None = None,
         console.log(f"USTX synth done in {time.time() - t0:.1f}s: {last_synth_info}", "INFO")
         return res
     return await _post_synth(body, content_type, {k: v for k, v in params.items() if k in SERVER_PARAMS}, timeout_s)
+
+
+async def synth_multiple_tracks(
+    tracks: list[tuple[str, bytes, str]],
+    params: dict | None = None,
+    timeout_s: int = SYNTH_TIMEOUT_S,
+):
+    """Synthesize separate UST/USTX files and mix their audio, aligned at the start."""
+    global last_synth_info
+    layers = []
+    track_info = []
+    for name, body, content_type in tracks:
+        audio, transpose, err = await synth_song(body, content_type, params, timeout_s)
+        if not audio:
+            return None, None, f"track '{name}': {err}"
+        try:
+            segment = await asyncio.to_thread(AudioSegment.from_file, io.BytesIO(audio), "wav")
+        except Exception as e:
+            console.log(f"Failed to decode synth audio for '{name}': {e}", "ERROR")
+            return None, None, f"could not decode audio for '{name}': {e}"
+        layers.append(segment)
+        details = [name]
+        if transpose not in (None, "", "0"):
+            try:
+                details.append(f"transposed {int(transpose):+d} semitones")
+            except (TypeError, ValueError):
+                details.append(f"transpose {transpose}")
+        if last_synth_info:
+            details.append(last_synth_info)
+        track_info.append(": ".join(details))
+
+    if not layers:
+        return None, None, "no input tracks to synthesize"
+    try:
+        mixed = await asyncio.to_thread(_mix, layers)
+    except Exception as e:
+        console.log(f"Failed to mix uploaded synth tracks: {e}", "ERROR")
+        return None, None, f"could not mix tracks: {e}"
+    last_synth_info = "; ".join(track_info)[:600]
+    return mixed, None, None
