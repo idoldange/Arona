@@ -825,18 +825,24 @@ def _overlay_all(layers: list[AudioSegment]) -> AudioSegment:
     return base
 
 
-def _balance_inst(vocal_layers: list[AudioSegment], inst_layers: list[AudioSegment], pct: float, extra_db: float = 0.0) -> list[AudioSegment]:
-    """Chinh gain instrument de do to (RMS) = pct% do to vocal (100% = ngang, 50% = -6 dB), cong them extra_db.
-    Khong co vocal -> chi ap extra_db (cuoi cung _mix se normalize). pct = 0 -> bo instrument."""
+def _balance_inst(vocal_layers: list[AudioSegment], inst_layers: list[AudioSegment], pct: float, extra_db: float = 0.0):
+    """Chinh do to instrument = pct% do to vocal (RMS; 100% = ngang, 50% = -6 dB), cong them extra_db.
+    Neu instrument tang gain bi vuot dinh (clip) thi ha vocal xuong de giu dung ty le thay vi lam meo instrument.
+    -> (vocal_layers, inst_layers) da chinh gain. Khong co vocal -> chi ap extra_db (_mix se normalize). pct = 0 -> bo instrument."""
     if not inst_layers or pct <= 0:
-        return []
-    gain = extra_db
+        return vocal_layers, []
+    gain, vocal_gain = extra_db, 0.0
     if vocal_layers:
         v, i = _overlay_all(vocal_layers).dBFS, _overlay_all(inst_layers).dBFS
         if v > -90 and i > -90:
             gain += v + 20 * math.log10(pct / 100.0) - i
     gain = max(-40.0, min(40.0, gain))
-    return [s.apply_gain(gain) for s in inst_layers]
+    peak = _overlay_all(inst_layers).max_dBFS + gain
+    if peak > -1.0:
+        vocal_gain = -1.0 - peak
+        gain += vocal_gain
+    vocal_out = [s.apply_gain(vocal_gain) for s in vocal_layers] if vocal_gain else vocal_layers
+    return vocal_out, [s.apply_gain(gain) for s in inst_layers]
 
 
 def _mix(layers: list[AudioSegment]) -> bytes:
@@ -946,7 +952,8 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
     last_synth_info = ("; ".join(desc) + (f" | failed: {', '.join(warn)}" if warn else ""))[:600]
     if raw:
         return layers + inst_layers, first_transpose, None
-    layers = layers + _balance_inst(layers, inst_layers, inst_pct, inst_db)
+    layers, inst_layers = _balance_inst(layers, inst_layers, inst_pct, inst_db)
+    layers = layers + inst_layers
     if not layers:
         return None, None, "instrument volume = 0 va khong co vocal de ghep"
     wav = await asyncio.to_thread(_mix, layers)
@@ -1024,7 +1031,8 @@ async def synth_multiple_tracks(
     if not layers and not inst_layers:
         return None, None, "no input tracks to synthesize"
     inst_pct, inst_db = _inst_params(params)
-    layers = layers + _balance_inst(layers, inst_layers, inst_pct, inst_db)
+    layers, inst_layers = _balance_inst(layers, inst_layers, inst_pct, inst_db)
+    layers = layers + inst_layers
     if not layers:
         return None, None, "instrument volume is 0 and there is no vocal to mix"
     try:

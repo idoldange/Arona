@@ -8652,7 +8652,7 @@ async def on_message(message):
         "ARPAbet lyrics (CVVC English banks: `w aa` + `aa l`, `k ih` + `ih ng`...) are auto-detected and sung as English.\n"
         "**.ustx**: vocal tracks are sung by Arona, instrument tracks are rendered with a soundfont and everything is mixed. "
         "**.mid/.midi**: every track/channel is played with its own instrument (drums on channel 10) and mixed, no vocals. "
-        "Extra options: `inst_db=<dB>` (default -3), `inst=0` (skip instrument tracks), `vocals=0` (skip vocal tracks)."
+        "Extra options: `inst_vol=<percent>` (instrument loudness relative to the vocal, default 50; 100 = same as vocal, 0 = mute), `inst_db=<dB>` (fine tune on top, default 0), `inst=0` (skip instrument tracks), `vocals=0` (skip vocal tracks)."
       )
       await send_with_retry(
         message.channel,
@@ -8664,7 +8664,7 @@ async def on_message(message):
         f"**Soundfonts**:\n{describe_soundfonts()}"
       )
       return
-    synth_allowed = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang", "lang", "sf", "inst", "inst_db", "vocals"}
+    synth_allowed = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang", "lang", "sf", "inst", "inst_vol", "inst_db", "vocals"}
     synth_opts = {}
     for tok in synth_opts_raw.split():
       if "=" in tok:
