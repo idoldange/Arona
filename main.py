@@ -125,7 +125,7 @@ from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_
 from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to_grid_table
 from dotenv import load_dotenv
 from arona.tts.tts import text_to_speech, strip_emotion_tags
-from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts
+from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts, describe_soundfonts, preset_search_text
 import arona.tts.synth as _synth_mod
 from config import TTS_REFS as _TTS_REFS_LIST
 from pydub import AudioSegment
@@ -8052,7 +8052,7 @@ async def on_message(message):
       "- `!arona quota`: Check your remaining daily messages\n"
       "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
       "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
-      "- `!arona synth` (+ attach a `.ust` or `.ustx` file): Arona sings a UTAU/OpenUtau project (instrument tracks use soundfonts; can take several minutes)\n"
+      "- `!arona synth` (+ attach a `.ust`, `.ustx` or `.mid` file): Arona sings a UTAU/OpenUtau project and/or plays MIDI/instrument tracks with soundfonts (`!arona synth list <instrument>` to browse; can take several minutes)\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"
@@ -8636,20 +8636,32 @@ async def on_message(message):
   if synth_match:
     console.log(f"User {message.author.display_name} used !arona synth", "INFO")
     synth_opts_raw = (synth_match.group(1) or "").strip()
-    synth_atts = [a for a in message.attachments if a.filename.lower().endswith((".ust", ".ustx"))]
+    _synth_list = re.match(r"^(?:list|find|instruments?|presets?)\b\s*(.*)$", synth_opts_raw, re.IGNORECASE | re.DOTALL)
+    if _synth_list:
+      await send_with_retry(message.channel, await asyncio.to_thread(preset_search_text, _synth_list.group(1)))
+      return
+    synth_atts = [a for a in message.attachments if a.filename.lower().endswith((".ust", ".ustx", ".mid", ".midi"))]
     if not synth_atts:
       await send_with_retry(
         message.channel,
-        "Usage: `!arona synth [options]` with one or more `.ust` (UTAU) or `.ustx` (OpenUtau) files attached (any encoding). "
+        "Usage: `!arona synth [options]` with one or more `.ust` (UTAU), `.ustx` (OpenUtau) or `.mid`/`.midi` files attached (any encoding). "
         "Multiple files are synthesized as separate tracks and mixed together.\n"
         "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `lang=ja|en` (default `ja`), `temperature` (default 0.7), `top_k`, `voice_center`, `auto_octave`.\n"
         "Japanese lyrics: hiragana/katakana or romaji (`ka`, `shi`, `kya`...). English: `lang=en`, one syllable per note; "
         "split a word across notes with `-` (e.g. `hel-` + `lo`).\n"
         "ARPAbet lyrics (CVVC English banks: `w aa` + `aa l`, `k ih` + `ih ng`...) are auto-detected and sung as English.\n"
         "**.ustx**: vocal tracks are sung by Arona, instrument tracks are rendered with a soundfont and everything is mixed. "
-        "Tag a track name to override: `[vocal]` `[inst]` `[drums]` `[gm=25]` `[sf=weeds]` (otherwise guessed from the name: piano, guitar, strings...; no singer = piano). "
-        "Extra options: `sf=<soundfont>` (default for instrument tracks), `inst_db=<dB>` (default -3), `inst=0` (skip instrument tracks), `vocals=0` (skip vocal tracks).\n"
-        f"Soundfonts: {', '.join(list_soundfonts()) or 'none installed'}"
+        "**.mid/.midi**: every track/channel is played with its own instrument (drums on channel 10) and mixed, no vocals. "
+        "Extra options: `inst_db=<dB>` (default -3), `inst=0` (skip instrument tracks), `vocals=0` (skip vocal tracks)."
+      )
+      await send_with_retry(
+        message.channel,
+        "**Choosing instruments** (instrument tracks): name a real instrument, not a whole bank.\n"
+        "In a track name: `[preset=violin]`, `[preset=nylon_guitar]`, `[gm=25]` (GM number), `[drums]`, `[sf=weeds]` (only use that soundfont), `[sf=weeds:nylon_guitar]`. "
+        "Without tags the instrument is guessed from the track name (piano, guitar, strings...; no singer = piano); MIDI files use their own program numbers.\n"
+        "Global option: `sf=<soundfont>` or `sf=<soundfont>:<instrument>` for all instrument tracks.\n"
+        "Find names: `!arona synth list <word>` (e.g. `list violin`, `list weeds:guitar`; `list` alone = what each soundfont contains).\n"
+        f"**Soundfonts**:\n{describe_soundfonts()}"
       )
       return
     synth_allowed = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang", "lang", "sf", "inst", "inst_db", "vocals"}
@@ -8663,8 +8675,10 @@ async def on_message(message):
     synth_inputs = []
     # Doc file TRUOC khi xep hang (link attachment co the het han neu phai cho lau)
     for att in synth_atts:
-      if att.size > (6 if att.filename.lower().endswith(".ustx") else 1) * 1024 * 1024:
-        await send_with_retry(message.channel, f"File `{att.filename}` is too large (max 1 MB for .ust, 6 MB for .ustx).")
+      _fn = att.filename.lower()
+      _max_mb = 6 if _fn.endswith(".ustx") else 2 if _fn.endswith((".mid", ".midi")) else 1
+      if att.size > _max_mb * 1024 * 1024:
+        await send_with_retry(message.channel, f"File `{att.filename}` is too large (max 1 MB for .ust, 2 MB for .mid, 6 MB for .ustx).")
         return
       try:
         raw = await att.read()
