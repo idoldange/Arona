@@ -61,7 +61,8 @@ _SF_FAMILY = {
 
 # Tham so gui len server /synth (con lai la tham so rieng cua bot)
 SERVER_PARAMS = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang"}
-DEFAULT_INST_PCT = 50.0  # do to instrument so voi vocal (% RMS; 100 = ngang vocal, 50 = nua = -6 dB) khi ghep chung; doi bang option inst_vol=<%>
+DEFAULT_INST_PCT = 75.0  # do to instrument so voi vocal (% RMS; 100 = ngang vocal, 75 = -2.5 dB) khi ghep chung; doi bang option inst_vol=<%>
+DEFAULT_SYNTH_TEMPERATURE = 0.5   # temperature mac dinh gui len /synth (ca .ust lan vocal track cua .ustx) khi khong set temperature=
 FLUID_RATE = 44100
 MIX_RATE = 44100
 
@@ -936,6 +937,8 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
             lang = _lang_from_phonemizer(t.phonemizer)
             if lang:
                 p["text_lang"] = lang
+        if "temperature" not in p:
+            p["temperature"] = DEFAULT_SYNTH_TEMPERATURE
         ust = ustx_track_to_ust(t, proj)
         console.log(f"USTX: vocal track '{t.name}' ({len(t.notes)} notes, lang={p.get('text_lang', 'default')}) -> /synth", "INFO")
         audio, transpose, err = await _post_synth(ust, "application/octet-stream", p, timeout_s)
@@ -979,7 +982,9 @@ async def synth_song(body: bytes, content_type: str, params: dict | None = None,
             return None, None, f"{fmt.upper()} error: {e}"
         console.log(f"{fmt.upper()} synth done in {time.time() - t0:.1f}s: {last_synth_info}", "INFO")
         return res
-    return await _post_synth(body, content_type, {k: v for k, v in params.items() if k in SERVER_PARAMS}, timeout_s)
+    sp = {k: v for k, v in params.items() if k in SERVER_PARAMS}
+    sp.setdefault("temperature", DEFAULT_SYNTH_TEMPERATURE)
+    return await _post_synth(body, content_type, sp, timeout_s)
 
 
 async def synth_multiple_tracks(

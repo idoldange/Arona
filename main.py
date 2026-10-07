@@ -8646,13 +8646,13 @@ async def on_message(message):
         message.channel,
         "Usage: `!arona synth [options]` with one or more `.ust` (UTAU), `.ustx` (OpenUtau) or `.mid`/`.midi` files attached (any encoding). "
         "Multiple files are synthesized as separate tracks and mixed together.\n"
-        "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `lang=ja|en` (default `ja`), `temperature` (default 0.7), `top_k`, `voice_center`, `auto_octave`.\n"
+        "Options (`key=value`): `transpose=<semitones>` (default: auto octave), `lang=ja|en` (default `ja`), `temperature` (default 0.5), `top_k`, `voice_center`, `auto_octave`.\n"
         "Japanese lyrics: hiragana/katakana or romaji (`ka`, `shi`, `kya`...). English: `lang=en`, one syllable per note; "
         "split a word across notes with `-` (e.g. `hel-` + `lo`).\n"
         "ARPAbet lyrics (CVVC English banks: `w aa` + `aa l`, `k ih` + `ih ng`...) are auto-detected and sung as English.\n"
         "**.ustx**: vocal tracks are sung by Arona, instrument tracks are rendered with a soundfont and everything is mixed. "
         "**.mid/.midi**: every track/channel is played with its own instrument (drums on channel 10) and mixed, no vocals. "
-        "Extra options: `inst_vol=<percent>` (instrument loudness relative to the vocal, default 50; 100 = same as vocal, 0 = mute), `inst_db=<dB>` (fine tune on top, default 0), `inst=0` (skip instrument tracks), `vocals=0` (skip vocal tracks)."
+        "Extra options: `inst_vol=<percent>` (instrument loudness relative to the vocal, default 75; 100 = same as vocal, 0 = mute), `inst_db=<dB>` (fine tune on top, default 0), `inst=0` (skip instrument tracks), `vocals=0` (skip vocal tracks)."
       )
       await send_with_retry(
         message.channel,
@@ -8709,13 +8709,15 @@ async def on_message(message):
         audio, used_transpose, synth_err = await synth_song(body, ctype, synth_opts)
       else:
         audio, used_transpose, synth_err = await synth_multiple_tracks(synth_inputs, synth_opts)
-      if synth_status:
-        try:
-          await synth_status.delete()
-        except Exception as e:
-          console.log(f"Failed to delete synth status message: {e}", "WARN")
+      async def _drop_status():   # xoa tin "Synthesizing" SAU khi da gui xong tin nhan cuoi (upload file wav nang mat vai giay)
+        if synth_status:
+          try:
+            await synth_status.delete()
+          except Exception as e:
+            console.log(f"Failed to delete synth status message: {e}", "WARN")
       if not audio:
         await send_with_retry(message.channel, f"-# Synth error: {synth_err}")
+        await _drop_status()
         return
       out_name = f"synth_{int(time.time())}-{str(uuid4())}.wav"
       if len(audio) > 9 * 1024 * 1024:  # Discord upload limit -> compress
@@ -8743,6 +8745,7 @@ async def on_message(message):
       except Exception as e:
         console.log(f"Failed to send synth audio: {e}", "ERROR")
         await send_with_retry(message.channel, f"-# Synth error: {e}")
+      await _drop_status()
     return
   
   if message.content.lower().startswith("!arona raided"):
