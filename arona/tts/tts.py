@@ -18,26 +18,32 @@ from utils.http_session import session_manager
 import random
 
 # ---- Emotion tags: `[happy]text[shy]text` -> moi doan doc bang ref audio cua emotion (config.TTS_REFS) ----
-# `[default]` = TTS_DEFAULT_EMOTION (neutral). Text truoc tag dau tien cung la default. Tag la ten khong co trong TTS_REFS -> giu nguyen nhu text.
-_EMO_TAG_RE = re.compile(r"\[\s*([A-Za-z_]+)\s*\]")
+# `[default]` = TTS_DEFAULT_EMOTION (neutral). Text truoc tag dau tien cung la default.
+# MOI tag [ten] (chu cai dau, co the co so / _ / - / khoang trang; dau ngoac [] ［］ 【】) deu duoc nhan: ten co trong TTS_REFS -> doc bang ref do,
+# ten la (vd [angry], [Happy 2]) -> doc bang emotion mac dinh, va tag KHONG bi doc thanh tieng. Tag duoc giu nguyen khi hien thi len Discord.
+_EMO_TAG_RE = re.compile(r"[\[\uff3b\u3010]\s*([A-Za-z][A-Za-z0-9_\- ]{0,30}?)\s*[\]\uff3d\u3011]")
 
 
 def _emotion_keys():
     return {k.lower() for k in TTS_REFS} | {"default"}
 
 
+def _norm_tag(raw: str) -> str:
+    return re.sub(r"[\s\-]+", "_", raw.strip().lower())
+
+
 def split_emotion(text: str):
-    """'[happy]abc[shy]def' -> [('happy', 'abc'), ('shy', 'def')]. Doan rong bi bo."""
+    """'[happy]abc[shy]def' -> [('happy', 'abc'), ('shy', 'def')]. Doan rong bi bo. Tag la -> emotion mac dinh."""
     keys = _emotion_keys()
     segs, pos, cur = [], 0, TTS_DEFAULT_EMOTION
     for m in _EMO_TAG_RE.finditer(text):
-        tag = m.group(1).lower()
-        if tag not in keys:
-            continue
+        tag = _norm_tag(m.group(1))
         chunk = text[pos:m.start()].strip()
         if chunk:
             segs.append((cur, chunk))
-        cur = TTS_DEFAULT_EMOTION if tag == "default" else tag
+        if tag not in keys:
+            console.log(f"TTS: emotion tag la [{m.group(1)}] -> dung emotion mac dinh ({TTS_DEFAULT_EMOTION})", "INFO")
+        cur = TTS_DEFAULT_EMOTION if (tag == "default" or tag not in keys) else tag
         pos = m.end()
     chunk = text[pos:].strip()
     if chunk:
@@ -46,9 +52,8 @@ def split_emotion(text: str):
 
 
 def strip_emotion_tags(text: str) -> str:
-    """Bo cac tag [emotion] hop le (dung de hien thi caption/noi dung, khong de gui vao TTS)."""
-    keys = _emotion_keys()
-    return _EMO_TAG_RE.sub(lambda m: "" if m.group(1).lower() in keys else m.group(0), text).strip()
+    """Bo tat ca tag [emotion] khoi text. (Hien thi len Discord thi KHONG goi ham nay: tag duoc giu nguyen.)"""
+    return _EMO_TAG_RE.sub("", text).strip()
 
 
 def _pick_ref(emotion: str | None):
