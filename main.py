@@ -8061,7 +8061,8 @@ async def on_message(message):
       "- Referencing to a message will provide context to Arona for a more informed response.\n"
       "**For more information, please visit [the GitHub repository](https://github.com/idoldange/arona-ai)**"
     )
-    await send_with_retry(message.channel, help_message)
+    for help_part in split_message(help_message):
+      await send_with_retry(message.channel, help_part)
     return
 
   base64_match = re.match(r"^!arona\s+base64", message.content, re.IGNORECASE)
