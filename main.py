@@ -8591,7 +8591,7 @@ async def on_message(message):
         "Pitch control: put `↑` before a syllable to raise the pitch, `↓` to lower it "
         "(e.g. `そ↑う`, `あ↓あ`).\n"
         f"Emotion tags: put `[emotion]` before the part that should change voice, e.g. `[happy]こんにちは[shy]えっと…`. "
-        f"Available: {', '.join('`[' + k + ']`' for k in _TTS_REFS_LIST)}, `[default]` (= neutral). Any other `[word]` is accepted too (read with the neutral voice, never spoken aloud), and tags are kept in the message.\n"
+        f"Available: {', '.join('`[' + k + ']`' for k in _TTS_REFS_LIST)}, `[default]` (= neutral).\n"
         "Note: only Japanese is supported — no language filtering is applied, so other "
         "languages are sent to the model as-is and will sound inaccurate."
       )

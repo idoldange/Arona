@@ -21,7 +21,9 @@ import random
 # `[default]` = TTS_DEFAULT_EMOTION (neutral). Text truoc tag dau tien cung la default.
 # MOI tag [ten] (chu cai dau, co the co so / _ / - / khoang trang; dau ngoac [] ［］ 【】) deu duoc nhan: ten co trong TTS_REFS -> doc bang ref do,
 # ten la (vd [angry], [Happy 2]) -> doc bang emotion mac dinh, va tag KHONG bi doc thanh tieng. Tag duoc giu nguyen khi hien thi len Discord.
-_EMO_TAG_RE = re.compile(r"[\[\uff3b\u3010]\s*([A-Za-z][A-Za-z0-9_\- ]{0,30}?)\s*[\]\uff3d\u3011]")
+# Model doi khi nham sang ngoac nhon -> <happy> cung duoc nhan (tru <tts> <mood> <synth> la tag he thong; <@id> <:emoji:id> <url> khong khop vi co ky tu la).
+_EMO_TAG_RE = re.compile(r"[\[\uff3b\u3010<]\s*([A-Za-z][A-Za-z0-9_\- ]{0,30}?)\s*[\]\uff3d\u3011>]")
+_RESERVED_TAGS = {"tts", "mood", "synth"}
 
 
 def _emotion_keys():
@@ -38,6 +40,8 @@ def split_emotion(text: str):
     segs, pos, cur = [], 0, TTS_DEFAULT_EMOTION
     for m in _EMO_TAG_RE.finditer(text):
         tag = _norm_tag(m.group(1))
+        if tag in _RESERVED_TAGS:
+            continue
         chunk = text[pos:m.start()].strip()
         if chunk:
             segs.append((cur, chunk))
@@ -53,7 +57,7 @@ def split_emotion(text: str):
 
 def strip_emotion_tags(text: str) -> str:
     """Bo tat ca tag [emotion] khoi text. (Hien thi len Discord thi KHONG goi ham nay: tag duoc giu nguyen.)"""
-    return _EMO_TAG_RE.sub("", text).strip()
+    return _EMO_TAG_RE.sub(lambda m: m.group(0) if _norm_tag(m.group(1)) in _RESERVED_TAGS else "", text).strip()
 
 
 def _pick_ref(emotion: str | None):
