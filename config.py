@@ -47,12 +47,12 @@ DEFAULT_MODEL_503_RETRIES = 3                # 503s on DEFAULT_MODEL before swit
 
 # Send decoy requests to break 503 loops
 UNSTICK_ON_503        = True                 # enable/disable the whole mechanism
-UNSTICK_503_THRESHOLD = 3                    # consecutive 503s (across rounds/keys) before firing
+UNSTICK_503_THRESHOLD = 6                    # consecutive 503s (across rounds/keys) before firing
 
 # Give up and report an error after this many consecutive 503s (across rounds/keys),
 # regardless of the unstick decoy mechanism. 0 disables the abort.
 MAX_CONSECUTIVE_503_ROUNDS = 6
-UNSTICK_MODEL         = FALLBACK_MODEL       # decoy uses the main model to improve chances of recovery
+UNSTICK_MODEL       = FALLBACK_MODEL         # decoy uses the main model to improve chances of recovery
 
 MAX_FUNCTION_TURNS  = 100
 THINKING_MSG_DELAY  = 20                     # seconds before sending "thinking deeper" message
