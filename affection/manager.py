@@ -88,7 +88,7 @@ class AffectionManager:
         """
         for match in _MOOD_TAG_RE.finditer(text):
             try:
-                delta = float((match.group("v1") or match.group("v2") or match.group("v3") or match.group("v4")).replace("\u2014", "-").replace("\u2013", "-"))
+                delta = float((match.group("v1") or match.group("v2") or match.group("v3") or match.group("v4") or match.group("v5")).replace("\u2014", "-").replace("\u2013", "-"))
                 # Clamp per-response delta to a reasonable range
                 delta = max(-30.0, min(30.0, delta))
                 _mood.nudge(delta)

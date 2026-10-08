@@ -8050,6 +8050,7 @@ async def on_message(message):
       "- `!arona listkeys`: View your saved keys (ephemeral, only you can see)\n"
       "- `!arona removekey <index>`: Remove a key by its index from `!arona listkeys`\n"
       "- `!arona quota`: Check your remaining daily messages\n"
+      "- `!arona affection`: Show your bond rank and Arona's current mood\n"
       "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
       "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
       "- `!arona synth` (+ attach a `.ust`, `.ustx` or `.mid` file): Arona sings a UTAU/OpenUtau project and/or plays MIDI/instrument tracks with soundfonts (`!arona synth list <instrument>` to browse; can take several minutes)\n"
@@ -8321,8 +8322,8 @@ async def on_message(message):
     await send_with_retry(message.channel, embed=embed)
     return
 
-  # !arona bond (alias: !arona mood) — bond rank + Arona's current mood, with a button for the user's own saved memory (ephemeral)
-  if message.content.lower().strip() in ("!arona bond", "!arona mood"):
+  # !arona bond (aliases: !arona mood, !arona affection) — bond rank + Arona's current mood, with a button for the user's own saved memory (ephemeral)
+  if message.content.lower().strip() in ("!arona bond", "!arona mood", "!arona affection"):
     console.log(f"User {message.author.display_name} used !arona bond", "INFO")
     view = AffectionView()
     view.message = await message.channel.send(embed=build_bond_embed(message.author), view=view)
