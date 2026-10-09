@@ -127,6 +127,7 @@ from dotenv import load_dotenv
 from arona.tts.tts import text_to_speech, strip_emotion_tags
 from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts, describe_soundfonts, preset_search_text
 import arona.tts.synth as _synth_mod
+from arona.tts.synth_media import render_media, media_kind, MEDIA_MAX_MB
 from config import TTS_REFS as _TTS_REFS_LIST
 from pydub import AudioSegment
 from affection import affection
@@ -378,7 +379,7 @@ _overload_status_msgs: dict[int, "discord.Message"] = {}
 
 # Module-level compiled regexes (avoid re-compiling per message)
 _THOUGHT_LINK_RE = re.compile(r'^(?:-#\s*)?<:rag:\d+>\s*\[Thought for .+?\]\(.+?\)\s*$')
-_BOT_AUDIO_RE = re.compile(r'^(tts_|synth_).+\.(wav|mp3)$', re.IGNORECASE)
+_BOT_AUDIO_RE = re.compile(r'^(tts_|synth_).+\.(wav|mp3|mp4)$', re.IGNORECASE)
 
 
 # § API KEY MANAGEMENT  (_load_key_state, _save_key_state,
@@ -8054,7 +8055,7 @@ async def on_message(message):
       "- `!arona affection`: Show your bond rank and Arona's current mood\n"
       "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
       "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
-      "- `!arona synth` (+ attach a `.ust`, `.ustx` or `.mid` file): Arona sings a UTAU/OpenUtau project and/or plays MIDI/instrument tracks with soundfonts (`!arona synth list <instrument>` to browse; can take several minutes)\n"
+      "- `!arona synth` (+ attach a `.ust`, `.ustx` or `.mid` file): Arona sings a UTAU/OpenUtau project and/or plays MIDI/instrument tracks with soundfonts, optionally with images/videos/audio attached to make an mp4 (`!arona synth list <instrument>` to browse; can take several minutes)\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"
@@ -8644,7 +8645,8 @@ async def on_message(message):
       await send_with_retry(message.channel, await asyncio.to_thread(preset_search_text, _synth_list.group(1)))
       return
     synth_atts = [a for a in message.attachments if a.filename.lower().endswith((".ust", ".ustx", ".mid", ".midi"))]
-    if not synth_atts:
+    media_atts = [a for a in message.attachments if media_kind(a.filename)]
+    if not synth_atts and not any(media_kind(a.filename) in ("audio", "video") for a in media_atts):
       await send_with_retry(
         message.channel,
         "Usage: `!arona synth [options]` with one or more `.ust` (UTAU), `.ustx` (OpenUtau) or `.mid`/`.midi` files attached (any encoding). "
@@ -8655,6 +8657,9 @@ async def on_message(message):
         "ARPAbet lyrics (CVVC English banks: `w aa` + `aa l`, `k ih` + `ih ng`...) are auto-detected and sung as English.\n"
         "**.ustx**: vocal tracks are sung by Arona, instrument tracks are rendered with a soundfont and everything is mixed. "
         "**.mid/.midi**: every track/channel is played with its own instrument (drums on channel 10) and mixed, no vocals. "
+        "**Media**: also attach images / videos / audio. Images become a video (1 image = full length, several = fade between them, time split evenly over the audio); "
+        "videos stay videos and their sound goes on its own track (several videos play one after another); audio files are mixed in as extra tracks. Result is an `.mp4` when images/videos are attached. "
+        "Options: `vid_vol=<percent>` (video sound, default 100), `fade=<sec>` (default 1), `img=<sec>` (seconds per image when videos are present, default 3).\n"
         "Extra options: `inst_vol=<percent>` (instrument loudness relative to the vocal, default 75; 100 = same as vocal, 0 = mute), `inst_db=<dB>` (fine tune on top, default 0), `inst=0` (skip instrument tracks), `vocals=0` (skip vocal tracks)."
       )
       await send_with_retry(
@@ -8675,7 +8680,19 @@ async def on_message(message):
         if k.lower() in synth_allowed and v:
           _key = "text_lang" if k.lower() == "lang" else k.lower()
           synth_opts[_key] = {"jp": "ja", "japanese": "ja", "english": "en", "eng": "en"}.get(v.lower(), v) if _key == "text_lang" else v
+    media_opts = {}
+    for tok in synth_opts_raw.split():
+      if "=" in tok:
+        k, v = tok.split("=", 1)
+        if k.lower() in ("vid_vol", "fade", "img"):
+          try:
+            media_opts[k.lower()] = float(v)
+          except ValueError:
+            pass
+    # gioi han upload that cua server (boost -> 50/100MB), DM/khong co guild = 10MB; chua 5% cho overhead
+    media_opts["max_bytes"] = int(((getattr(message.guild, "filesize_limit", None) if message.guild else None) or 10 * 1024 * 1024) * 0.95)
     synth_inputs = []
+    media_inputs = []
     # Doc file TRUOC khi xep hang (link attachment co the het han neu phai cho lau)
     for att in synth_atts:
       _fn = att.filename.lower()
@@ -8689,6 +8706,16 @@ async def on_message(message):
         await send_with_retry(message.channel, f"-# Couldn't read `{att.filename}`: {e}")
         return
       synth_inputs.append((att.filename, raw, "application/octet-stream"))
+    for att in media_atts:
+      _mk = media_kind(att.filename)
+      if att.size > MEDIA_MAX_MB[_mk] * 1024 * 1024:
+        await send_with_retry(message.channel, f"File `{att.filename}` is too large (max {MEDIA_MAX_MB['image']} MB for images, {MEDIA_MAX_MB['video']} MB for videos, {MEDIA_MAX_MB['audio']} MB for audio).")
+        return
+      try:
+        media_inputs.append((att.filename, await att.read()))
+      except Exception as e:
+        await send_with_retry(message.channel, f"-# Couldn't read `{att.filename}`: {e}")
+        return
     # Dang co job khac -> xep hang (asyncio.Lock cap theo thu tu FIFO) thay vi bao loi
     queue_msg = None
     if synth_lock.locked():
@@ -8703,15 +8730,30 @@ async def on_message(message):
         except Exception as e:
           console.log(f"Failed to delete synth queue message: {e}", "WARN")
       synth_status = None
+      _prog = _synth_mod.Progress()
       try:
-        synth_status = await message.channel.send("-# Synthesizing... this can take several minutes.")
+        synth_status = await message.channel.send(_prog.render())
       except Exception:
         synth_status = None
+      if synth_status:
+        async def _edit_status(txt, _m=synth_status):
+          await _m.edit(content=txt)
+        _prog.edit_cb = _edit_status
+        _synth_mod.progress = _prog
+      audio, used_transpose, synth_err = None, None, None
       if len(synth_inputs) == 1:
         _, body, ctype = synth_inputs[0]
         audio, used_transpose, synth_err = await synth_song(body, ctype, synth_opts)
-      else:
+      elif synth_inputs:
         audio, used_transpose, synth_err = await synth_multiple_tracks(synth_inputs, synth_opts)
+      out_ext = "wav"
+      if media_inputs and (audio or not synth_inputs):
+        _prog.add_total(1)
+        await _prog.begin("Rendering with ffmpeg (video/audio mix)", force=True)
+        audio, out_ext, synth_err = await render_media(audio, media_inputs, media_opts)
+        await _prog.finish(f"Rendered .{out_ext}" if audio else "ffmpeg render failed", ok=bool(audio))
+      _synth_mod.progress = None
+      _prog.close()
       async def _drop_status():   # xoa tin "Synthesizing" SAU khi da gui xong tin nhan cuoi (upload file wav nang mat vai giay)
         if synth_status:
           try:
@@ -8722,8 +8764,8 @@ async def on_message(message):
         await send_with_retry(message.channel, f"-# Synth error: {synth_err}")
         await _drop_status()
         return
-      out_name = f"synth_{int(time.time())}-{str(uuid4())}.wav"
-      if len(audio) > 9 * 1024 * 1024:  # Discord upload limit -> compress
+      out_name = f"synth_{int(time.time())}-{str(uuid4())}.{out_ext}"
+      if out_ext == "wav" and len(audio) > 9 * 1024 * 1024:  # Discord upload limit -> compress
         try:
           def _to_mp3(data):
             buf = BytesIO()
@@ -8733,12 +8775,15 @@ async def on_message(message):
           out_name = out_name[:-4] + ".mp3"
         except Exception as e:
           console.log(f"Synth mp3 conversion failed: {e}", "ERROR")
+      await _prog.begin("Uploading result...", force=True)
       try:
         note = f" (transposed {int(used_transpose):+d} semitones)" if used_transpose not in (None, "", "0") else ""
-        source_label = synth_atts[0].filename if len(synth_atts) == 1 else f"{len(synth_atts)} tracks: " + ", ".join(a.filename for a in synth_atts)
+        _label_atts = synth_atts + media_atts
+        source_label = _label_atts[0].filename if len(_label_atts) == 1 else f"{len(_label_atts)} files: " + ", ".join(a.filename for a in _label_atts)
         if len(source_label) > 500:
           source_label = source_label[:497] + "..."
         synth_msg = await message.channel.send(
+          reference=message.to_reference(fail_if_not_exists=False), mention_author=False,
           content=f"-# ♪ {source_label}{note}" + (f"\n-# {_synth_mod.last_synth_info}" if _synth_mod.last_synth_info else ""),
           file=discord.File(BytesIO(audio), filename=out_name)
         )
