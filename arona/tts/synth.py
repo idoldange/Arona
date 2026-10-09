@@ -356,7 +356,7 @@ def _classify_tags_only(t: UTrack) -> None:
 
 def classify_track(t: UTrack) -> None:
     """Dien t.role / t.program / t.drums / t.sf_hint. Tu khoa chi khop voi TEN TRACK (khong khop ten singer: voicebank nhu
-    'Adrien Piano' van la vocal). Track co lyric luon la vocal; neu khong co lyric, singer rong/None -> instrument (piano)."""
+    'Adrien Piano' van la vocal). Lyric placeholder 'a' cua OpenUtau khong ep track nhac cu thanh vocal."""
     tags = _parse_tags(t.name)
     hay = _TAG_RE.sub(" ", t.name)
     _classify_tags_only(t)
@@ -391,7 +391,7 @@ def classify_track(t: UTrack) -> None:
                     role = "inst"
                 break
 
-    if any(note.lyric.strip() for note in t.notes):
+    if any(note.lyric.strip() and note.lyric.strip().lower() != "a" for note in t.notes):
         role = "vocal"
     elif role is None:
         role = "inst" if t.singer.strip().lower() in _NO_SINGER else "vocal"
