@@ -978,6 +978,7 @@ async def join_voice_channel(user: discord.Member, text_channel: discord.TextCha
         gemini_ws.current_guild = user.guild
         gemini_ws.voice_client = voice_client
         voice_bridge.attach(gemini_ws)
+        await gemini_ws.window.start(text_channel, user.voice.channel)
 
         # Build combined context message (single send = no duplicate)
         voice_channel = user.voice.channel
@@ -8765,6 +8766,13 @@ async def on_message(message):
       pass
     return
   # Handle text messages in voice channel
+  if gemini_ws.is_voice_session and message.channel == gemini_ws.current_channel and message.author.id != client.user.id and (message.content or message.attachments):
+    # Chat text goes in as realtime text; attachments are viewed through the virtual Discord window
+    _win_num = gemini_ws.window.add_message(message)
+    _att = f" [attached: {', '.join(a.filename for a in message.attachments)} - see window, message #{_win_num}]" if message.attachments else ""
+    console.log(f"User {message.author.display_name} sent text: {message.content}{_att}", "INFO")
+    await gemini_ws.send_realtime_text(f"{message.author.display_name} (message #{_win_num}): {message.content}{_att}")
+    return
   if gemini_ws.is_voice_session and message.channel == gemini_ws.current_channel and not message.author.id == client.user.id:
     if message.content:
       console.log(f"User {message.author.display_name} sent text: {message.content}", "INFO")

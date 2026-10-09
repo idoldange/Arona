@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import os
 import base64
 import json
@@ -8,6 +9,7 @@ from websockets.client import WebSocketClientProtocol
 from websockets.asyncio.client import connect
 from discord import VoiceClient, Message
 from arona.voice_engine.src.stream import QueuedStreamingPCMAudio
+from arona.voice_engine.src.window import VirtualDiscordWindow, WINDOW_TOOLS, WINDOW_TOOL_NAMES, WINDOW_PROMPT
 from attachment import discord_attachment_to_parts
 from console import console
 import config
@@ -25,6 +27,7 @@ class GeminiWebSocket:
         self.voice_client: Optional[VoiceClient] = None
         self.receive_task: Optional[asyncio.Task] = None
         self.audio_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        self.window: VirtualDiscordWindow = VirtualDiscordWindow(self)
         self.config: Dict[str, Any] = {
             'generation_config': {
                 "response_modalities": ["AUDIO"],
@@ -46,6 +49,10 @@ class GeminiWebSocket:
         
     async def close(self) -> None:
         """Closes the WebSocket connection."""
+        try:
+            await self.window.stop()
+        except Exception:
+            pass
         if self.ws:
             try:
                 await self.ws.close()
@@ -81,6 +88,7 @@ class GeminiWebSocket:
                     await self.setup()
                     self.receive_task = asyncio.create_task(self.listen())
                     await self.send_voice_reference()
+                    self.window.force_next()
                     
                     return
                 except Exception as e:
@@ -89,13 +97,21 @@ class GeminiWebSocket:
             console.log("All API keys failed to connect to Gemini WebSocket.", "ERROR")
             
     async def setup(self) -> None:
-        tools_config = self.tools if self.tools else [{'google_search': {}}]
+        tools_config = copy.deepcopy(self.tools) if self.tools else [{'google_search': {}}]
+        # Virtual Discord window tools (scroll / zoom / media control)
+        _decl = next((t for t in tools_config if isinstance(t, dict) and "function_declarations" in t), None)
+        if _decl is not None:
+            _decl["function_declarations"] = list(_decl["function_declarations"]) + WINDOW_TOOLS
+        else:
+            tools_config.append({"function_declarations": WINDOW_TOOLS})
         setup_msg = {
             "setup": {
                 "model": f"models/{config.LIVE_MODEL}", #"models/gemini-2.5-flash-native-audio-preview-12-2025", # use 3.1 now
                 "generation_config": self.config["generation_config"],
-                "system_instruction": {"parts": [{"text": self.persona}]},
+                "system_instruction": {"parts": [{"text": self.persona + WINDOW_PROMPT}]},
                 "tools": tools_config,
+                # audio+video sessions are capped at ~2 min without compression
+                "context_window_compression": {"sliding_window": {}},
                 # Allow model to call multiple functions in parallel
                 "tool_config": {
                     "function_calling_config": {"mode": "AUTO"}
@@ -336,6 +352,26 @@ class GeminiWebSocket:
         except Exception as e:
             console.log(f"[Gemini Live] Failed to send END REF AUDIO marker: {e}", "ERROR")
 
+    async def send_video_frame(self, jpeg: bytes) -> None:
+        """Streams one JPEG frame (the virtual Discord window) through realtime video input."""
+        if not self.ws or not self.ws.protocol.state.name == 'OPEN':
+            return
+        try:
+            await self.ws.send(json.dumps({
+                "realtime_input": {"video": {"mime_type": "image/jpeg", "data": base64.b64encode(jpeg).decode("utf-8")}}
+            }))
+        except Exception as e:
+            console.log(f"[Gemini] Send video frame error: {e}", "ERROR")
+
+    async def send_realtime_text(self, text: str) -> None:
+        """Sends text mid-session through realtime input (the model reacts to it like live input)."""
+        if not self.ws or not self.ws.protocol.state.name == 'OPEN':
+            return
+        try:
+            await self.ws.send(json.dumps({"realtime_input": {"text": text}}))
+        except Exception as e:
+            console.log(f"[Gemini] Send realtime text error: {e}", "ERROR")
+
     async def send_message(self, text: str) -> None:
         """Sends a text message (context or system info) without blocking for audio response immediately."""
         if not self.ws: return
@@ -382,7 +418,9 @@ class GeminiWebSocket:
             console.log(f"[Gemini Live] Tool Call: {name} {args}", "INFO")
             
             result = "Function execution failed or handler not set."
-            if self.function_handler:
+            if name in WINDOW_TOOL_NAMES:
+                result = await self.window.handle_tool(name, args)
+            elif self.function_handler:
                 # Mock message object
                 class MockMsg: pass
                 mock_msg = MockMsg()

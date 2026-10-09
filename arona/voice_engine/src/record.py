@@ -2,6 +2,7 @@ import asyncio
 import traceback
 import discord
 import audioop
+import time
 from typing import Optional, Dict, Set, Any
 from arona.voice_engine.src.gemini import GeminiWebSocket 
 from discord.ext import voice_recv, commands
@@ -49,6 +50,10 @@ class AudioProcessor(voice_recv.AudioSink):
             # 1. Convert Stereo to Mono
             mono_data = audioop.tomono(audio_data.pcm, 2, 1, 1)
             
+            # 1b. Track who is speaking (shown in the virtual Discord window)
+            if audioop.rms(mono_data, 2) > 250:
+                self.gemini_ws.window.last_audio[user_id] = time.monotonic()
+
             # 2. Resample 48000 -> 16000
             resampled_data, state = audioop.ratecv(mono_data, 2, 1, 48000, 16000, state)
             self.resample_states[user_id] = state
