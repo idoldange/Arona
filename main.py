@@ -8749,9 +8749,9 @@ async def on_message(message):
       out_ext = "wav"
       if media_inputs and (audio or not synth_inputs):
         _prog.add_total(1)
-        await _prog.begin("Rendering with ffmpeg (video/audio mix)", force=True)
+        await _prog.begin("Rendering with ffmpeg...", force=True, key="ffmpeg")
         audio, out_ext, synth_err = await render_media(audio, media_inputs, media_opts)
-        await _prog.finish(f"Rendered .{out_ext}" if audio else "ffmpeg render failed", ok=bool(audio))
+        await _prog.finish(f"Rendered .{out_ext}" if audio else "ffmpeg render failed", ok=bool(audio), key="ffmpeg")
       _synth_mod.progress = None
       _prog.close()
       async def _drop_status():   # xoa tin "Synthesizing" SAU khi da gui xong tin nhan cuoi (upload file wav nang mat vai giay)

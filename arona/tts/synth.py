@@ -80,7 +80,7 @@ class Progress:
         self.total = 0
         self.done = 0
         self.lines: list[str] = []
-        self.current = "Starting..."
+        self.active: dict[str, str] = {"start": "Starting..."}   # key -> mo ta viec dang chay (nhieu viec chay song song)
         self.t0 = time.time()
         self._last = 0.0
         self._pending = None
@@ -98,8 +98,8 @@ class Progress:
         if len(self.lines) > len(lines):
             out.append("-# …")
         out += [f"-# {l}" for l in lines]
-        if self.current:
-            out.append(f"-# ▸ {self.current}")
+        for m in self.active.values():
+            out.append(f"-# ▸ {m}")
         txt = "\n".join(out)
         return txt if len(txt) <= 1900 else txt[:1897] + "..."
 
@@ -138,15 +138,18 @@ class Progress:
         if self._pending and not self._pending.done():
             self._pending.cancel()
 
-    async def begin(self, msg: str, force: bool = False):
-        self.current = msg
+    async def begin(self, msg: str, force: bool = False, key: str = None):
+        self.active.pop("start", None)
+        self.active[key or msg] = msg
         await self.push(force)
 
-    async def finish(self, msg: str, count: bool = True, ok: bool = True):
+    async def finish(self, msg: str, count: bool = True, ok: bool = True, key: str = None):
         if count:
             self.done += 1
         self.lines.append(f"{'✔' if ok else '✖'} {msg} ({int(time.time() - self.t0)}s)")
-        self.current = ""
+        self.active.pop("start", None)
+        if key:
+            self.active.pop(key, None)   # chi go dung viec vua xong, cac viec khac van con dong ▸
         await self.push()
 
 
@@ -158,14 +161,14 @@ def _padd(n: int):
         progress.add_total(n)
 
 
-async def _pbegin(msg: str):
+async def _pbegin(msg: str, key: str = None):
     if progress:
-        await progress.begin(msg)
+        await progress.begin(msg, key=key)
 
 
-async def _pdone(msg: str, count: bool = True, ok: bool = True):
+async def _pdone(msg: str, count: bool = True, ok: bool = True, key: str = None):
     if progress:
-        await progress.finish(msg, count, ok)
+        await progress.finish(msg, count, ok, key=key)
 
 
 # ===================================================================================================================
@@ -1009,8 +1012,6 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
     n_vocal = 0 if only_vocals_off else len([t for t in active if t.role == "vocal"])
     _padd(len(inst_tracks) + n_vocal + (0 if raw else 1))
     await _pdone(f"Parsed project: {len(inst_tracks)} instrument + {n_vocal} vocal track(s)", count=False)
-    if inst_tracks:
-        await _pbegin(f"Rendering {len(inst_tracks)} instrument track(s) (FluidSynth)")
     sem = asyncio.Semaphore(2)
 
     async def _do_inst(t: UTrack):
@@ -1019,9 +1020,10 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
             await _pdone(f"Instrument '{t.name}': no soundfont found", ok=False)
             return t, None, None
         async with sem:
+            await _pbegin(f"Instrument '{t.name}' → Rendering...", key=f"inst:{t.name}")
             seg = await render_instrument(t, proj, pk.sf, pk.program if (pk.explicit or not t.drums) else None, pk.bank)
         _lbl = pk.name or ("drums" if t.drums else f"GM{pk.program}")
-        await _pdone(f"Instrument '{t.name}' → {_lbl}" if seg is not None else f"Instrument '{t.name}' failed to render", ok=seg is not None)
+        await _pdone(f"Instrument '{t.name}' → {_lbl}" if seg is not None else f"Instrument '{t.name}' failed to render", ok=seg is not None, key=f"inst:{t.name}")
         return t, seg, pk
 
     inst_results = await asyncio.gather(*[_do_inst(t) for t in inst_tracks]) if inst_tracks else []
@@ -1048,17 +1050,17 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
             p["temperature"] = DEFAULT_SYNTH_TEMPERATURE
         ust = ustx_track_to_ust(t, proj)
         console.log(f"USTX: vocal track '{t.name}' ({len(t.notes)} notes, lang={p.get('text_lang', 'default')}) -> /synth", "INFO")
-        await _pbegin(f"Vocal '{t.name}' ({len(t.notes)} notes) → Synthesizing...")
+        await _pbegin(f"Vocal '{t.name}' ({len(t.notes)} notes) → Synthesizing...", key=f"vocal:{t.name}")
         audio, transpose, err = await _post_synth(ust, "application/octet-stream", p, timeout_s)
         if not audio:
-            await _pdone(f"Vocal '{t.name}' failed: {err}", ok=False)
+            await _pdone(f"Vocal '{t.name}' failed: {err}", ok=False, key=f"vocal:{t.name}")
             return None, None, f"vocal track '{t.name}': {err}"
         if first_transpose is None:
             first_transpose = transpose
         seg = await asyncio.to_thread(AudioSegment.from_file, io.BytesIO(audio), "wav")
         layers.append(_prep(seg, t.volume_db, t.pan))
         desc.append(f"{t.name}→vocal")
-        await _pdone(f"Vocal '{t.name}' synthesized")
+        await _pdone(f"Vocal '{t.name}' synthesized", key=f"vocal:{t.name}")
 
     if not layers and not inst_layers:
         return None, None, "khong render duoc track nao" + (f" (instrument loi: {', '.join(warn)})" if warn else "")
@@ -1069,9 +1071,9 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
     layers = layers + inst_layers
     if not layers:
         return None, None, "instrument volume = 0 va khong co vocal de ghep"
-    await _pbegin(f"Mixing {len(layers)} layer(s)")
+    await _pbegin(f"Mixing {len(layers)} layer(s)...", key="mix")
     wav = await asyncio.to_thread(_mix, layers)
-    await _pdone("Mixed audio")
+    await _pdone("Mixed audio", key="mix")
     return wav, first_transpose, None
 
 
@@ -1097,9 +1099,9 @@ async def synth_song(body: bytes, content_type: str, params: dict | None = None,
     sp = {k: v for k, v in params.items() if k in SERVER_PARAMS}
     sp.setdefault("temperature", DEFAULT_SYNTH_TEMPERATURE)
     _padd(1)
-    await _pbegin("Vocal (UST) → Synthesizing...")
+    await _pbegin("Vocal (UST) → Synthesizing...", key="ust")
     res = await _post_synth(body, content_type, sp, timeout_s)
-    await _pdone("Vocal synthesized" if res[0] else f"Vocal failed: {res[2]}", ok=bool(res[0]))
+    await _pdone("Vocal synthesized" if res[0] else f"Vocal failed: {res[2]}", ok=bool(res[0]), key="ust")
     return res
 
 
@@ -1157,13 +1159,13 @@ async def synth_multiple_tracks(
     if not layers:
         return None, None, "instrument volume is 0 and there is no vocal to mix"
     _padd(1)
-    await _pbegin(f"Mixing {len(layers)} layer(s)")
+    await _pbegin(f"Mixing {len(layers)} layer(s)...", key="mix")
     try:
         mixed = await asyncio.to_thread(_mix, layers)
     except Exception as e:
         console.log(f"Failed to mix uploaded synth tracks: {e}", "ERROR")
-        await _pdone(f"Mix failed: {e}", ok=False)
+        await _pdone(f"Mix failed: {e}", ok=False, key="mix")
         return None, None, f"could not mix tracks: {e}"
-    await _pdone("Mixed tracks")
+    await _pdone("Mixed tracks", key="mix")
     last_synth_info = "; ".join(track_info)[:600]
     return mixed, None, None
