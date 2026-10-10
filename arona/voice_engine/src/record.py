@@ -8,6 +8,26 @@ from arona.voice_engine.src.gemini import GeminiWebSocket
 from discord.ext import voice_recv, commands
 from console import console
 
+# --- diagnostics: find out who stops the reader (the sink gets cleaned up a few seconds after joining) ---
+try:
+    from discord.ext.voice_recv.reader import AudioReader as _AudioReader
+    if not getattr(_AudioReader, "_arona_traced", False):
+        _orig_reader_stop = _AudioReader.stop
+
+        def _traced_reader_stop(self):
+            console.log(
+                f"[VoiceRecv] AudioReader.stop() active={self.active} error={self.error!r} called from:\n"
+                + "".join(traceback.format_stack(limit=12)),
+                "WARN",
+            )
+            return _orig_reader_stop(self)
+
+        _AudioReader.stop = _traced_reader_stop
+        _AudioReader._arona_traced = True
+except Exception as _e:  # pragma: no cover
+    console.log(f"[VoiceRecv] could not install reader trace: {_e}", "WARN")
+
+
 class AudioProcessor(voice_recv.AudioSink):
     def __init__(self, 
                  user: discord.User, 

@@ -225,7 +225,7 @@ def _num(v, default=None):
 
 
 class _Entry:
-    __slots__ = ("num", "id", "author_id", "name", "color", "time", "text", "reply", "items")
+    __slots__ = ("num", "id", "author_id", "name", "color", "time", "text", "reply", "items", "system")
 
 
 # ───────────────────────── media player ─────────────────────────
@@ -469,6 +469,7 @@ class VirtualDiscordWindow:
         if isinstance(res, discord.Message):
             e.reply = f"{res.author.display_name}: {(res.clean_content or '[attachment]')[:60]}"
         e.items = []
+        e.system = None
         for k, a in enumerate(m.attachments, 1):
             ct, ext = (a.content_type or "").lower(), os.path.splitext(a.filename)[1].lower()
             if ct.startswith("image/") or ext in IMG_EXT:
@@ -490,6 +491,54 @@ class VirtualDiscordWindow:
             del self.entries[:len(self.entries) - MAX_MSGS]
         self.dirty = True
         return e.num
+
+    def add_event(self, kind: str, member) -> None:
+        """Adds a system line ("X joined/left the voice channel") to the window. It has no #number."""
+        e = _Entry()
+        e.num, e.id, e.author_id = 0, 0, member.id
+        e.name = getattr(member, "display_name", None) or member.name
+        e.color, e.reply, e.items, e.system = None, None, [], kind
+        e.time = time.strftime("%H:%M")
+        e.text = "joined the voice channel" if kind == "join" else "left the voice channel"
+        self._users[member.id] = member
+        self._ensure_avatar(member)
+        self.entries.append(e)
+        if len(self.entries) > MAX_MSGS:
+            del self.entries[:len(self.entries) - MAX_MSGS]
+        self.dirty = True
+
+    def on_voice_state(self, member, before, after) -> None:
+        """Call from on_voice_state_update: logs members entering/leaving the voice channel the bot is in."""
+        vc = self.voice_channel
+        if not self._running or vc is None or member.id == self.bot_id:
+            return
+        was = before.channel is not None and before.channel.id == vc.id
+        now = after.channel is not None and after.channel.id == vc.id
+        if now and not was:
+            self.add_event("join", member)
+        elif was and not now:
+            self.add_event("leave", member)
+
+    def _draw_event(self, view, vd, e: _Entry, by: int) -> None:
+        col = GREEN if e.system == "join" else RED
+        y, x = by + 6, PAD + 6
+        pts = [(0, 7), (12, 7), (12, 2), (22, 11), (12, 20), (12, 15), (0, 15)]
+        if e.system != "join":
+            pts = [(22 - px, py) for px, py in pts]
+        vd.polygon([(x + px, y + py) for px, py in pts], fill=col)
+        ax = PAD + 38
+        av = self._avatar(e.author_id, 24)
+        if av:
+            view.paste(av, (ax, y), av)
+        else:
+            vd.ellipse((ax, y, ax + 24, y + 24), fill=BLURPLE)
+        nf = _tfont(e.name, 18, True)
+        nx = ax + 32
+        vd.text((nx, y), e.name, font=nf, fill=TEXT)
+        tf = _font(18)
+        tx2 = nx + nf.getlength(e.name) + 6
+        vd.text((tx2, y), e.text, font=tf, fill=MUTED)
+        vd.text((tx2 + tf.getlength(e.text) + 12, y + 3), e.time, font=_font(15), fill=MUTED)
 
     async def _load_image(self, item: Dict[str, Any]) -> None:
         try:
@@ -708,6 +757,8 @@ class VirtualDiscordWindow:
         d.text((x0 + 20, y1 - 34), cap, font=_font(16), fill=TEXT)
 
     def _block_height(self, e: _Entry, lines: List[str]) -> int:
+        if e.system:
+            return 34
         h = (22 if e.reply else 0) + 26 + len(lines) * 24
         for it in e.items:
             if it["kind"] == "image":
@@ -723,6 +774,10 @@ class VirtualDiscordWindow:
         blocks, y = [], 8
         for e in entries:
             f = _tfont(e.text, 19)
+            if e.system:
+                blocks.append((e, y, 34, [], f))
+                y += 34
+                continue
             lines = _wrap(f, e.text, tw)[:MAX_LINES] if e.text else []
             if e.text and len(_wrap(f, e.text, tw)) > MAX_LINES:
                 lines[-1] = _ellipsize(f, lines[-1], tw - 40) + " [truncated]"
@@ -747,12 +802,16 @@ class VirtualDiscordWindow:
             if by >= top + vh:
                 below += 1
                 continue
-            vis.append(e.num)
+            if not e.system:
+                vis.append(e.num)
             self._draw_block(view, vd, e, by - top, lines, f, tx, tw)
         self._vis = (min(vis), max(vis), above, below) if vis else (0, 0, above, below)
         frame.paste(view, (x0, y0))
 
     def _draw_block(self, view, vd, e: _Entry, by: int, lines, f, tx: int, tw: int) -> None:
+        if e.system:
+            self._draw_event(view, vd, e, by)
+            return
         cy = by
         if e.reply:
             rf = _tfont(e.reply, 15)
@@ -794,7 +853,7 @@ class VirtualDiscordWindow:
 
     # ── tool handling ──
     def _find_entry(self, num: int) -> Optional[_Entry]:
-        return next((e for e in self.entries if e.num == num), None)
+        return next((e for e in self.entries if e.num == num and num > 0), None)
 
     def _summary(self) -> str:
         parts = []

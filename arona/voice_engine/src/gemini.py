@@ -270,6 +270,17 @@ class GeminiWebSocket:
         except ImportError:
             console.log("[Gemini Live] audioop unavailable, sending reference audio as-is (mono/16-bit not verified)", "WARN")
 
+        # The 2.5 native-audio model rejects a sample-rate change after the first audio input
+        # (1007 "Sample rate changed from previously 32000 to 16000"), and the mic stream is 16 kHz,
+        # so the reference clip has to be 16 kHz as well.
+        if framerate != 16000:
+            try:
+                import audioop
+                frames, _ = audioop.ratecv(frames, 2, 1, framerate, 16000, None)
+                framerate = 16000
+            except ImportError:
+                console.log("[Gemini Live] audioop unavailable, cannot resample reference audio to 16 kHz", "WARN")
+
         return frames, framerate
 
     async def send_voice_reference(self) -> None:
@@ -368,7 +379,13 @@ class GeminiWebSocket:
         if not self.ws or not self.ws.protocol.state.name == 'OPEN':
             return
         try:
-            await self.ws.send(json.dumps({"realtime_input": {"text": text}}))
+            if "3.1" in config.LIVE_MODEL:
+                # 3.1 live: client_content is only for seeding history, mid-session text goes through realtime input
+                msg = {"realtime_input": {"text": text}}
+            else:
+                # 2.5 native audio: regular user turn
+                msg = {"client_content": {"turns": [{"role": "user", "parts": [{"text": text}]}], "turn_complete": True}}
+            await self.ws.send(json.dumps(msg))
         except Exception as e:
             console.log(f"[Gemini] Send realtime text error: {e}", "ERROR")
 

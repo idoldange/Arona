@@ -35,6 +35,22 @@ class _VoiceStateFilter(logging.Filter):
         return "4017" not in msg and "Retrying in" not in msg
 
 logging.getLogger("discord.voice_state").addFilter(_VoiceStateFilter())
+
+# The blanket ERROR level on 'discord' above also hides discord.ext.voice_recv (DAVE drops, opus errors,
+# router crashes). Give voice receive its own file log so those problems are visible.
+os.makedirs("logs", exist_ok=True)
+_vr_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+_vr_file = logging.FileHandler("logs/voice_recv.log", encoding="utf-8")
+_vr_file.setFormatter(_vr_fmt)
+_vr_console = logging.StreamHandler()
+_vr_console.setLevel(logging.WARNING)
+_vr_console.setFormatter(_vr_fmt)
+for _n, _lvl in (("discord.ext.voice_recv", logging.DEBUG), ("discord.voice_state", logging.INFO), ("discord.voice_client", logging.INFO)):
+    _l = logging.getLogger(_n)
+    _l.setLevel(_lvl)
+    _l.addHandler(_vr_file)
+    _l.addHandler(_vr_console)
+    _l.propagate = False
 from console import console
 started = False
 console.log("Starting Arona bot...", "INFO")
@@ -9062,6 +9078,12 @@ async def on_voice_state_update(member, before, after):
 
             asyncio.create_task(_reconnect())
         return  # done handling bot's own state change
+
+    # show joins/leaves in the virtual Discord window
+    try:
+        gemini_ws.window.on_voice_state(member, before, after)
+    except Exception as e:
+        console.log(f"[Window] voice state hook failed: {e}", "WARN")
 
     # other member left — notify model when channel becomes empty
     if before.channel is not None:

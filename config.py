@@ -16,7 +16,7 @@ FALLBACK_MODEL      = "gemini-3.5-flash-lite"# 503
 RATE_LIMIT_MODEL    = "gemini-3.5-flash-lite"# 429
 RATE_LIMIT_MODEL_   = "gemini-3.8-flash"     # 429 on RATE_LIMIT_MODEL
 LITE_MODEL          = "gemini-3.5-flash-lite"
-LIVE_MODEL          = "gemini-3.1-flash-live-preview"
+LIVE_MODEL          = "gemini-2.5-flash-native-audio-preview-12-2025"
 DEFAULT_TEMPERATURE = 1.0
 MAX_RETRIES         = 1                      # rounds
 # Hard cap on the number of HTTP requests a single ask_gemini() call may send to the
