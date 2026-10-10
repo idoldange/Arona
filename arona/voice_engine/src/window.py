@@ -23,21 +23,24 @@ from console import console
 
 # ───────────────────────── constants ─────────────────────────
 W, H = 1280, 720
-SIDEBAR_W = 250
+CHAT_W = 440
+CALL_W = W - CHAT_W
 TOPBAR_H = 44
-BOTBAR_H = 26
+INPUT_H = 52
+HINT_H = 24
 PAD = 16
 AV = 40
-MEDIA_H = 300
 FRAME_MIN_INTERVAL = 1.0      # seconds between frames (Live API samples video at ~1 fps)
 SPEAK_HOLD = 0.6              # seconds a member stays "speaking" after the last loud audio
 MAX_MSGS = 150
 HISTORY_LOAD = 40
 MAX_LINES = 14
-IMG_MAX_W, IMG_MAX_H = 360, 220
+IMG_MAX_W, IMG_MAX_H = 330, 200
 MAX_IMG_BYTES = 25 * 1024 * 1024
 
 COL_SIDE = (43, 45, 49)
+CALL_BG = (17, 18, 20)
+TILE_COLORS = [(228, 184, 166), (199, 196, 226), (166, 200, 188), (214, 170, 200), (170, 190, 226), (222, 210, 160)]
 COL_MAIN = (49, 51, 56)
 COL_ROW = (64, 66, 73)
 COL_LINE = (30, 31, 34)
@@ -133,10 +136,11 @@ WINDOW_TOOL_NAMES = {t["name"] for t in WINDOW_TOOLS}
 WINDOW_PROMPT = """
 
 [VIRTUAL DISCORD WINDOW]
-You receive a live video feed (about 1 frame per second) that is a render of the Discord window for this voice call.
-- Left sidebar: members in the voice channel with their avatars. A GREEN RING around an avatar and the "Speaking:" label in the top bar show who is talking right now. The audio you hear is a mix of everyone, so use them to work out who said what. You are the member marked "(you)".
-- Main area: the text chat. Every message has a number "#n"; attachments are numbered [k]. New chat messages also reach you as plain text. Images/videos/audio posted in chat are NOT sent to you directly; open them with the window tools.
-- Tools: window_scroll (read older messages), window_zoom (open + zoom an image), window_zoom_avatar, window_close_view, window_media (play/pause/seek a video or audio file; its audio is streamed to you), window_status.
+You receive a live video feed (about 1 frame per second) that is a render of the Discord window for this call. It has two SEPARATE parts:
+- LEFT = the VOICE CALL (the voice channel you are speaking in). It shows one tile per person in the call with their avatar. A GREEN BORDER around a tile and the "Speaking: ..." label in its top bar show who is talking right now. The audio you hear is a mix of everyone, so use this to work out who said what. You are the tile marked "(you)". This area also shows a zoomed image or a media player while you have one open.
+- RIGHT = the TEXT CHAT panel, headed "TEXT CHAT # channel-name" with a message box at the bottom. It is a written text channel, NOT the voice channel: nobody speaks there. Every message has a number "#n" and attachments are numbered [k]. The messages you wrote in text appear there too, as your own name with "(you)". New messages also reach you as plain text.
+- Images/videos/audio posted in the text chat are NOT sent to you directly; open them with the window tools.
+- Tools: window_scroll (scroll the text chat), window_zoom (open + zoom an image in the call area), window_zoom_avatar, window_close_view, window_media (play/pause/seek a video or audio file; its audio is streamed to you), window_status.
 - After a tool call the next frame already shows the result. Frames lag by up to a second, so do not assume the view is stale or broken.
 """
 
@@ -396,6 +400,7 @@ class VirtualDiscordWindow:
         self.bot_id = 0
         self.entries: List[_Entry] = []
         self._counter = 0
+        self._by_id: Dict[int, int] = {}
         self._users: Dict[int, Any] = {}
         self.avatars: Dict[int, Image.Image] = {}
         self._av_pending: set = set()
@@ -420,7 +425,7 @@ class VirtualDiscordWindow:
         await self.stop()
         self.channel, self.voice_channel = text_channel, voice_channel
         self.bot_id = voice_channel.guild.me.id if voice_channel and voice_channel.guild else 0
-        self.entries, self._counter = [], 0
+        self.entries, self._counter, self._by_id = [], 0, {}
         self.at_bottom, self.scroll_top, self.view = True, 0, None
         try:
             msgs = [m async for m in text_channel.history(limit=HISTORY_LOAD)]
@@ -448,10 +453,13 @@ class VirtualDiscordWindow:
     # ── messages ──
     def add_message(self, m: discord.Message) -> int:
         """Registers a chat message and returns its #number. Assets load in the background."""
+        if m.id in self._by_id:
+            return self._by_id[m.id]
         self._counter += 1
+        self._by_id[m.id] = self._counter
         e = _Entry()
         e.num, e.id, e.author_id = self._counter, m.id, m.author.id
-        e.name = getattr(m.author, "display_name", None) or m.author.name
+        e.name = (getattr(m.author, "display_name", None) or m.author.name) + (" (you)" if m.author.id == self.bot_id else "")
         col = getattr(m.author, "color", None)
         e.color = col.to_rgb() if col is not None and col.value else None
         e.time = m.created_at.astimezone().strftime("%H:%M")
@@ -491,6 +499,33 @@ class VirtualDiscordWindow:
             del self.entries[:len(self.entries) - MAX_MSGS]
         self.dirty = True
         return e.num
+
+    @staticmethod
+    def _message_text(m) -> str:
+        text = m.clean_content or ""
+        for emb in m.embeds:
+            bits = " ".join(b for b in [emb.title or "", (emb.description or "")[:200]] if b)
+            if bits:
+                text += ("\n" if text else "") + "| " + bits
+        for st in getattr(m, "stickers", []) or []:
+            text += ("\n" if text else "") + f"[sticker: {st.name}]"
+        return text
+
+    def update_message(self, m) -> None:
+        """Message was edited (the bot streams replies by editing)."""
+        num = self._by_id.get(m.id)
+        e = next((x for x in self.entries if x.num == num), None) if num else None
+        if e is None:
+            return
+        text = self._message_text(m)
+        if text != e.text:
+            e.text, self.dirty = text, True
+
+    def remove_message(self, message_id: int) -> None:
+        num = self._by_id.pop(message_id, None)
+        if num:
+            self.entries = [x for x in self.entries if x.num != num]
+            self.dirty = True
 
     def add_event(self, kind: str, member) -> None:
         """Adds a system line ("X joined/left the voice channel") to the window. It has no #number."""
@@ -566,7 +601,7 @@ class VirtualDiscordWindow:
 
         async def _go():
             try:
-                raw = await user.display_avatar.with_size(128).with_format("png").read()
+                raw = await user.display_avatar.with_size(256).with_format("png").read()
                 self.avatars[user.id] = Image.open(io.BytesIO(raw)).convert("RGBA")
             except Exception as e:
                 console.log(f"[Window] Avatar load failed ({user}): {e}", "WARN")
@@ -651,92 +686,120 @@ class VirtualDiscordWindow:
 
     # ── rendering (worker thread) ──
     def _render(self, snap: Dict[str, Any]) -> bytes:
-        frame = Image.new("RGB", (W, H), COL_MAIN)
+        frame = Image.new("RGB", (W, H), CALL_BG)
         d = ImageDraw.Draw(frame)
-        self._draw_sidebar(frame, d, snap)
-        # top bar
-        d.rectangle((SIDEBAR_W, 0, W, TOPBAR_H), fill=COL_MAIN)
-        d.line((SIDEBAR_W, TOPBAR_H, W, TOPBAR_H), fill=COL_LINE, width=2)
-        d.text((SIDEBAR_W + PAD, 10), "# " + snap["ch_name"], font=_tfont(snap["ch_name"], 20, True), fill=TEXT)
-        sp_txt = ("Speaking: " + ", ".join(snap["speaking"])) if snap["speaking"] else "Nobody is speaking"
-        f = _tfont(sp_txt, 18, True)
-        d.text((W - PAD - f.getlength(sp_txt), 12), sp_txt, font=f, fill=GREEN if snap["speaking"] else MUTED)
 
-        y0, y1 = TOPBAR_H + 2, H - BOTBAR_H
-        hint = ""
+        # ---------- LEFT: the voice call ----------
+        d.rectangle((0, 0, CALL_W, TOPBAR_H), fill=COL_SIDE)
+        title = "VOICE CALL  |  " + snap["vc_name"]
+        d.text((PAD, 11), title, font=_tfont(title, 19, True), fill=TEXT)
+        sp_txt = ("Speaking: " + ", ".join(snap["speaking"])) if snap["speaking"] else "Nobody is speaking"
+        sf = _tfont(sp_txt, 18, True)
+        d.text((CALL_W - PAD - sf.getlength(sp_txt), 12), sp_txt, font=sf, fill=GREEN if snap["speaking"] else MUTED)
+        body = (0, TOPBAR_H, CALL_W, H)
         if self.view:
-            self._draw_zoom(frame, d, (SIDEBAR_W, y0, W, y1))
-            hint = "Zoom view open - window_close_view to go back to the chat"
+            self._draw_zoom(frame, d, body)
+        elif snap["player"]:
+            self._draw_player(frame, d, snap["player"], body)
         else:
-            top = y0
-            if snap["player"]:
-                self._draw_player(frame, d, snap["player"], (SIDEBAR_W, top, W, top + MEDIA_H))
-                top += MEDIA_H
-            self._draw_chat(frame, d, snap["entries"], (SIDEBAR_W, top, W, y1))
-            first, last, above, below = self._vis
-            hint = (f"Showing #{first}-#{last}" if first else "No messages") + \
-                   ("  |  latest messages" if self.at_bottom else f"  |  {below} newer below (window_scroll down/bottom)") + \
-                   (f"  |  {above} older above" if above else "")
-        d.rectangle((SIDEBAR_W, H - BOTBAR_H, W, H), fill=COL_SIDE)
-        d.text((SIDEBAR_W + PAD, H - BOTBAR_H + 4), hint, font=_font(15), fill=MUTED)
+            self._draw_tiles(frame, d, snap, body)
+
+        # ---------- RIGHT: the text chat panel (a text channel, not the voice channel) ----------
+        cx = CALL_W
+        d.rectangle((cx, 0, W, H), fill=COL_MAIN)
+        d.text((cx + PAD, 5), "TEXT CHAT", font=_font(12, True), fill=MUTED)
+        d.text((cx + PAD, 19), "# " + snap["ch_name"], font=_tfont(snap["ch_name"], 19, True), fill=TEXT)
+        d.line((cx, TOPBAR_H, W, TOPBAR_H), fill=COL_LINE, width=2)
+        d.line((cx, 0, cx, H), fill=COL_LINE, width=2)
+
+        chat_bottom = H - INPUT_H - HINT_H
+        self._draw_chat(frame, d, snap["entries"], (cx + 1, TOPBAR_H + 2, W, chat_bottom))
+        first, last, above, below = self._vis
+        hint = (f"Showing #{first}-#{last}" if first else "No messages") + \
+               (" | latest" if self.at_bottom else f" | {below} newer below") + \
+               (f" | {above} older above" if above else "")
+        d.rectangle((cx + 1, chat_bottom, W, H), fill=COL_MAIN)
+        d.text((cx + PAD, chat_bottom + 4), hint, font=_font(14), fill=MUTED)
+        # fake message box, so it reads as a Discord text channel
+        d.rounded_rectangle((cx + PAD, H - INPUT_H + 6, W - PAD, H - 10), 8, fill=(56, 58, 64))
+        mf = _tfont(snap["ch_name"], 17)
+        d.text((cx + PAD + 14, H - INPUT_H + 17), _ellipsize(mf, "Message #" + snap["ch_name"], CHAT_W - 2 * PAD - 28), font=mf, fill=MUTED)
 
         buf = io.BytesIO()
         frame.save(buf, "JPEG", quality=82)
         return buf.getvalue()
 
-    def _draw_sidebar(self, frame, d, snap) -> None:
-        d.rectangle((0, 0, SIDEBAR_W, H), fill=COL_SIDE)
-        d.text((14, 10), "Voice: " + snap["vc_name"], font=_tfont(snap["vc_name"], 19, True), fill=TEXT)
-        d.line((0, TOPBAR_H, SIDEBAR_W, TOPBAR_H), fill=COL_LINE, width=2)
-        y = TOPBAR_H + 10
-        for m in snap["members"]:
+    def _draw_tiles(self, frame, d, snap, box) -> None:
+        """Voice-call view: one tile per member, avatar in the middle, green border = speaking."""
+        x0, y0, x1, y1 = box
+        members = snap["members"]
+        if not members:
+            d.text((x0 + 40, y0 + 40), "Nobody is in the call", font=_font(22), fill=MUTED)
+            return
+        n = len(members)
+        cols = 1 if n == 1 else (2 if n <= 4 else 3)
+        rows = (n + cols - 1) // cols
+        gap = 14
+        tw = (x1 - x0 - gap * (cols + 1)) // cols
+        th = min((y1 - y0 - gap * (rows + 1)) // rows, int(tw * 0.6))
+        oy = y0 + (y1 - y0 - (rows * th + (rows - 1) * gap)) // 2
+        for i, m in enumerate(members):
+            r, c = divmod(i, cols)
+            cnt = min(cols, n - r * cols)
+            ox = x0 + gap + int((cols - cnt) * (tw + gap) / 2)
+            tx, ty = ox + c * (tw + gap), oy + r * (th + gap)
             speaking = m["id"] in snap["speaking_ids"]
-            if speaking:
-                d.rounded_rectangle((8, y, SIDEBAR_W - 8, y + 46), 6, fill=COL_ROW)
-            x, s = 18, 34
-            av = self._avatar(m["id"], s)
+            d.rounded_rectangle((tx, ty, tx + tw, ty + th), 10, fill=TILE_COLORS[m["id"] % len(TILE_COLORS)])
+            size = max(48, min(int(th * 0.5), 150))
+            av = self._avatar(m["id"], size)
+            ax, ay = tx + (tw - size) // 2, ty + (th - size) // 2 - 10
             if av:
-                frame.paste(av, (x, y + 6), av)
+                frame.paste(av, (ax, ay), av)
             else:
-                d.ellipse((x, y + 6, x + s, y + 6 + s), fill=BLURPLE)
+                d.ellipse((ax, ay, ax + size, ay + size), fill=BLURPLE)
             if speaking:
-                d.ellipse((x - 3, y + 3, x + s + 3, y + 6 + s + 3), outline=GREEN, width=3)
-            tags = " ".join(t for t, on in (("MUTE", m["muted"]), ("DEAF", m["deaf"]), ("CAM", m["cam"]), ("LIVE", m["live"])) if on)
-            nf = _tfont(m["name"], 17, speaking)
-            maxw = SIDEBAR_W - 70 - 8
-            d.text((62, y + (6 if tags else 12)), _ellipsize(nf, m["name"], maxw), font=nf, fill=TEXT if speaking else MUTED)
+                d.rounded_rectangle((tx, ty, tx + tw, ty + th), 10, outline=GREEN, width=5)
+            tags = [t for t, on in (("MUTED", m["muted"]), ("DEAF", m["deaf"]), ("CAM", m["cam"]), ("LIVE", m["live"])) if on]
+            nf = _tfont(m["name"], 18, True)
+            label = _ellipsize(nf, m["name"], tw - 40)
+            tag_txt = "  " + " ".join(tags) if tags else ""
+            tgf = _font(14, True)
+            pw = int(nf.getlength(label) + (tgf.getlength(tag_txt) if tags else 0)) + 20
+            py = ty + th - 36
+            d.rounded_rectangle((tx + 10, py, tx + 10 + pw, py + 28), 6, fill=(0, 0, 0))
+            d.text((tx + 20, py + 3), label, font=nf, fill=TEXT)
             if tags:
-                d.text((62, y + 26), tags, font=_font(13, True), fill=RED if ("MUTE" in tags or "DEAF" in tags) else GREEN)
-            y += 50
-            if y > H - 60:
-                break
+                d.text((tx + 20 + nf.getlength(label), py + 7), tag_txt, font=tgf, fill=RED if (m["muted"] or m["deaf"]) else GREEN)
 
     def _draw_player(self, frame, d, p, box) -> None:
         x0, y0, x1, y1 = box
-        d.rectangle(box, fill=(30, 31, 34))
-        fx, fy, fw, fh = x0 + PAD, y0 + 10, 520, MEDIA_H - 20
-        d.rectangle((fx, fy, fx + fw, fy + fh), fill=(0, 0, 0))
+        d.rectangle(box, fill=(20, 21, 24))
+        info_h = 150
+        fx0, fy0, fx1, fy1 = x0 + PAD, y0 + PAD, x1 - PAD, y1 - info_h
+        d.rectangle((fx0, fy0, fx1, fy1), fill=(0, 0, 0))
         if p["frame"]:
             try:
                 im = Image.open(io.BytesIO(p["frame"])).convert("RGB")
-                im.thumbnail((fw, fh))
-                frame.paste(im, (fx + (fw - im.width) // 2, fy + (fh - im.height) // 2))
+                s = min((fx1 - fx0) / im.width, (fy1 - fy0) / im.height)
+                im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
+                frame.paste(im, (fx0 + (fx1 - fx0 - im.width) // 2, fy0 + (fy1 - fy0 - im.height) // 2))
             except Exception:
                 pass
         elif p["kind"] == "audio":
-            d.text((fx + fw // 2 - 40, fy + fh // 2 - 14), "AUDIO", font=_font(28, True), fill=MUTED)
-        tx = fx + fw + 24
+            d.text(((fx0 + fx1) // 2 - 50, (fy0 + fy1) // 2 - 16), "AUDIO", font=_font(32, True), fill=MUTED)
         state = "ENDED" if p["ended"] else ("PLAYING" if p["playing"] else "PAUSED")
-        d.text((tx, y0 + 24), state, font=_font(22, True), fill=GREEN if p["playing"] else MUTED)
-        nf = _tfont(p["name"], 20, True)
-        d.text((tx, y0 + 60), _ellipsize(nf, p["name"], x1 - tx - PAD), font=nf, fill=TEXT)
-        d.text((tx, y0 + 92), p["ref"] + f"  ({p['kind']})", font=_font(16), fill=MUTED)
-        d.text((tx, y0 + 130), f"{_fmt_t(p['cur'])} / {_fmt_t(p['dur'])}", font=_font(26, True), fill=TEXT)
-        bw = x1 - tx - PAD
-        d.rounded_rectangle((tx, y0 + 180, tx + bw, y0 + 190), 5, fill=(64, 66, 73))
+        ty = fy1 + 14
+        d.text((fx0, ty), state, font=_font(22, True), fill=GREEN if p["playing"] else MUTED)
+        tm = f"{_fmt_t(p['cur'])} / {_fmt_t(p['dur'])}"
+        tf = _font(24, True)
+        d.text((fx1 - tf.getlength(tm), ty), tm, font=tf, fill=TEXT)
+        nf = _tfont(p["name"], 19, True)
+        d.text((fx0, ty + 36), _ellipsize(nf, p["name"], fx1 - fx0), font=nf, fill=TEXT)
+        d.text((fx0, ty + 64), p["ref"] + f"  ({p['kind']})  |  window_media: pause / resume / seek / stop", font=_font(15), fill=MUTED)
+        by = ty + 94
+        d.rounded_rectangle((fx0, by, fx1, by + 10), 5, fill=(64, 66, 73))
         if p["dur"]:
-            d.rounded_rectangle((tx, y0 + 180, tx + max(6, int(bw * min(1.0, p["cur"] / p["dur"]))), y0 + 190), 5, fill=BLURPLE)
-        d.text((tx, y0 + 206), "window_media: pause / resume / seek / stop", font=_font(15), fill=MUTED)
+            d.rounded_rectangle((fx0, by, fx0 + max(6, int((fx1 - fx0) * min(1.0, p["cur"] / p["dur"]))), by + 10), 5, fill=BLURPLE)
 
     def _draw_zoom(self, frame, d, box) -> None:
         x0, y0, x1, y1 = box
@@ -753,7 +816,7 @@ class VirtualDiscordWindow:
         crop = im.crop((int(left), int(top), max(int(left) + 1, int(left + cw)), max(int(top) + 1, int(top + ch))))
         out = crop.resize((max(1, int(cw * s)), max(1, int(ch * s))), Image.LANCZOS)
         frame.paste(out, (x0 + (x1 - x0 - out.width) // 2, y0 + 8 + (ah - out.height) // 2))
-        cap = f"{v['label']}  |  zoom x{v['level']:.1f}  |  center ({v['cx']:.2f}, {v['cy']:.2f})  |  image {iw}x{ih}"
+        cap = f"{v['label']}  |  zoom x{v['level']:.1f}  |  center ({v['cx']:.2f}, {v['cy']:.2f})  |  window_close_view to close"
         d.text((x0 + 20, y1 - 34), cap, font=_font(16), fill=TEXT)
 
     def _block_height(self, e: _Entry, lines: List[str]) -> int:
@@ -773,7 +836,7 @@ class VirtualDiscordWindow:
         tx, tw = PAD + AV + 14, mw - (PAD + AV + 14) - PAD
         blocks, y = [], 8
         for e in entries:
-            f = _tfont(e.text, 19)
+            f = _tfont(e.text, 18)
             if e.system:
                 blocks.append((e, y, 34, [], f))
                 y += 34

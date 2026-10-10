@@ -8043,6 +8043,12 @@ def _is_duplicate_message_dispatch(message_id: int) -> bool:
 
 @client.event
 async def on_message(message):
+  # Mirror every message of the voice-linked text channel (the bot's own included) into the virtual window
+  try:
+    if gemini_ws.is_voice_session and message.channel == gemini_ws.current_channel:
+      gemini_ws.window.add_message(message)
+  except Exception as e:
+    console.log(f"[Window] mirror message failed: {e}", "WARN")
   if message.author.id == client.user.id:
     return
   if _is_duplicate_message_dispatch(message.id):
@@ -9098,6 +9104,22 @@ async def on_voice_state_update(member, before, after):
                     f"or stay and wait for someone to return.]"
                 ))
                 
+@client.event
+async def on_message_edit(before, after):
+    try:
+        if gemini_ws.is_voice_session and after.channel == gemini_ws.current_channel:
+            gemini_ws.window.update_message(after)
+    except Exception as e:
+        console.log(f"[Window] edit hook failed: {e}", "WARN")
+
+@client.event
+async def on_message_delete(message):
+    try:
+        if gemini_ws.is_voice_session and message.channel == gemini_ws.current_channel:
+            gemini_ws.window.remove_message(message.id)
+    except Exception as e:
+        console.log(f"[Window] delete hook failed: {e}", "WARN")
+
 command_queue = asyncio.Queue()
 
 

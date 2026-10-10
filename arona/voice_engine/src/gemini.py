@@ -37,7 +37,7 @@ class GeminiWebSocket:
                  
                     }
                 },
-                #"enable_affective_dialog": True
+                "enable_affective_dialog": True
                 #"thinking_level": "LOW"
             }
         }
@@ -126,7 +126,7 @@ class GeminiWebSocket:
                 "realtime_input_config": {
                     "automatic_activity_detection": {
                         "disabled": False,
-                        "silence_duration_ms": 200, 
+                        "silence_duration_ms": 1, 
                         "start_of_speech_sensitivity": "START_SENSITIVITY_HIGH",
                         "end_of_speech_sensitivity": "END_SENSITIVITY_LOW"
                     }
@@ -199,7 +199,9 @@ class GeminiWebSocket:
                     except asyncio.QueueEmpty:
                         break
                 if self.voice_client and self.voice_client.is_playing():
-                    self.voice_client.stop()
+                    # VoiceRecvClient.stop() also calls stop_listening(), which would deaf the bot after the first
+                    # interruption. Only stop playback.
+                    getattr(self.voice_client, "stop_playing", self.voice_client.stop)()
 
             if "modelTurn" in server_content:
                 parts = server_content["modelTurn"].get("parts", [])
