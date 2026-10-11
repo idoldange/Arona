@@ -35,7 +35,9 @@ ENABLE_FUNCTIONS    = True
 # Reference audio for voice call for gemini to mimic the "vibe"
 VOICE_CALL_REF_AUD  = "./arona/voice_engine/ref/tts.wav"  
 # Transcript of the reference audio for gemini to mimic the "vibe"
-VIDEO_RX = False  # EXPERIMENTAL: receive members' camera / screen share into the voice-call window (needs restart; patches discord.py's voice handshake)
+DEBUG_WEB_HOST = "0.0.0.0"  # debug mode only: web server with the live voice-call UI at /debug/call_ui (0.0.0.0 = reachable from the whole network; the page shows chat + user IDs, NO login; use 127.0.0.1 for this PC only)
+DEBUG_WEB_PORT = 47813
+VIDEO_RX = True  # EXPERIMENTAL: receive members' camera / screen share into the voice-call window (needs restart; patches discord.py's voice handshake)
 VOICE_CALL_REF_TEXT = "せんせい、おつかれさまです！シロコせんぱいたちからのほうこくをまとめましたよ。えへへ、きょうもいちにち、いっしょにがんばりましょうね！じゅんびはいいですか、せんせい？"
 
 # Quotas and limits for free-tier users

@@ -1,1 +1,1 @@
-debug_enabled = False
+debug_enabled = True

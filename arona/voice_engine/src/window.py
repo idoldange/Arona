@@ -451,6 +451,8 @@ class VirtualDiscordWindow:
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._last_sent = 0.0
+        self.last_jpg: Optional[bytes] = None            # newest rendered frame (debug web view)
+        self.frame_seq = 0
         self._last_speaking: frozenset = frozenset()
         self._total_h = self._view_h = 0
         self._vis: tuple = (0, 0, 0, 0)      # first, last, above, below
@@ -485,6 +487,10 @@ class VirtualDiscordWindow:
         self.view = None
         self.focus = None
         self._vframes.clear()
+        self.last_jpg, self.frame_seq = None, self.frame_seq + 1
+
+    def latest_frame(self):
+        return self.last_jpg, self.frame_seq
 
     def force_next(self) -> None:
         self._force = True
@@ -736,6 +742,7 @@ class VirtualDiscordWindow:
             self.dirty = self._force = False
             snap = self._snapshot()
             jpg = await asyncio.to_thread(self._render, snap)
+            self.last_jpg, self.frame_seq = jpg, self.frame_seq + 1
             await self.ws.send_video_frame(jpg)
             self._last_sent = time.monotonic()
 
@@ -814,15 +821,19 @@ class VirtualDiscordWindow:
         label_full = m["name"]
         nf = _tfont(label_full, 14 if compact else 18, True)
         label = _ellipsize(nf, label_full, tw - 40)
-        tag_txt = "  " + " ".join(tags) if tags else ""
         tgf = _font(11 if compact else 14, True)
-        pw = int(nf.getlength(label) + (tgf.getlength(tag_txt) if tags else 0)) + 20
+        tag_cols = {"MUTED": RED, "DEAF": RED, "CAM": (88, 166, 255), "LIVE": GREEN}
+        tags_w = sum(tgf.getlength("  " + tg) for tg in tags)
+        pw = int(nf.getlength(label) + tags_w) + 20
         ph = 22 if compact else 28
         py = ty + th - ph - 8
         d.rounded_rectangle((tx + 10, py, tx + 10 + pw, py + ph), 6, fill=(0, 0, 0))
         d.text((tx + 20, py + (2 if compact else 3)), label, font=nf, fill=TEXT)
         if tags:
-            d.text((tx + 20 + nf.getlength(label), py + (5 if compact else 7)), tag_txt, font=tgf, fill=RED if (m["muted"] or m["deaf"]) else GREEN)
+            txx = tx + 20 + nf.getlength(label)
+            for tg in tags:
+                d.text((txx, py + (5 if compact else 7)), "  " + tg, font=tgf, fill=tag_cols[tg])
+                txx += tgf.getlength("  " + tg)
         idf = _font(11 if compact else 13)
         id_txt = f"ID {m['id']}"
         idh = 16 if compact else 20

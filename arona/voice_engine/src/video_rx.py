@@ -28,9 +28,9 @@ PT_VP8, PT_VP8_RTX = 103, 104
 CODEC_BY_PT = {PT_H264: "h264", PT_VP8: "vp8"}
 RTX_PTS = {PT_H264_RTX, PT_VP8_RTX}
 CODECS = [
-    {"name": "opus", "type": "audio", "priority": 1000, "payload_type": PT_AUDIO},
-    {"name": "H264", "type": "video", "priority": 1000, "payload_type": PT_H264, "rtx_payload_type": PT_H264_RTX, "encode": False, "decode": True},
-    {"name": "VP8", "type": "video", "priority": 2000, "payload_type": PT_VP8, "rtx_payload_type": PT_VP8_RTX, "encode": False, "decode": True},
+    {"name": "opus", "type": "audio", "priority": 1000, "payload_type": PT_AUDIO, "rtx_payload_type": None},
+    {"name": "H264", "type": "video", "priority": 1000, "payload_type": PT_H264, "rtx_payload_type": PT_H264_RTX},
+    {"name": "VP8", "type": "video", "priority": 2000, "payload_type": PT_VP8, "rtx_payload_type": PT_VP8_RTX},
 ]
 START3, START4 = b"\x00\x00\x01", b"\x00\x00\x00\x01"
 
@@ -187,7 +187,7 @@ class VideoReceiver:
             seen.add("camera")
         if "camera" not in seen:
             self.win.clear_video(uid, "camera")
-        console.log(f"[VideoRx] {member} video state: {streams!r}", "INFO")
+        console.log(f"[VideoRx] {member} video state: {streams!r}", "DEBUG")
 
     def _drop(self, ssrc: int) -> None:
         self.ssrc_info.pop(ssrc, None)
@@ -285,7 +285,7 @@ class VideoReceiver:
             return
         self._log_t = now
         vid = {k: v for k, v in self.stats.items() if k[1] != PT_AUDIO}
-        console.log(f"[VideoRx] packets (ssrc,pt)->n: {vid} | {self.counters}", "INFO")
+        console.log(f"[VideoRx] packets (ssrc,pt)->n: {vid} | {self.counters}", "DEBUG")
 
 
 _installed: Optional[VideoReceiver] = None
@@ -313,12 +313,25 @@ def install(window, get_vc: Callable[[], Any]) -> Optional[VideoReceiver]:
         await orig_send(self, data)
         if op == self.SELECT_PROTOCOL:                   # like the official client: announce our (receive-only) video state
             try:
-                await orig_send(self, {"op": 12, "d": {"audio_ssrc": self._connection.ssrc, "video_ssrc": 0, "rtx_ssrc": 0, "streams": [
-                    {"type": "video", "rid": "100", "quality": 100, "active": False}]}})
+                st = (getattr(self, "_vrx_streams", None) or [{}])[0]
+                vs, rs = st.get("ssrc", 0), st.get("rtx_ssrc", 0)
+                await orig_send(self, {"op": 12, "d": {"audio_ssrc": self._connection.ssrc, "video_ssrc": vs, "rtx_ssrc": rs, "streams": [
+                    {"type": "video", "rid": "100", "ssrc": vs, "active": False, "quality": 100, "rtx_ssrc": rs, "max_bitrate": 2500000,
+                     "max_framerate": 20, "max_resolution": {"type": "fixed", "width": 1280, "height": 720}}]}})
+                console.log(f"[VideoRx] announced receive-only video state (video_ssrc={vs}, rtx_ssrc={rs})", "DEBUG")
             except Exception as e:
                 console.log(f"[VideoRx] video-state announce failed: {e}", "WARN")
 
     WS.send_as_json = send_as_json
+
+    orig_init = WS.initial_connection
+
+    async def initial_connection(self, data):
+        self._vrx_streams = data.get("streams")          # video ssrc / rtx ssrc the server allocated for us
+        console.log(f"[VideoRx] READY streams from server: {self._vrx_streams}", "DEBUG")
+        await orig_init(self, data)
+
+    WS.initial_connection = initial_connection
 
     orig_cb = _reader.AudioReader.callback
 
@@ -340,5 +353,5 @@ def install(window, get_vc: Callable[[], Any]) -> Optional[VideoReceiver]:
         return orig_cb(self, packet_data)
 
     _reader.AudioReader.callback = callback
-    console.log("[VideoRx] experimental video receive installed", "INFO")
+    console.log("[VideoRx] experimental video receive installed", "DEBUG")
     return rx

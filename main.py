@@ -100,6 +100,7 @@ from debug import debug_enabled
 from arona.voice_engine.src.record import AudioProcessor
 from arona.voice_engine.src.gemini import GeminiWebSocket
 from arona.voice_engine.src import video_rx
+from arona.voice_engine.src import debug_web
 from arona.voicechanger import VoiceChangerBridge
 import aiohttp
 import gc
@@ -709,6 +710,10 @@ def save_debug_state(value: bool):
   with open("debug.py", "w", encoding="utf-8") as f:
     f.write(f"debug_enabled = {value}\n")
   globals()["debug_enabled"] = value
+  try:   # debug mode also opens / closes the debug web server (live voice-call UI)
+    asyncio.get_running_loop().create_task(debug_web.sync(value, gemini_ws.window, DEBUG_WEB_HOST, DEBUG_WEB_PORT))
+  except RuntimeError:
+    pass
 
 def save_active_channels(channel_ids: list[int]):
     os.makedirs("database", exist_ok=True)
@@ -1002,8 +1007,11 @@ async def join_voice_channel(user: discord.Member, text_channel: discord.TextCha
             return "Bot already in the correct voice channel."
 
     try:
+        await gemini_ws.wait_ready()
         if not gemini_ws.ws:
             await gemini_ws.connect()
+        if not gemini_ws.ws:
+            return "Gemini Live is not connected; not joining the voice channel."
 
         voice_client = None
         for attempt in range(3):
@@ -8057,6 +8065,8 @@ async def on_ready():
       if gemini_ws:
         gemini_ws.tools = get_gemini_tools(None, DEFAULT_MODEL)
         gemini_ws.function_handler = execute_function
+        if debug_enabled:
+          await debug_web.start(gemini_ws.window, DEBUG_WEB_HOST, DEBUG_WEB_PORT)
       asyncio.create_task(console_command_loop())
       asyncio.create_task(_stale_workdir_cleanup())
       client.loop.create_task(scheduler_heartbeat(
@@ -9387,6 +9397,57 @@ async def cmd_send(channelid: int, content: str, reply_to: int = None, mention: 
     return
   console.log(f"Sent message to channel {channel.name} (ID: {channel.id})", "INFO")
   
+async def cmd_vjoin(arg: str = ""):
+  """Make Arona join a voice channel (testing)
+  Usage: vjoin [voice_channel_id|user_id] [text_channel_id]
+  Text channel defaults to the voice channel's own chat.
+  No args = channel of the first human found in any voice channel.
+  The channel must contain at least one human (join needs a member)."""
+  parts = arg.split()
+  target_id = int(parts[0]) if parts and parts[0].isdigit() else None
+  text_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+
+  member = None
+  for g in client.guilds:
+    for vc_ch in g.voice_channels + g.stage_channels:
+      humans = [m for m in vc_ch.members if not m.bot]
+      if not humans:
+        continue
+      if target_id is None:
+        member = humans[0]
+      elif vc_ch.id == target_id:
+        member = humans[0]
+      else:
+        member = next((m for m in humans if m.id == target_id), None)
+      if member:
+        break
+    if member:
+      break
+  if not member:
+    console.log("No human found in that voice channel (or no voice channel has anyone).", "ERROR")
+    return
+
+  text_ch = client.get_channel(text_id) if text_id else None
+  if not text_ch:
+    text_ch = member.voice.channel  # voice channel's own built-in text chat
+
+  console.log(f"[VJOIN] {member.voice.channel.name} (via {member.display_name}), text {text_ch.name}", "INFO")
+  res = await join_voice_channel(member, text_ch)
+  console.log(f"[VJOIN] {res}", "INFO")
+
+async def cmd_vleave(arg: str = ""):
+  """Make Arona leave her voice channel (testing)
+  Usage: vleave"""
+  import types
+  vcs = [g.voice_client for g in client.guilds if g.voice_client]
+  if not vcs:
+    console.log("Arona is not in a voice channel.", "WARN")
+    return
+  for vc in vcs:
+    stub = types.SimpleNamespace(voice=types.SimpleNamespace(channel=vc.channel))
+    res = await leave_voice_channel(vc.guild, stub, vc.channel)
+    console.log(f"[VLEAVE] {res}", "INFO")
+
 async def _cmd_debug_start():
   await cmd_debug_start(client=client)
 async def _cmd_debug_stop():
@@ -9396,6 +9457,8 @@ async def _cmd_debug_stop():
 COMMANDS = {
   "help": cmd_help,
   "stop": cmd_stop,
+  "vjoin": cmd_vjoin,
+  "vleave": cmd_vleave,
   "debug start": _cmd_debug_start,
   "debug stop": _cmd_debug_stop,
   "debug": cmd_debug_status,
@@ -9497,6 +9560,13 @@ async def console_command_loop():
       raw = await ask_gemini(DEFAULT_MODEL, question, sys_prompt=True, attachments=".\\main.py", enable_functions=False)
       resp = extract_gemini_text(raw)
       console.log(f"\033[32m[ASK] {resp}\033[0m", "INFO")
+      continue
+
+    if cmd == "vjoin" or cmd.startswith("vjoin "):
+      try:
+        await cmd_vjoin(cmd[5:].strip())
+      except Exception as e:
+        console.log(f"\033[31mError running vjoin: {e}\033[0m", "ERROR")
       continue
 
     handler = COMMANDS.get(cmd)

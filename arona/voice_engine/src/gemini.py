@@ -18,6 +18,7 @@ class GeminiWebSocket:
     def __init__(self, voice: str = 'aoede', persona: str = "You are a helpful assistant") -> None:
         self.ws: Optional[WebSocketClientProtocol] = None
         self.lock: asyncio.Lock = asyncio.Lock()
+        self._connecting: bool = False
         self.persona: str = persona
         self.tools = None
         self.function_handler = None
@@ -64,6 +65,20 @@ class GeminiWebSocket:
             self.receive_task = None
 
     async def connect(self) -> None:
+        if self._connecting:  # a connect (ws open + setup) is already in flight
+            return
+        self._connecting = True
+        try:
+            await self._connect_inner()
+        finally:
+            self._connecting = False
+
+    async def wait_ready(self) -> None:
+        """Waits until an in-flight connect() (socket + setup + voice reference) has finished."""
+        while self._connecting:
+            await asyncio.sleep(0.05)
+
+    async def _connect_inner(self) -> None:
         api_key_list = os.getenv('GEMINI_API_KEY')
         try:
             api_keys = json.loads(api_key_list) if api_key_list else []
