@@ -30,6 +30,7 @@ INPUT_H = 52
 HINT_H = 24
 PAD = 16
 AV = 40
+VIDEO_STALE = 3.0             # seconds after which a camera/stream frame counts as gone
 FRAME_MIN_INTERVAL = 1.0      # seconds between frames (Live API samples video at ~1 fps)
 SPEAK_HOLD = 0.6              # seconds a member stays "speaking" after the last loud audio
 MAX_MSGS = 150
@@ -127,6 +128,22 @@ WINDOW_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "window_focus",
+        "description": "Focus a person's camera or screen share (Go Live) in the call area: it is enlarged and everyone else shrinks into a strip of small tiles at the bottom, like Discord. Only works for someone whose camera / stream is on (see the CAM / LIVE tags). Call window_unfocus to go back to the normal grid.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "user": {"type": "STRING", "description": "Display name or Discord ID of the person"},
+                "source": {"type": "STRING", "enum": ["camera", "stream"], "description": "camera (default) or stream = their screen share"},
+            },
+            "required": ["user"],
+        },
+    },
+    {
+        "name": "window_unfocus",
+        "description": "Leave the focused camera/stream view and show all call tiles in the normal grid again.",
+    },
+    {
         "name": "window_status",
         "description": "Get a text summary of the window: who is in the voice channel, who is speaking right now, what part of the chat is visible, and media state.",
     },
@@ -140,7 +157,8 @@ You receive a live video feed (about 1 frame per second) that is a render of the
 - LEFT = the VOICE CALL (the voice channel you are speaking in). It shows one tile per person in the call with their avatar. A GREEN BORDER around a tile and the "Speaking: ..." label in its top bar show who is talking right now. The audio you hear is a mix of everyone, so use this to work out who said what. You are the tile marked "(you)". This area also shows a zoomed image or a media player while you have one open.
 - RIGHT = the TEXT CHAT panel, headed "TEXT CHAT # channel-name" with a message box at the bottom. It is a written text channel, NOT the voice channel: nobody speaks there. Every message has a number "#n" and attachments are numbered [k]. The messages you wrote in text appear there too, as your own name with "(you)". New messages also reach you as plain text.
 - Images/videos/audio posted in the text chat are NOT sent to you directly; open them with the window tools.
-- Tools: window_scroll (scroll the text chat), window_zoom (open + zoom an image in the call area), window_zoom_avatar, window_close_view, window_media (play/pause/seek a video or audio file; its audio is streamed to you), window_status.
+- A person whose camera is on shows their live camera in their tile (tag CAM); a screen share (tag LIVE) gets its own '(stream)' tile. window_focus enlarges one camera/stream and shrinks the others into a strip below; window_unfocus goes back. If a tile shows no picture, the video simply has not arrived yet.
+- Tools: window_scroll (scroll the text chat), window_focus / window_unfocus (camera + stream view), window_zoom (open + zoom an image in the call area), window_zoom_avatar, window_close_view, window_media (play/pause/seek a video or audio file; its audio is streamed to you), window_status.
 - Every voice tile and every chat message shows that person's Discord ID in small text (e.g. "ID 1234..."). Use it as user_id in saved_information to say whose saved info you are changing.
 - After a tool call the next frame already shows the result. Frames lag by up to a second, so do not assume the view is stale or broken.
 """
@@ -392,6 +410,21 @@ class MediaPlayer:
                 k += 1
 
 
+def _cover(img, w, h):
+    """Scale to fill w x h, centre-crop the overflow."""
+    sc = max(w / img.width, h / img.height)
+    nw, nh = max(1, int(img.width * sc)), max(1, int(img.height * sc))
+    im = img.resize((nw, nh), Image.BILINEAR)
+    l, t = (nw - w) // 2, (nh - h) // 2
+    return im.crop((l, t, l + w, t + h))
+
+
+def _contain(img, w, h):
+    """Scale to fit inside w x h, keeping the aspect ratio."""
+    sc = min(w / img.width, h / img.height)
+    return img.resize((max(1, int(img.width * sc)), max(1, int(img.height * sc))), Image.BILINEAR)
+
+
 # ───────────────────────── the window ─────────────────────────
 class VirtualDiscordWindow:
     def __init__(self, ws) -> None:
@@ -410,6 +443,8 @@ class VirtualDiscordWindow:
         self.at_bottom = True
         self.scroll_top = 0
         self.view: Optional[Dict[str, Any]] = None
+        self.focus: Optional[Dict[str, Any]] = None      # {'uid': int, 'kind': 'camera'|'stream'}
+        self._vframes: Dict[tuple, tuple] = {}           # (uid, kind) -> (PIL image, monotonic time)
         self.player: Optional[MediaPlayer] = None
         self.dirty = False
         self._force = False
@@ -428,6 +463,8 @@ class VirtualDiscordWindow:
         self.bot_id = voice_channel.guild.me.id if voice_channel and voice_channel.guild else 0
         self.entries, self._counter, self._by_id = [], 0, {}
         self.at_bottom, self.scroll_top, self.view = True, 0, None
+        self.focus = None
+        self._vframes.clear()
         try:
             msgs = [m async for m in text_channel.history(limit=HISTORY_LOAD)]
             for m in reversed(msgs):
@@ -447,6 +484,8 @@ class VirtualDiscordWindow:
             await self.player.close()
             self.player = None
         self.view = None
+        self.focus = None
+        self._vframes.clear()
 
     def force_next(self) -> None:
         self._force = True
@@ -594,6 +633,16 @@ class VirtualDiscordWindow:
             console.log(f"[Window] Image load failed ({item['name']}): {e}", "WARN")
         self.dirty = True
 
+    def set_video_frame(self, uid, kind, img):
+        """Video source hook (any thread): latest decoded camera ('camera') or Go Live ('stream') frame of a member."""
+        self._vframes[(int(uid), kind)] = (img.convert("RGB"), time.monotonic())
+        self.dirty = True
+
+    def clear_video(self, uid, kind=None):
+        for k in [k for k in self._vframes if k[0] == int(uid) and (kind is None or k[1] == kind)]:
+            self._vframes.pop(k, None)
+        self.dirty = True
+
     def _ensure_avatar(self, user) -> None:
         if user.id in self.avatars or user.id in self._av_pending:
             return
@@ -642,6 +691,11 @@ class VirtualDiscordWindow:
                 "muted": bool(vs and (vs.self_mute or vs.mute)), "deaf": bool(vs and (vs.self_deaf or vs.deaf)),
                 "cam": bool(vs and vs.self_video), "live": bool(vs and vs.self_stream),
             })
+        now = time.monotonic()
+        frames = {k: v[0] for k, v in list(self._vframes.items()) if now - v[1] < VIDEO_STALE}
+        focus = self.focus
+        if focus and focus["uid"] not in {mm["id"] for mm in members}:
+            focus = self.focus = None
         names = {mm["id"]: mm["name"] for mm in members}
         sp = self._speaking_ids()
         speaking = [names.get(i) or getattr(self._users.get(i), "display_name", str(i)) for i in sp]
@@ -652,6 +706,7 @@ class VirtualDiscordWindow:
                       "cur": pl.cur, "dur": pl.duration, "frame": pl.frame}
         return {
             "members": members, "speaking_ids": sp, "speaking": speaking, "player": player,
+            "frames": frames, "focus": focus,
             "vc_name": getattr(vc, "name", "voice"), "ch_name": getattr(self.channel, "name", "chat"),
             "entries": list(self.entries),
         }
@@ -700,6 +755,8 @@ class VirtualDiscordWindow:
         body = (0, TOPBAR_H, CALL_W, H)
         if self.view:
             self._draw_zoom(frame, d, body)
+        elif snap["focus"]:
+            self._draw_focus(frame, d, snap, body)
         elif snap["player"]:
             self._draw_player(frame, d, snap["player"], body)
         else:
@@ -730,51 +787,124 @@ class VirtualDiscordWindow:
         frame.save(buf, "JPEG", quality=82)
         return buf.getvalue()
 
-    def _draw_tiles(self, frame, d, snap, box) -> None:
-        """Voice-call view: one tile per member, avatar in the middle, green border = speaking."""
+    def _tiles(self, snap):
+        """One camera/avatar tile per member, plus a '(stream)' tile for anyone sharing their screen."""
+        tiles = []
+        for m in snap["members"]:
+            tiles.append({"m": m, "kind": "camera"})
+            if m["live"] or (m["id"], "stream") in snap["frames"]:
+                tiles.append({"m": m, "kind": "stream"})
+        return tiles
+
+    def _draw_tile(self, frame, d, snap, t, tx, ty, tw, th, compact=False):
+        m, kind = t["m"], t["kind"]
+        speaking = kind == "camera" and m["id"] in snap["speaking_ids"]
+        d.rounded_rectangle((tx, ty, tx + tw, ty + th), 10, fill=TILE_COLORS[m["id"] % len(TILE_COLORS)] if kind == "camera" else (24, 25, 28))
+        vid = snap["frames"].get((m["id"], kind))
+        if vid is not None:
+            frame.paste(_cover(vid, tw, th), (tx, ty))
+        elif kind == "stream":
+            msg = "STREAM - no video yet"
+            sf = _font(14 if compact else 22, True)
+            d.text((tx + (tw - sf.getlength(msg)) // 2, ty + th // 2 - 10), msg, font=sf, fill=MUTED)
+        else:
+            size = max(36 if compact else 48, min(int(th * 0.5), 150))
+            av = self._avatar(m["id"], size)
+            ax, ay = tx + (tw - size) // 2, ty + (th - size) // 2 - (4 if compact else 10)
+            if av:
+                frame.paste(av, (ax, ay), av)
+            else:
+                d.ellipse((ax, ay, ax + size, ay + size), fill=BLURPLE)
+        if speaking:
+            d.rounded_rectangle((tx, ty, tx + tw, ty + th), 10, outline=GREEN, width=5)
+        tags = [] if kind == "stream" else [tg for tg, on in (("MUTED", m["muted"]), ("DEAF", m["deaf"]), ("CAM", m["cam"]), ("LIVE", m["live"])) if on]
+        label_full = m["name"] + (" (stream)" if kind == "stream" else "")
+        nf = _tfont(label_full, 14 if compact else 18, True)
+        label = _ellipsize(nf, label_full, tw - 40)
+        tag_txt = "  " + " ".join(tags) if tags else ""
+        tgf = _font(11 if compact else 14, True)
+        pw = int(nf.getlength(label) + (tgf.getlength(tag_txt) if tags else 0)) + 20
+        ph = 22 if compact else 28
+        py = ty + th - ph - 8
+        d.rounded_rectangle((tx + 10, py, tx + 10 + pw, py + ph), 6, fill=(0, 0, 0))
+        d.text((tx + 20, py + (2 if compact else 3)), label, font=nf, fill=TEXT)
+        if tags:
+            d.text((tx + 20 + nf.getlength(label), py + (5 if compact else 7)), tag_txt, font=tgf, fill=RED if (m["muted"] or m["deaf"]) else GREEN)
+        idf = _font(11 if compact else 13)
+        id_txt = f"ID {m['id']}"
+        idh = 16 if compact else 20
+        d.rounded_rectangle((tx + 10, py - idh - 4, tx + 26 + int(idf.getlength(id_txt)), py - 4), 5, fill=(0, 0, 0))
+        d.text((tx + 18, py - idh - 2), id_txt, font=idf, fill=MUTED)
+
+    def _draw_tiles(self, frame, d, snap, box):
+        """Voice-call view: one tile per member (camera picture if they have one, else avatar); green border = speaking."""
         x0, y0, x1, y1 = box
-        members = snap["members"]
-        if not members:
+        tiles = self._tiles(snap)
+        if not tiles:
             d.text((x0 + 40, y0 + 40), "Nobody is in the call", font=_font(22), fill=MUTED)
             return
-        n = len(members)
+        n = len(tiles)
         cols = 1 if n == 1 else (2 if n <= 4 else 3)
         rows = (n + cols - 1) // cols
         gap = 14
         tw = (x1 - x0 - gap * (cols + 1)) // cols
         th = min((y1 - y0 - gap * (rows + 1)) // rows, int(tw * 0.6))
         oy = y0 + (y1 - y0 - (rows * th + (rows - 1) * gap)) // 2
-        for i, m in enumerate(members):
+        for i, t in enumerate(tiles):
             r, c = divmod(i, cols)
             cnt = min(cols, n - r * cols)
             ox = x0 + gap + int((cols - cnt) * (tw + gap) / 2)
-            tx, ty = ox + c * (tw + gap), oy + r * (th + gap)
-            speaking = m["id"] in snap["speaking_ids"]
-            d.rounded_rectangle((tx, ty, tx + tw, ty + th), 10, fill=TILE_COLORS[m["id"] % len(TILE_COLORS)])
-            size = max(48, min(int(th * 0.5), 150))
+            self._draw_tile(frame, d, snap, t, ox + c * (tw + gap), oy + r * (th + gap), tw, th)
+
+    def _draw_focus(self, frame, d, snap, box):
+        """Discord-style focus: one camera/stream big in the middle, everyone else as a strip of small tiles below."""
+        x0, y0, x1, y1 = box
+        f = snap["focus"]
+        tiles = self._tiles(snap)
+        ft = next((t for t in tiles if t["m"]["id"] == f["uid"] and t["kind"] == f["kind"]), None)
+        if ft is None:
+            return self._draw_tiles(frame, d, snap, box)
+        others = [t for t in tiles if t is not ft][:8]
+        strip_h = 124 if others else 0
+        bx0, by0, bx1, by1 = x0 + PAD, y0 + PAD, x1 - PAD, y1 - PAD - ((strip_h + PAD) if others else 0)
+        bw, bh = bx1 - bx0, by1 - by0
+        d.rounded_rectangle((bx0, by0, bx1, by1), 10, fill=(0, 0, 0))
+        m = ft["m"]
+        vid = snap["frames"].get((m["id"], ft["kind"]))
+        if vid is not None:
+            im = _contain(vid, bw, bh)
+            frame.paste(im, (bx0 + (bw - im.width) // 2, by0 + (bh - im.height) // 2))
+        else:
+            size = max(64, min(bh // 2, 220))
             av = self._avatar(m["id"], size)
-            ax, ay = tx + (tw - size) // 2, ty + (th - size) // 2 - 10
             if av:
-                frame.paste(av, (ax, ay), av)
-            else:
-                d.ellipse((ax, ay, ax + size, ay + size), fill=BLURPLE)
-            if speaking:
-                d.rounded_rectangle((tx, ty, tx + tw, ty + th), 10, outline=GREEN, width=5)
-            tags = [t for t, on in (("MUTED", m["muted"]), ("DEAF", m["deaf"]), ("CAM", m["cam"]), ("LIVE", m["live"])) if on]
-            nf = _tfont(m["name"], 18, True)
-            label = _ellipsize(nf, m["name"], tw - 40)
-            tag_txt = "  " + " ".join(tags) if tags else ""
-            tgf = _font(14, True)
-            pw = int(nf.getlength(label) + (tgf.getlength(tag_txt) if tags else 0)) + 20
-            py = ty + th - 36
-            d.rounded_rectangle((tx + 10, py, tx + 10 + pw, py + 28), 6, fill=(0, 0, 0))
-            d.text((tx + 20, py + 3), label, font=nf, fill=TEXT)
-            if tags:
-                d.text((tx + 20 + nf.getlength(label), py + 7), tag_txt, font=tgf, fill=RED if (m["muted"] or m["deaf"]) else GREEN)
-            idf = _font(13)
-            id_txt = f"ID {m['id']}"
-            d.rounded_rectangle((tx + 10, py - 24, tx + 26 + int(idf.getlength(id_txt)), py - 4), 5, fill=(0, 0, 0))
-            d.text((tx + 18, py - 22), id_txt, font=idf, fill=MUTED)
+                frame.paste(av, (bx0 + (bw - size) // 2, by0 + (bh - size) // 2 - 14), av)
+            msg = "No video received yet"
+            mf = _font(20, True)
+            d.text((bx0 + (bw - mf.getlength(msg)) // 2, by0 + (bh + size) // 2 - 4), msg, font=mf, fill=MUTED)
+        if ft["kind"] == "camera" and m["id"] in snap["speaking_ids"]:
+            d.rounded_rectangle((bx0, by0, bx1, by1), 10, outline=GREEN, width=5)
+        label_full = m["name"] + (" (stream)" if ft["kind"] == "stream" else " (camera)")
+        nf = _tfont(label_full, 20, True)
+        pw = int(nf.getlength(label_full)) + 24
+        d.rounded_rectangle((bx0 + 12, by1 - 40, bx0 + 12 + pw, by1 - 10), 6, fill=(0, 0, 0))
+        d.text((bx0 + 24, by1 - 36), label_full, font=nf, fill=TEXT)
+        idf = _font(14)
+        id_txt = f"ID {m['id']}"
+        d.rounded_rectangle((bx0 + 12, by1 - 66, bx0 + 28 + int(idf.getlength(id_txt)), by1 - 46), 5, fill=(0, 0, 0))
+        d.text((bx0 + 20, by1 - 64), id_txt, font=idf, fill=MUTED)
+        cap = "FOCUS  |  window_unfocus to go back"
+        cf = _font(14)
+        cw = int(cf.getlength(cap))
+        d.rounded_rectangle((bx1 - 24 - cw, by0 + 10, bx1 - 8, by0 + 34), 6, fill=(0, 0, 0))
+        d.text((bx1 - 16 - cw, by0 + 13), cap, font=cf, fill=MUTED)
+        if others:
+            n = len(others)
+            tw = min(200, (x1 - x0 - PAD * (n + 1)) // n)
+            total = n * tw + (n - 1) * PAD
+            sx, ty = x0 + (x1 - x0 - total) // 2, y1 - PAD - strip_h
+            for i, t in enumerate(others):
+                self._draw_tile(frame, d, snap, t, sx + i * (tw + PAD), ty, tw, strip_h, compact=True)
 
     def _draw_player(self, frame, d, p, box) -> None:
         x0, y0, x1, y1 = box
@@ -935,6 +1065,9 @@ class VirtualDiscordWindow:
         if pl:
             st = "ended" if pl.ended else ("playing" if pl.playing else "paused")
             parts.append(f"Media '{pl.name}' {st} at {_fmt_t(pl.cur)}/{_fmt_t(pl.duration)}.")
+        if self.focus:
+            fu = self._users.get(self.focus["uid"])
+            parts.append(f"Focused on {getattr(fu, 'display_name', self.focus['uid'])}'s {self.focus['kind']}.")
         sp = self._snapshot()["speaking"]
         parts.append("Speaking now: " + (", ".join(sp) if sp else "nobody") + ".")
         return " ".join(parts)
@@ -960,9 +1093,44 @@ class VirtualDiscordWindow:
     async def handle_tool(self, name: str, args: Dict[str, Any]) -> str:
         try:
             args = args or {}
+            if name in ("window_zoom", "window_zoom_avatar", "window_close_view") or (name == "window_media" and args.get("action") == "play"):
+                self.focus = None
+            if name == "window_focus":
+                key = str(args.get("user") or "").strip().strip("<@!>")
+                kind = str(args.get("source") or "camera").lower()
+                if kind not in ("camera", "stream"):
+                    return "Error: source must be camera or stream."
+                pool = list(self.voice_channel.members) if self.voice_channel else []
+                u = next((m for m in pool if str(m.id) == key), None)
+                if u is None:
+                    cand = self._find_user(key)
+                    u = cand if cand is not None and any(m.id == cand.id for m in pool) else None
+                if u is None:
+                    return f"Error: nobody named '{args.get('user')}' is in the call."
+                vs = u.voice
+                on = bool(vs and (vs.self_video if kind == "camera" else vs.self_stream))
+                now = time.monotonic()
+                have = any(k == (u.id, kind) and now - v[1] < VIDEO_STALE for k, v in list(self._vframes.items()))
+                if not (on or have):
+                    return f"Error: {u.display_name} has no {kind} on."
+                self.focus = {"uid": u.id, "kind": kind}
+                self.view = None
+                return await self._refresh()
+            if name == "window_unfocus":
+                self.focus = None
+                return await self._refresh()
             if name == "window_status":
                 snap = self._snapshot()
-                mem = ", ".join(m["name"] + f" (ID {m['id']})" + (" [muted]" if m["muted"] else "") for m in snap["members"]) or "none"
+                def _desc(m):
+                    bits = []
+                    if m["muted"]:
+                        bits.append("muted")
+                    if m["cam"]:
+                        bits.append("camera on, " + ("picture visible" if (m["id"], "camera") in snap["frames"] else "no picture yet"))
+                    if m["live"]:
+                        bits.append("streaming, " + ("picture visible" if (m["id"], "stream") in snap["frames"] else "no picture yet"))
+                    return m["name"] + f" (ID {m['id']})" + (" [" + "; ".join(bits) + "]" if bits else "")
+                mem = ", ".join(_desc(m) for m in snap["members"]) or "none"
                 return f"Voice members: {mem}. " + self._summary()
 
             if name == "window_scroll":
