@@ -141,6 +141,7 @@ You receive a live video feed (about 1 frame per second) that is a render of the
 - RIGHT = the TEXT CHAT panel, headed "TEXT CHAT # channel-name" with a message box at the bottom. It is a written text channel, NOT the voice channel: nobody speaks there. Every message has a number "#n" and attachments are numbered [k]. The messages you wrote in text appear there too, as your own name with "(you)". New messages also reach you as plain text.
 - Images/videos/audio posted in the text chat are NOT sent to you directly; open them with the window tools.
 - Tools: window_scroll (scroll the text chat), window_zoom (open + zoom an image in the call area), window_zoom_avatar, window_close_view, window_media (play/pause/seek a video or audio file; its audio is streamed to you), window_status.
+- Every voice tile and every chat message shows that person's Discord ID in small text (e.g. "ID 1234..."). Use it as user_id in saved_information to say whose saved info you are changing.
 - After a tool call the next frame already shows the result. Frames lag by up to a second, so do not assume the view is stale or broken.
 """
 
@@ -770,6 +771,10 @@ class VirtualDiscordWindow:
             d.text((tx + 20, py + 3), label, font=nf, fill=TEXT)
             if tags:
                 d.text((tx + 20 + nf.getlength(label), py + 7), tag_txt, font=tgf, fill=RED if (m["muted"] or m["deaf"]) else GREEN)
+            idf = _font(13)
+            id_txt = f"ID {m['id']}"
+            d.rounded_rectangle((tx + 10, py - 24, tx + 26 + int(idf.getlength(id_txt)), py - 4), 5, fill=(0, 0, 0))
+            d.text((tx + 18, py - 22), id_txt, font=idf, fill=MUTED)
 
     def _draw_player(self, frame, d, p, box) -> None:
         x0, y0, x1, y1 = box
@@ -888,7 +893,7 @@ class VirtualDiscordWindow:
         nf = _tfont(e.name, 19, True)
         vd.text((tx, cy), e.name, font=nf, fill=e.color or TEXT)
         nx = tx + nf.getlength(e.name) + 10
-        meta = f"{e.time}   #{e.num}"
+        meta = f"{e.time}   #{e.num}   ID {e.author_id}"
         vd.text((nx, cy + 3), meta, font=_font(15), fill=MUTED)
         cy += 26
         for ln in lines:
@@ -957,7 +962,7 @@ class VirtualDiscordWindow:
             args = args or {}
             if name == "window_status":
                 snap = self._snapshot()
-                mem = ", ".join(m["name"] + (" [muted]" if m["muted"] else "") for m in snap["members"]) or "none"
+                mem = ", ".join(m["name"] + f" (ID {m['id']})" + (" [muted]" if m["muted"] else "") for m in snap["members"]) or "none"
                 return f"Voice members: {mem}. " + self._summary()
 
             if name == "window_scroll":

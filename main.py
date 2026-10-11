@@ -941,6 +941,25 @@ async def slash_arona(
             pass
 
 # § VOICE CHANNEL  (join_voice_channel, leave_voice_channel)
+def _saved_info_target(args, message):
+  """(resolved_id, error). Text chat: always the author. Voice call (mock message without .id):
+  args['user_id'] must be a human currently in the voice channel."""
+  if hasattr(message, "id"):
+    return resolve_id(message.author.id), None
+  vc = getattr(gemini_ws, "voice_client", None)
+  ch = getattr(vc, "channel", None)
+  humans = [m for m in (ch.members if ch else []) if not m.bot]
+  raw = str(args.get("user_id", "") or "").strip().strip("<@!>")
+  if not raw:
+    if len(humans) == 1:
+      return resolve_id(humans[0].id), None
+    return None, "Error: user_id required in a call with several people. Participants: " + ", ".join(f"{m.display_name} (ID {m.id})" for m in humans)
+  target = next((m for m in humans if str(m.id) == raw), None)
+  if target is None:
+    return None, f"Error: user_id {raw} is not in the call. Participants: " + ", ".join(f"{m.display_name} (ID {m.id})" for m in humans)
+  return resolve_id(target.id), None
+
+
 def build_voice_member_memory(member) -> str:
   """Saved information + personalization note (__impression__) of one voice participant,
   as a block for the live model. Same sources/wording as the text-chat METADATA."""
@@ -2607,16 +2626,22 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
       if action == "edit":
         key = args.get("key", "")
         content = args.get("value", "")
-        user_id = resolve_id(message.author.id)
+        user_id, _si_err = _saved_info_target(args, message)
+        if _si_err:
+          return _si_err
         return memory.edit(user_id, key, content)
       if action == "add":
         key = args.get("key", "")
         content = args.get("value", "")
-        user_id = resolve_id(message.author.id)
+        user_id, _si_err = _saved_info_target(args, message)
+        if _si_err:
+          return _si_err
         return memory.add(user_id, key, content)
       if action == "delete":
         key = args.get("key", "")
-        user_id = resolve_id(message.author.id)
+        user_id, _si_err = _saved_info_target(args, message)
+        if _si_err:
+          return _si_err
         return memory.delete(user_id, key)
     
     
