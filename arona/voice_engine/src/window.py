@@ -1,8 +1,8 @@
 """Virtual Discord window for Gemini Live voice sessions.
 
 The Live API does not accept inline files, so instead of handing the model
-attachments we render a fake "Discord window" (Pillow) and stream it as a
-~1 fps JPEG video feed through realtime_input.video. The model drives it with
+attachments we render a fake "Discord window" (Pillow) up to 30 fps and stream
+a screenshot once per second through realtime_input.video. The model drives it with
 function calls (scroll / zoom / media control) and can see who is speaking
 (green ring + "Speaking:" label) plus every member's avatar.
 
@@ -31,7 +31,9 @@ HINT_H = 24
 PAD = 16
 AV = 40
 VIDEO_STALE = 3.0             # seconds after which a camera frame counts as gone
-FRAME_MIN_INTERVAL = 1.0      # seconds between frames (Live API samples video at ~1 fps)
+RENDER_FPS = 30
+RENDER_MIN_INTERVAL = 1.0 / RENDER_FPS
+FRAME_MIN_INTERVAL = 1.0      # seconds between screenshots sent to the Live API
 SPEAK_HOLD = 0.6              # seconds a member stays "speaking" after the last loud audio
 MAX_MSGS = 150
 HISTORY_LOAD = 40
@@ -152,7 +154,7 @@ WINDOW_TOOL_NAMES = {t["name"] for t in WINDOW_TOOLS}
 WINDOW_PROMPT = """
 
 [VIRTUAL DISCORD WINDOW]
-You receive a live video feed (about 1 frame per second) that is a render of the Discord window for this call. It has two SEPARATE parts:
+You receive one screenshot per second of the Discord window for this call. It has two SEPARATE parts:
 - LEFT = the VOICE CALL (the voice channel you are speaking in). It shows one tile per person in the call with their avatar. A GREEN BORDER around a tile and the "Speaking: ..." label in its top bar show who is talking right now. The audio you hear is a mix of everyone, so use this to work out who said what. You are the tile marked "(you)". This area also shows a zoomed image or a media player while you have one open.
 - RIGHT = the TEXT CHAT panel, headed "TEXT CHAT # channel-name" with a message box at the bottom. It is a written text channel, NOT the voice channel: nobody speaks there. Every message has a number "#n" and attachments are numbered [k]. The messages you wrote in text appear there too, as your own name with "(you)". New messages also reach you as plain text.
 - Images/videos/audio posted in the text chat are NOT sent to you directly; open them with the window tools.
@@ -164,24 +166,37 @@ You receive a live video feed (about 1 frame per second) that is a render of the
 
 
 # ───────────────────────── fonts / text helpers ─────────────────────────
-_FONT_DIRS = ["C:/Windows/Fonts/", "/usr/share/fonts/truetype/dejavu/", "/usr/share/fonts/truetype/noto/"]
+_FONT_DIRS = [
+    os.path.join(ROOT, "fonts"),
+    os.path.join(ROOT, "assets", "fonts"),
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts"),
+    "C:/Windows/Fonts",
+    "/usr/share/fonts/truetype/noto",
+    "/usr/share/fonts/opentype/noto",
+    "/usr/share/fonts/truetype/dejavu",
+]
 _FONT_CACHE: Dict[tuple, Any] = {}
-_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\U00020000-\U0003134f]")
+_NERD_GLYPH = re.compile(r"[\u2190-\u2bff\u2600-\u27bf\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
 
 
-def _font(size: int, bold: bool = False, cjk: bool = False):
-    key = (size, bold, cjk)
+def _font(size: int, bold: bool = False, cjk: bool = False, nerd: bool = False):
+    key = (size, bold, cjk, nerd)
     if key in _FONT_CACHE:
         return _FONT_CACHE[key]
     if cjk:
-        names = ["YuGothB.ttc" if bold else "YuGothM.ttc", "msyh.ttc", "msgothic.ttc", "NotoSansCJK-Regular.ttc"]
+        names = (["SarasaGothicNerdFont-Bold.ttf", "NotoSansCJK-Bold.ttc", "NotoSansCJKjp-Bold.otf", "YuGothB.ttc", "msyhbd.ttc"]
+                 if bold else ["SarasaGothicNerdFont-Regular.ttf", "NotoSansCJK-Regular.ttc", "NotoSansCJKjp-Regular.otf", "YuGothM.ttc", "msyh.ttc", "msgothic.ttc"])
+    elif nerd:
+        names = (["CaskaydiaCoveNerdFont-Bold.ttf", "JetBrainsMonoNerdFont-Bold.ttf", "FiraCodeNerdFont-Bold.ttf"]
+                 if bold else ["CaskaydiaCoveNerdFont-Regular.ttf", "JetBrainsMonoNerdFont-Regular.ttf", "FiraCodeNerdFont-Regular.ttf"])
     else:
         names = ["segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"] if bold else ["segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"]
     font = None
     for d in _FONT_DIRS:
         for n in names:
             try:
-                font = ImageFont.truetype(d + n, size)
+                font = ImageFont.truetype(os.path.join(d, n), size)
                 break
             except Exception:
                 continue
@@ -193,7 +208,9 @@ def _font(size: int, bold: bool = False, cjk: bool = False):
 
 
 def _tfont(text: str, size: int, bold: bool = False):
-    return _font(size, bold, bool(_CJK.search(text or "")))
+    text = text or ""
+    cjk = bool(_CJK.search(text))
+    return _font(size, bold, cjk, not cjk and bool(_NERD_GLYPH.search(text)))
 
 
 def _wrap(font, text: str, maxw: int) -> List[str]:
@@ -451,6 +468,7 @@ class VirtualDiscordWindow:
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._last_sent = 0.0
+        self._last_rendered = 0.0
         self.last_jpg: Optional[bytes] = None            # newest rendered frame (debug web view)
         self.frame_seq = 0
         self._last_speaking: frozenset = frozenset()
@@ -472,6 +490,7 @@ class VirtualDiscordWindow:
                 self.add_message(m)
         except Exception as e:
             console.log(f"[Window] Failed to load history: {e}", "WARN")
+        self._last_sent = self._last_rendered = 0.0
         self._running, self.dirty = True, True
         self._task = asyncio.create_task(self._loop())
         console.log("[Window] Virtual Discord window started", "INFO")
@@ -615,7 +634,7 @@ class VirtualDiscordWindow:
         nf = _tfont(e.name, 18, True)
         nx = ax + 32
         vd.text((nx, y), e.name, font=nf, fill=TEXT)
-        tf = _font(18)
+        tf = _tfont(e.text, 18)
         tx2 = nx + nf.getlength(e.name) + 6
         vd.text((tx2, y), e.text, font=tf, fill=MUTED)
         vd.text((tx2 + tf.getlength(e.text) + 12, y + 3), e.time, font=_font(15), fill=MUTED)
@@ -720,7 +739,7 @@ class VirtualDiscordWindow:
     async def _loop(self) -> None:
         try:
             while self._running:
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(RENDER_MIN_INTERVAL)
                 try:
                     wsock = self.ws.ws
                     if not wsock or wsock.protocol.state.name != "OPEN":
@@ -728,8 +747,11 @@ class VirtualDiscordWindow:
                     sp = self._speaking_ids()
                     if sp != self._last_speaking:
                         self._last_speaking, self.dirty = sp, True
-                    if (self.dirty or self._force) and time.monotonic() - self._last_sent >= FRAME_MIN_INTERVAL:
-                        await self._push()
+                    now = time.monotonic()
+                    if (self.dirty or self._force or self.last_jpg is None) and now - self._last_rendered >= RENDER_MIN_INTERVAL:
+                        await self._render_latest()
+                    if self.last_jpg is not None and time.monotonic() - self._last_sent >= FRAME_MIN_INTERVAL:
+                        await self._send_latest()
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -737,13 +759,19 @@ class VirtualDiscordWindow:
         except asyncio.CancelledError:
             pass
 
-    async def _push(self) -> None:
+    async def _render_latest(self) -> None:
         async with self._lock:
             self.dirty = self._force = False
             snap = self._snapshot()
             jpg = await asyncio.to_thread(self._render, snap)
             self.last_jpg, self.frame_seq = jpg, self.frame_seq + 1
-            await self.ws.send_video_frame(jpg)
+            self._last_rendered = time.monotonic()
+
+    async def _send_latest(self) -> None:
+        async with self._lock:
+            if self.last_jpg is None:
+                return
+            await self.ws.send_video_frame(self.last_jpg)
             self._last_sent = time.monotonic()
 
     # ── rendering (worker thread) ──
@@ -835,7 +863,7 @@ class VirtualDiscordWindow:
                 d.text((txx, py + (5 if compact else 7)), "  " + tg, font=tgf, fill=tag_cols[tg])
                 txx += tgf.getlength("  " + tg)
         idf = _font(11 if compact else 13)
-        id_txt = f"ID {m['id']}"
+        id_txt = "" #f"ID {m['id']}"
         idh = 16 if compact else 20
         d.rounded_rectangle((tx + 10, py - idh - 4, tx + 26 + int(idf.getlength(id_txt)), py - 4), 5, fill=(0, 0, 0))
         d.text((tx + 18, py - idh - 2), id_txt, font=idf, fill=MUTED)

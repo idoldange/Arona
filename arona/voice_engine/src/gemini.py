@@ -133,15 +133,15 @@ class GeminiWebSocket:
                 },
         
                 ## 2. Bật Proactive (Bỏ qua tạp âm, chỉ trả lời khi cần)
-                "proactivity": {
-                    "proactive_audio": True
-                },
+                #"proactivity": {
+                #    "proactive_audio": True
+                #},
         
                 # 3. Bật và cấu hình VAD (Tự động nhận diện giọng nói)
                 "realtime_input_config": {
                     "automatic_activity_detection": {
                         "disabled": False,
-                        "silence_duration_ms": 1, 
+                        "silence_duration_ms": 10, 
                         "start_of_speech_sensitivity": "START_SENSITIVITY_HIGH",
                         "end_of_speech_sensitivity": "END_SENSITIVITY_LOW"
                     }

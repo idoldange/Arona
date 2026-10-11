@@ -1,4 +1,4 @@
-"""Debug-mode web server: live view of the voice-call UI (the same ~1 fps picture the Gemini Live model sees).
+"""Debug-mode web server: live view of the voice-call UI (rendered up to 30 fps).
 
 Started / stopped together with debug mode (console: debug start / debug stop, or debug_enabled at boot).
   GET /debug/call_ui        page that shows the stream
@@ -26,7 +26,7 @@ PAGE = """<!doctype html>
 </style></head>
 <body>
 <img src="/debug/call_ui.mjpg" alt="voice call UI">
-<p>Live voice-call UI (about 1 fps, same picture the model sees) - debug mode only</p>
+<p>Live voice-call UI (rendered up to 30 fps; model receives one screenshot per second) - debug mode only</p>
 </body></html>
 """
 
@@ -61,8 +61,8 @@ async def _stream(request: web.Request, window: Any) -> web.StreamResponse:
                 await resp.write(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
                                  + str(len(data)).encode() + b"\r\n\r\n" + data + b"\r\n")
                 last_seq, idle = seq, 0.0
-            await asyncio.sleep(0.2)
-            idle += 0.2
+            await asyncio.sleep(1 / 30)
+            idle += 1 / 30
     except (ConnectionResetError, asyncio.CancelledError, ConnectionError):
         pass
     return resp
