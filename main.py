@@ -99,6 +99,7 @@ VideoFileClip.DEFAULT_AUDIO_FPS = 44100
 from debug import debug_enabled
 from arona.voice_engine.src.record import AudioProcessor
 from arona.voice_engine.src.gemini import GeminiWebSocket
+from arona.voice_engine.src import video_rx
 from arona.voicechanger import VoiceChangerBridge
 import aiohttp
 import gc
@@ -545,6 +546,8 @@ gemini_ws: GeminiWebSocket = GeminiWebSocket(
     persona=get_live_arona_prompt(),
 )
 voice_bridge: VoiceChangerBridge = VoiceChangerBridge()
+# EXPERIMENTAL (env VIDEO_RX=1): receive members' camera / screen share into the virtual window
+video_receiver = video_rx.install(gemini_ws.window, lambda: gemini_ws.voice_client) if video_rx.ENABLED else None
 voice_bridge.start()
 sink: AudioProcessor = None
 
@@ -9043,6 +9046,12 @@ async def on_message(message):
 @client.event
 
 # § VOICE EVENTS  (on_voice_member_speaking_start/stop, on_voice_state_update)
+async def on_voice_member_video(member, streams):
+  """voice_recv: a member's camera / screen-share state changed (video ssrc map)."""
+  if video_receiver:
+    video_receiver.on_video_state(member, streams)
+
+@client.event
 async def on_voice_member_speaking_start(member: discord.Member):
   """Called when a user starts speaking in a voice channel."""
   if sink:
@@ -9065,6 +9074,8 @@ async def on_voice_state_update(member, before, after):
 
             # Always clean up Gemini state first
             saved_text_ch = gemini_ws.current_channel   # save before clearing
+            if video_receiver:
+                video_receiver.reset()
             await gemini_ws.close()
             gemini_ws.current_user = None
             gemini_ws.current_channel = None
@@ -9143,6 +9154,10 @@ async def on_voice_state_update(member, before, after):
         gemini_ws.window.on_voice_state(member, before, after)
     except Exception as e:
         console.log(f"[Window] voice state hook failed: {e}", "WARN")
+
+    # member left the call -> drop their camera/stream
+    if video_receiver and before.channel is not None and (after.channel is None or after.channel.id != before.channel.id):
+        video_receiver.forget_user(member.id)
 
     # other member joined the bot's channel mid-call — give the live model their memory
     try:

@@ -35,6 +35,7 @@ ENABLE_FUNCTIONS    = True
 # Reference audio for voice call for gemini to mimic the "vibe"
 VOICE_CALL_REF_AUD  = "./arona/voice_engine/ref/tts.wav"  
 # Transcript of the reference audio for gemini to mimic the "vibe"
+VIDEO_RX = False  # EXPERIMENTAL: receive members' camera / screen share into the voice-call window (needs restart; patches discord.py's voice handshake)
 VOICE_CALL_REF_TEXT = "せんせい、おつかれさまです！シロコせんぱいたちからのほうこくをまとめましたよ。えへへ、きょうもいちにち、いっしょにがんばりましょうね！じゅんびはいいですか、せんせい？"
 
 # Quotas and limits for free-tier users
