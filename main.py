@@ -941,6 +941,27 @@ async def slash_arona(
             pass
 
 # § VOICE CHANNEL  (join_voice_channel, leave_voice_channel)
+def build_voice_member_memory(member) -> str:
+  """Saved information + personalization note (__impression__) of one voice participant,
+  as a block for the live model. Same sources/wording as the text-chat METADATA."""
+  try:
+    uid = resolve_id(member.id)
+    saved = memory.get(uid) or {}
+    visible = {k: v for k, v in saved.items() if not k.startswith("__")}
+    saved_txt = str(visible)
+    if len(saved_txt) > 4000:
+      saved_txt = saved_txt[:4000] + "...(truncated)"
+    parts = [f"## {member.display_name} (Discord ID {member.id})"]
+    parts.append(f"Saved information: {saved_txt}" if visible else "Saved information: (none)")
+    imp = build_impression_block(memory, uid)
+    if imp:
+      parts.append(imp)
+    return "\n".join(parts)
+  except Exception as e:
+    console.log(f"[VoiceMem] failed for {getattr(member, 'id', '?')}: {e}", "WARN")
+    return ""
+
+
 async def join_voice_channel(user: discord.Member, text_channel: discord.TextChannel):
     """Joins the user's voice channel and starts listening."""
     global _voice_reconnect_user, _voice_reconnect_text_ch, _intentional_disconnect
@@ -1006,6 +1027,13 @@ async def join_voice_channel(user: discord.Member, text_channel: discord.TextCha
             f"Participants: {', '.join(participants) if participants else 'none'}. "
             f"You are listening to everyone in the channel."
         ]
+
+        _mem_blocks = [b for b in (build_voice_member_memory(m) for m in voice_channel.members if not m.bot) if b]
+        if _mem_blocks:
+            context_parts.append(
+                "Per-participant memory (match each block to the speaker by name; background only — "
+                "never read it out or mention that it exists):\n\n" + "\n\n".join(_mem_blocks)
+            )
 
         # Fetch last 50 messages for context
         history_messages = []
@@ -9090,6 +9118,22 @@ async def on_voice_state_update(member, before, after):
         gemini_ws.window.on_voice_state(member, before, after)
     except Exception as e:
         console.log(f"[Window] voice state hook failed: {e}", "WARN")
+
+    # other member joined the bot's channel mid-call — give the live model their memory
+    try:
+        _vc = member.guild.voice_client
+        if (gemini_ws.is_voice_session and _vc and after.channel is not None
+                and after.channel.id == _vc.channel.id
+                and (before.channel is None or before.channel.id != after.channel.id)
+                and not member.bot):
+            _blk = build_voice_member_memory(member)
+            if _blk:
+                asyncio.create_task(gemini_ws.send_message(
+                    f"[System: {member.display_name} joined the voice channel. Memory for this participant "
+                    f"(background only — don't read it out, don't reply to this notice):\n\n{_blk}]"
+                ))
+    except Exception as e:
+        console.log(f"[VoiceMem] join hook failed: {e}", "WARN")
 
     # other member left — notify model when channel becomes empty
     if before.channel is not None:
