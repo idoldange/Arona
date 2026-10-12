@@ -774,6 +774,11 @@ class VirtualDiscordWindow:
             await self.ws.send_video_frame(self.last_jpg)
             self._last_sent = time.monotonic()
 
+    async def _push(self) -> None:
+        """Refresh and send immediately after a window tool changes the view."""
+        await self._render_latest()
+        await self._send_latest()
+
     # ── rendering (worker thread) ──
     def _render(self, snap: Dict[str, Any]) -> bytes:
         frame = Image.new("RGB", (W, H), CALL_BG)
@@ -863,7 +868,7 @@ class VirtualDiscordWindow:
                 d.text((txx, py + (5 if compact else 7)), "  " + tg, font=tgf, fill=tag_cols[tg])
                 txx += tgf.getlength("  " + tg)
         idf = _font(11 if compact else 13)
-        id_txt = "" #f"ID {m['id']}"
+        id_txt = "" f"ID {m['id']}"
         idh = 16 if compact else 20
         d.rounded_rectangle((tx + 10, py - idh - 4, tx + 26 + int(idf.getlength(id_txt)), py - 4), 5, fill=(0, 0, 0))
         d.text((tx + 18, py - idh - 2), id_txt, font=idf, fill=MUTED)

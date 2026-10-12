@@ -52,17 +52,23 @@ class GeminiWebSocket:
         """Closes the WebSocket connection."""
         try:
             await self.window.stop()
-        except Exception:
-            pass
-        if self.ws:
+        except Exception as e:
+            console.log(f"[Gemini Live] Failed to stop virtual window: {e}", "WARN")
+        ws, self.ws = self.ws, None
+        task, self.receive_task = self.receive_task, None
+        if task and task is not asyncio.current_task():
+            task.cancel()
             try:
-                await self.ws.close()
-            except Exception:
+                await task
+            except asyncio.CancelledError:
                 pass
-            self.ws = None
-        if self.receive_task:
-            self.receive_task.cancel()
-            self.receive_task = None
+            except Exception as e:
+                console.log(f"[Gemini Live] Receive task cleanup failed: {e}", "WARN")
+        if ws:
+            try:
+                await ws.close()
+            except Exception as e:
+                console.log(f"[Gemini Live] WebSocket close failed: {e}", "WARN")
 
     async def connect(self) -> None:
         if self._connecting:  # a connect (ws open + setup) is already in flight
@@ -79,6 +85,15 @@ class GeminiWebSocket:
             await asyncio.sleep(0.05)
 
     async def _connect_inner(self) -> None:
+        if self.ws and self.ws.protocol.state.name == "OPEN":
+            return
+        if self.ws:
+            stale_ws, self.ws = self.ws, None
+            try:
+                await stale_ws.close()
+            except Exception as e:
+                console.log(f"[Gemini Live] Failed to close stale WebSocket: {e}", "WARN")
+
         api_key_list = os.getenv('GEMINI_API_KEY')
         try:
             api_keys = json.loads(api_key_list) if api_key_list else []
@@ -157,40 +172,40 @@ class GeminiWebSocket:
 
     async def listen(self) -> None:
         """Continuous listening loop for server messages."""
+        ws = self.ws
+        if not ws:
+            console.log("[Gemini Live] Listener started without a WebSocket.", "ERROR")
+            return
         try:
             while True:
-                if not self.ws or not self.ws.protocol.state.name == 'OPEN':
+                if ws.protocol.state.name != 'OPEN':
                     break
                 try:
-                    raw_response: bytes = await self.ws.recv()
+                    raw_response: bytes = await ws.recv()
                     response: Dict[str, Any] = json.loads(raw_response.decode("utf-8"))
                     await self.handle_message(response)
                 except Exception as e:
-                    console.log(f"[Gemini Live] Listen loop error: {e}", "ERROR")
+                    console.log(
+                        f"[Gemini Live] Listen loop error "
+                        f"(state={ws.protocol.state.name}): {type(e).__name__}: {e}",
+                        "ERROR",
+                    )
                     break
         except asyncio.CancelledError:
             console.log("Listen loop cancelled", "INFO")
         finally:
-            console.log("[Gemini Live] Connection ended. Cleaning up...", "WARN")
-            
-            if self.voice_client and self.voice_client.is_connected():
-                console.log("Gemini disconnected, leaving Voice Channel.", "INFO")
-                vc = self.voice_client
-                ch = self.current_channel
-                async def _do_leave():
-                    if ch:
-                        try: await ch.send("Goodbye!")
-                        except: pass
-                    try: await vc.disconnect(force=True)
-                    except: pass
-                asyncio.create_task(_do_leave())
-            
-            if self.ws:
-                try:
-                    await self.ws.close()
-                except:
-                    pass
+            console.log(
+                f"[Gemini Live] Receive loop ended "
+                f"(state={ws.protocol.state.name}, still_current={self.ws is ws}); "
+                "voice connection will remain active.",
+                "WARN",
+            )
+            if self.ws is ws:
                 self.ws = None
+                try:
+                    await ws.close()
+                except Exception as e:
+                    console.log(f"[Gemini Live] Failed to close ended WebSocket: {e}", "WARN")
 
     async def handle_message(self, response: Dict[str, Any]) -> None:
         if "error" in response:
