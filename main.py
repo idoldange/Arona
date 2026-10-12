@@ -52,6 +52,29 @@ for _n, _lvl in (("discord.ext.voice_recv", logging.DEBUG), ("discord.voice_stat
     _l.addHandler(_vr_console)
     _l.propagate = False
 from console import console
+
+# Log WHY the voice websocket died. discord.py's _poll_voice_ws calls disconnect() silently when
+# reconnect=False, so the bot would vanish from the call with no trace of the close code.
+try:
+    import asyncio as _vws_asyncio
+    from discord.gateway import DiscordVoiceWebSocket as _DVWS
+    from discord.errors import ConnectionClosed as _VWSClosed
+    _orig_poll_event = _DVWS.poll_event
+
+    async def _logged_poll_event(self, *a, **kw):
+        try:
+            return await _orig_poll_event(self, *a, **kw)
+        except _VWSClosed as _e:
+            console.log(f"[VoiceWS] closed: code={_e.code} reason={getattr(_e, 'reason', '')!r}", "WARN")
+            raise
+        except _vws_asyncio.TimeoutError:
+            console.log("[VoiceWS] no event for 30s (poll timeout)", "WARN")
+            raise
+
+    _DVWS.poll_event = _logged_poll_event
+except Exception as _e:
+    console.log(f"[VoiceWS] could not install close-code logger: {_e}", "WARN")
+
 started = False
 console.log("Starting Arona bot...", "INFO")
 import time
@@ -9124,7 +9147,7 @@ async def on_voice_state_update(member, before, after):
 
                 for attempt in range(1, _RECONNECT_MAX_ATTEMPTS + 1):
                     await asyncio.sleep(RETRY_DELAY)
-                    console.log(f"[RECONNECT] Attempt {attempt}/{MAX_ATTEMPTS}...", "INFO")
+                    console.log(f"[RECONNECT] Attempt {attempt}/{_RECONNECT_MAX_ATTEMPTS}...", "INFO")
 
                     # Check user is still in a voice channel
                     try:
