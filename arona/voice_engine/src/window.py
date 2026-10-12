@@ -270,7 +270,7 @@ class _Entry:
 # ───────────────────────── media player ─────────────────────────
 class MediaPlayer:
     """Plays a local video/audio file into the Live session: audio as 16 kHz PCM through
-    realtime audio, video as 1 fps JPEG frames shown in the window's player panel."""
+    realtime audio, video rendered at up to 30 fps in the window's player panel."""
 
     def __init__(self, win: "VirtualDiscordWindow", path: str, name: str, kind: str, ref: str):
         self.win, self.path, self.name, self.kind, self.ref = win, path, name, kind, ref
@@ -401,7 +401,7 @@ class MediaPlayer:
     async def _video_loop(self, start: float) -> None:
         proc = await asyncio.create_subprocess_exec(
             _bin("ffmpeg"), "-v", "error", "-ss", str(start), "-i", self.path, "-an",
-            "-vf", "fps=1,scale=640:-2", "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+            "-vf", "fps=30,scale=640:-2", "-q:v", "5", "-f", "image2pipe", "-vcodec", "mjpeg", "-",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         self._procs.append(proc)
         buf, k, t0 = b"", 0, self.t0
