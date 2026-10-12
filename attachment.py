@@ -14,6 +14,7 @@ from utils.file_converter import voicebank_to_json
 
 # Shared session for attachment functions: use central SessionManager
 from utils.http_session import session_manager
+from utils import cdn_refresh
 
 async def _get_shared_session():
     return await session_manager.get_session()
@@ -700,6 +701,9 @@ async def discord_attachment_to_parts(attachments: list[discord.Attachment], tex
     """
     if not attachments:
         return []
+
+    # Renew expired Discord CDN URLs (pasted links, stale cached messages) before reading/tagging
+    await cdn_refresh.renew_attachments(attachments)
     
     # Phân loại attachments
     archive_atts = []

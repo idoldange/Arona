@@ -126,6 +126,7 @@ from utils.todo import todo_create, todo_done, todo_edit, get_todo_block, build_
 from utils.gacha_tracker import add_pulls, reset_banner, set_shards, get_status, get_all_banners
 from utils.channel_memory import get_memory as get_channel_memory, set_memory as set_channel_memory, append_memory as append_channel_memory, clear_memory as clear_channel_memory, build_prompt_block as build_channel_memory_block
 from utils.unstick_request import fire_unstick_request
+from utils import cdn_refresh
 from utils.guild_memory import get_memory as get_guild_memory, set_memory as set_guild_memory, append_memory as append_guild_memory, clear_memory as clear_guild_memory, build_prompt_block as build_guild_memory_block
 from utils.impression import build_impression_block, update_impression
 from utils.youtube import get_video_info as get_youtube_info, format_for_gemini as format_youtube, get_transcript as get_youtube_transcript
@@ -781,6 +782,7 @@ intents.guilds = True  # Add this
 intents.voice_states = True 
 
 client = commands.Bot(command_prefix="/", intents=intents)
+cdn_refresh.init(client)
 tree = client.tree
 
 # § USER INSTALL SLASH COMMANDS (user can install bot to their account)
@@ -2680,6 +2682,7 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
     elif function_name == "load_more_context":
       limit = min(int(args.get("limit", 30)), 50)
       entries = await load_channel_history(message.channel, limit=limit, current_message_id=message.id)
+      await cdn_refresh.renew_history(entries)
       import json as _json
       return _json.dumps({"__load_context__": entries})
 
@@ -7703,7 +7706,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
           web_history = []
 
       
-      content = user_input or message.clean_content
+      content = await cdn_refresh.renew_text(user_input or message.clean_content)
       console.log_var_full("Content", content if message.guild else "***", "INFO")
 
       if attachments is None:
@@ -7740,12 +7743,14 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
               )
 
               reply_context = f"(Referencing to {author_name}: {replied_text}{attach_block})\n" if replied_text or attach_block else f"(Replying to {author_name})"
+              reply_context = await cdn_refresh.renew_text(reply_context)
               console.log_var_full("Reply context", reply_context if message.guild else "***", "INFO")
   
           except Exception as e:
               console.log(f"Error building reply_context: {e}", "ERROR")
 
       history = web_history[::-1] if web_history else []
+      await cdn_refresh.renew_history(history)
       # Guard: two "model" turns can end up back-to-back after reconstruction (e.g. a
       # plain-text bot note sitting right before a reconstructed run_code functionCall
       # pair, with no user message between them in Discord). Merge them BEFORE they
