@@ -4,6 +4,8 @@ Started / stopped together with debug mode (console: debug start / debug stop, o
   GET /debug/call_ui        page that shows the stream
   GET /debug/call_ui.mjpg   raw MJPEG stream (multipart/x-mixed-replace)
   WS  /debug/call_audio     what the bot hears: raw 16 kHz mono PCM16 chunks (played by the page)
+  /debug, /debug/system, /debug/terminal, /debug/python   see debug_panel.py
+Every /debug/* route needs a login (same user / password as server.js: pass.txt -> pass.hash); see debug_panel.py.
 """
 import asyncio
 import io
@@ -12,6 +14,7 @@ from typing import Any, Optional
 from aiohttp import web
 
 from console import console
+from arona.voice_engine.src import debug_panel
 
 _runner: Optional[web.AppRunner] = None
 _placeholder: Optional[bytes] = None
@@ -26,6 +29,7 @@ PAGE = """<!doctype html>
   p { margin: 8px; }
 </style></head>
 <body>
+__NAV__
 <img src="/debug/call_ui.mjpg" alt="voice call UI">
 <p>Live voice-call UI (rendered up to 30 fps; model receives one screenshot per second) - debug mode only</p>
 <p><button id="a">Listen to what the bot hears</button> <span id="s"></span></p>
@@ -58,6 +62,9 @@ btn.onclick = () => {
 </script>
 </body></html>
 """
+
+
+PAGE = PAGE.replace("__NAV__", debug_panel.nav_block("/debug/call_ui"))
 
 
 def _no_call_jpeg() -> bytes:
@@ -131,7 +138,8 @@ async def start(window: Any, host: str, port: int) -> None:
     global _runner
     if _runner is not None:
         return
-    app = web.Application()
+    app = web.Application(middlewares=[debug_panel.auth_middleware])
+    debug_panel.add_routes(app)
 
     async def page(request: web.Request) -> web.Response:
         return web.Response(text=PAGE, content_type="text/html")
