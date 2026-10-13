@@ -2,6 +2,7 @@ import asyncio
 import traceback
 import discord
 import audioop
+import collections
 import time
 from typing import Optional, Dict, Set, Any
 from arona.voice_engine.src.gemini import GeminiWebSocket 
@@ -28,6 +29,14 @@ except Exception as _e:  # pragma: no cover
     console.log(f"[VoiceRecv] could not install reader trace: {_e}", "WARN")
 
 
+# Silence gate: an open mic with nobody talking still produces a packet every 20 ms. Only stream to Gemini
+# while a user is making sound; keep sending GATE_HOLD s after the last loud frame (so Gemini's VAD sees the
+# end of the sentence) and prepend PREROLL_FRAMES x 20 ms so the first syllable is not clipped.
+GATE_RMS = 200
+GATE_HOLD = 1.0
+PREROLL_FRAMES = 15
+
+
 class AudioProcessor(voice_recv.AudioSink):
     def __init__(self, 
                  user: discord.User, 
@@ -44,6 +53,8 @@ class AudioProcessor(voice_recv.AudioSink):
         self.vc: Optional[discord.VoiceClient] = vc
         self.resample_states: Dict[int, Any] = {}
         self.known_ssrcs = set()
+        self._last_loud: Dict[int, float] = {}
+        self._preroll: Dict[int, collections.deque] = {}
 
     def wants_opus(self) -> bool:
         return False
@@ -71,14 +82,27 @@ class AudioProcessor(voice_recv.AudioSink):
             mono_data = audioop.tomono(audio_data.pcm, 2, 1, 1)
             
             # 1b. Track who is speaking (shown in the virtual Discord window)
-            if audioop.rms(mono_data, 2) > 250:
+            rms = audioop.rms(mono_data, 2)
+            if rms > 250:
                 self.gemini_ws.window.last_audio[user_id] = time.monotonic()
 
             # 2. Resample 48000 -> 16000
             resampled_data, state = audioop.ratecv(mono_data, 2, 1, 48000, 16000, state)
             self.resample_states[user_id] = state
             
-            # 3. Stream to Gemini - NO CONDITIONS
+            # 3. Stream to Gemini only while this user is actually making sound (see GATE_* above)
+            now = time.monotonic()
+            if rms > GATE_RMS:
+                self._last_loud[user_id] = now
+            pre = self._preroll.get(user_id)
+            if pre is None:
+                pre = self._preroll[user_id] = collections.deque(maxlen=PREROLL_FRAMES)
+            if now - self._last_loud.get(user_id, 0.0) >= GATE_HOLD:
+                pre.append(resampled_data)   # gate closed: just remember the last few frames
+                return
+            if pre:
+                resampled_data = b"".join(pre) + resampled_data
+                pre.clear()
             asyncio.run_coroutine_threadsafe(
                 self.gemini_ws.send_audio_chunk(resampled_data), 
                 self.bot.loop

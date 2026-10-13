@@ -1,4 +1,5 @@
 import asyncio
+import time
 from queue import Queue, Empty
 import discord
 from typing import Optional
@@ -12,6 +13,7 @@ class QueuedStreamingPCMAudio(discord.AudioSource):
         self.pos: int = 0
         self._end_flag: bool = False
         self.interrupted: bool = False
+        self.last_voice: float = 0.0   # monotonic time of the last real (non-silence) frame; read by the call UI
         self.input_frame_size: int = 960  # 24kHz mono
         self.output_frame_size: int = 3840  # 48kHz stereo
         self.silence: bytes = b'\x00' * self.output_frame_size
@@ -74,6 +76,7 @@ class QueuedStreamingPCMAudio(discord.AudioSource):
                 self.buffer = self.buffer[self.pos:]
                 self.pos = 0
 
+            self.last_voice = time.monotonic()
             # Upsample 24kHz mono -> 48kHz stereo
             result = bytearray(self.output_frame_size)
             

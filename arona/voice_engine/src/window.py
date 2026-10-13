@@ -713,10 +713,13 @@ class VirtualDiscordWindow:
     def _speaking_ids(self) -> frozenset:
         now = time.monotonic()
         ids = {uid for uid, t in list(self.last_audio.items()) if now - t < SPEAK_HOLD}
+        # The bot counts as speaking only while real (non-silence) frames are going out. vc.is_playing() is
+        # true for ~1s of silence padding after every sentence, which kept the green ring on all the time.
         vc = self.ws.voice_client
         if vc is not None and self.bot_id:
             try:
-                if vc.is_playing():
+                last = getattr(getattr(vc, "source", None), "last_voice", 0.0)
+                if last and now - last < SPEAK_HOLD:
                     ids.add(self.bot_id)
             except Exception:
                 pass
@@ -804,11 +807,17 @@ class VirtualDiscordWindow:
 
         # ---------- LEFT: the voice call ----------
         d.rectangle((0, 0, CALL_W, TOPBAR_H), fill=COL_SIDE)
-        title = "VOICE CALL  |  " + snap["vc_name"]
-        d.text((PAD, 11), title, font=_tfont(title, 19, True), fill=TEXT)
+        # top bar: the "Speaking" label is capped at 45% of the bar and the title is cut to what is left,
+        # so a long channel name / many speakers can no longer draw over each other
+        avail = CALL_W - 2 * PAD
         sp_txt = ("Speaking: " + ", ".join(snap["speaking"])) if snap["speaking"] else "Nobody is speaking"
+        sp_txt = _ellipsize(_tfont(sp_txt, 18, True), sp_txt, int(avail * 0.45))
         sf = _tfont(sp_txt, 18, True)
-        d.text((CALL_W - PAD - sf.getlength(sp_txt), 12), sp_txt, font=sf, fill=GREEN if snap["speaking"] else MUTED)
+        spw = sf.getlength(sp_txt)
+        title = "VOICE CALL  |  " + snap["vc_name"]
+        title = _ellipsize(_tfont(title, 19, True), title, int(avail - spw - 20))
+        d.text((PAD, 11), title, font=_tfont(title, 19, True), fill=TEXT)
+        d.text((CALL_W - PAD - spw, 12), sp_txt, font=sf, fill=GREEN if snap["speaking"] else MUTED)
         body = (0, TOPBAR_H, CALL_W, H)
         if self.view:
             self._draw_zoom(frame, d, body)
@@ -1078,7 +1087,7 @@ class VirtualDiscordWindow:
         nf = _tfont(e.name, 19, True)
         vd.text((tx, cy), e.name, font=nf, fill=e.color or TEXT)
         nx = tx + nf.getlength(e.name) + 10
-        meta = f"{e.time}   #{e.num}   ID {e.author_id}"
+        meta = f"{e.time}   #{e.num}"
         vd.text((nx, cy + 3), meta, font=_font(15), fill=MUTED)
         cy += 26
         for ln in lines:

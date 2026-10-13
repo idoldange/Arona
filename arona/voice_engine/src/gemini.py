@@ -3,6 +3,7 @@ import copy
 import os
 import base64
 import json
+import time
 import traceback
 from typing import Optional, Dict, Any, List
 from websockets.client import WebSocketClientProtocol
@@ -29,6 +30,10 @@ class GeminiWebSocket:
         self.receive_task: Optional[asyncio.Task] = None
         self.audio_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._audio_taps: set = set()   # debug web listeners: queues fed with what the bot hears
+        self._tx_chunks = 0             # batched "sent audio" log counters
+        self._tx_bytes = 0
+        self._tx_t0 = 0.0
+        self._tx_last = 0.0
         self.window: VirtualDiscordWindow = VirtualDiscordWindow(self)
         self.config: Dict[str, Any] = {
             'generation_config': {
@@ -175,7 +180,7 @@ class GeminiWebSocket:
                         "disabled": False,
                         "silence_duration_ms": 10, 
                         "start_of_speech_sensitivity": "START_SENSITIVITY_HIGH",
-                        "end_of_speech_sensitivity": "END_SENSITIVITY_LOW"
+                        "end_of_speech_sensitivity": "END_SENSITIVITY_HIGH"
                     }
                 }
             }
@@ -274,6 +279,13 @@ class GeminiWebSocket:
              source = QueuedStreamingPCMAudio(self.audio_queue)
              self.voice_client.play(source, after=lambda e: console.log(f"Playback finished: {e}", "DEBUG") if e else None)
         
+    def _flush_tx_log(self) -> None:
+        if self._tx_chunks:
+            console.log(
+                f"[Gemini] Sent {self._tx_chunks} audio chunks ({self._tx_bytes} bytes, "
+                f"{self._tx_last - self._tx_t0:.1f}s)", "DEBUG")
+        self._tx_chunks = self._tx_bytes = 0
+
     async def send_audio_chunk(self, audio_data: bytes) -> None:
         if not self.ws or not self.ws.protocol.state.name == 'OPEN':
             console.log("[Gemini] Connection lost/closed. Reconnecting for audio...", "WARN")
@@ -282,7 +294,17 @@ class GeminiWebSocket:
         if not self.ws:
             return
 
-        console.log(f"Sending {len(audio_data)} bytes to Gemini", "DEBUG") 
+        # batched log: one line per speech burst (or every 5 s of continuous speech), not one per packet
+        _now = time.monotonic()
+        if self._tx_chunks and _now - self._tx_last > 1.0:
+            self._flush_tx_log()
+        if not self._tx_chunks:
+            self._tx_t0 = _now
+        self._tx_chunks += 1
+        self._tx_bytes += len(audio_data)
+        self._tx_last = _now
+        if _now - self._tx_t0 >= 5.0:
+            self._flush_tx_log() 
         self._tap_audio(audio_data)
         msg = {
             "realtime_input": {
