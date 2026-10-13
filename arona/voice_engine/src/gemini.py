@@ -28,6 +28,7 @@ class GeminiWebSocket:
         self.voice_client: Optional[VoiceClient] = None
         self.receive_task: Optional[asyncio.Task] = None
         self.audio_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+        self._audio_taps: set = set()   # debug web listeners: queues fed with what the bot hears
         self.window: VirtualDiscordWindow = VirtualDiscordWindow(self)
         self.config: Dict[str, Any] = {
             'generation_config': {
@@ -43,6 +44,22 @@ class GeminiWebSocket:
             }
         }
     
+    def subscribe_audio(self) -> "asyncio.Queue[bytes]":
+        """Debug tap: receive a copy of every audio chunk sent to Gemini (16 kHz mono PCM16)."""
+        q: asyncio.Queue = asyncio.Queue(maxsize=200)
+        self._audio_taps.add(q)
+        return q
+
+    def unsubscribe_audio(self, q) -> None:
+        self._audio_taps.discard(q)
+
+    def _tap_audio(self, audio_data: bytes) -> None:
+        for q in list(self._audio_taps):
+            try:
+                q.put_nowait(audio_data)
+            except asyncio.QueueFull:
+                pass   # slow listener: drop instead of blocking the voice path
+
     @property
     def is_voice_session(self) -> bool:
         """Check if the bot is in a voice session."""
@@ -266,6 +283,7 @@ class GeminiWebSocket:
             return
 
         console.log(f"Sending {len(audio_data)} bytes to Gemini", "DEBUG") 
+        self._tap_audio(audio_data)
         msg = {
             "realtime_input": {
                 "audio": {

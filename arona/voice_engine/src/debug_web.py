@@ -3,6 +3,7 @@
 Started / stopped together with debug mode (console: debug start / debug stop, or debug_enabled at boot).
   GET /debug/call_ui        page that shows the stream
   GET /debug/call_ui.mjpg   raw MJPEG stream (multipart/x-mixed-replace)
+  WS  /debug/call_audio     what the bot hears: raw 16 kHz mono PCM16 chunks (played by the page)
 """
 import asyncio
 import io
@@ -27,6 +28,34 @@ PAGE = """<!doctype html>
 <body>
 <img src="/debug/call_ui.mjpg" alt="voice call UI">
 <p>Live voice-call UI (rendered up to 30 fps; model receives one screenshot per second) - debug mode only</p>
+<p><button id="a">Listen to what the bot hears</button> <span id="s"></span></p>
+<script>
+const btn = document.getElementById('a'), st = document.getElementById('s');
+let ctx = null, ws = null, t = 0;
+btn.onclick = () => {
+  if (ws) { ws.close(); return; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/debug/call_audio');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { btn.textContent = 'Stop listening'; st.textContent = 'connected'; t = 0; };
+  ws.onmessage = (e) => {
+    const i16 = new Int16Array(e.data, 0, e.data.byteLength >> 1);
+    const f32 = new Float32Array(i16.length);
+    for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+    const buf = ctx.createBuffer(1, f32.length, 16000);
+    buf.copyToChannel(f32, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buf; src.connect(ctx.destination);
+    const now = ctx.currentTime;
+    if (t < now + 0.05) t = now + 0.1;
+    src.start(t); t += buf.duration;
+  };
+  ws.onclose = () => {
+    ws = null; btn.textContent = 'Listen to what the bot hears'; st.textContent = '';
+    if (ctx) { ctx.close(); ctx = null; }
+  };
+};
+</script>
 </body></html>
 """
 
@@ -68,6 +97,36 @@ async def _stream(request: web.Request, window: Any) -> web.StreamResponse:
     return resp
 
 
+async def _audio_ws(request: web.Request, window: Any) -> web.WebSocketResponse:
+    """Streams the audio the bot is hearing (the same chunks sent to Gemini Live)."""
+    ws = web.WebSocketResponse(heartbeat=20)
+    await ws.prepare(request)
+    gem = getattr(window, "ws", None)
+    if gem is None or not hasattr(gem, "subscribe_audio"):
+        await ws.close()
+        return ws
+    q = gem.subscribe_audio()
+
+    async def _watch_client():
+        async for _ in ws:   # returns when the tab closes
+            pass
+
+    watcher = asyncio.ensure_future(_watch_client())
+    try:
+        while not ws.closed and not watcher.done():
+            try:
+                data = await asyncio.wait_for(q.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            await ws.send_bytes(data)
+    except (ConnectionResetError, ConnectionError):
+        pass
+    finally:
+        gem.unsubscribe_audio(q)
+        watcher.cancel()
+    return ws
+
+
 async def start(window: Any, host: str, port: int) -> None:
     global _runner
     if _runner is not None:
@@ -80,7 +139,11 @@ async def start(window: Any, host: str, port: int) -> None:
     async def stream(request: web.Request) -> web.StreamResponse:
         return await _stream(request, window)
 
-    app.add_routes([web.get("/debug/call_ui", page), web.get("/debug/call_ui.mjpg", stream)])
+    async def audio(request: web.Request) -> web.WebSocketResponse:
+        return await _audio_ws(request, window)
+
+    app.add_routes([web.get("/debug/call_ui", page), web.get("/debug/call_ui.mjpg", stream),
+                    web.get("/debug/call_audio", audio)])
     runner = web.AppRunner(app, handle_signals=False)
     try:
         await runner.setup()
