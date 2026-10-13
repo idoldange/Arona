@@ -9110,15 +9110,45 @@ async def on_voice_state_update(member, before, after):
         if before.channel is not None and after.channel is None:
             console.log(f"Bot disconnected from '{before.channel.name}'. intentional={_intentional_disconnect}", "INFO")
 
-            # Always clean up Gemini state first
+            _rc = globals().get("_reconnect_task")
+            if not _intentional_disconnect and _rc is not None and not _rc.done():
+                console.log("[RECONNECT] Already reconnecting; ignoring this extra disconnect.", "INFO")
+                return
+
             saved_text_ch = gemini_ws.current_channel   # save before clearing
             if video_receiver:
                 video_receiver.reset()
-            await gemini_ws.close()
-            gemini_ws.current_user = None
-            gemini_ws.current_channel = None
-            gemini_ws.current_guild = None
-            gemini_ws.voice_client = None
+
+            _gws = gemini_ws.ws
+            _gemini_alive = bool(_gws and _gws.protocol.state.name == 'OPEN')
+            _keep_gemini = bool(not _intentional_disconnect and _gemini_alive
+                                and _voice_reconnect_user and _voice_reconnect_text_ch)
+
+            async def _drop_gemini():
+                try:
+                    gemini_ws.window._carry_notice = None
+                except Exception:
+                    pass
+                await gemini_ws.close()
+                gemini_ws.current_user = None
+                gemini_ws.current_channel = None
+                gemini_ws.current_guild = None
+                gemini_ws.voice_client = None
+
+            if _keep_gemini:
+                # Only the voice link dropped; the Live session is fine. Keep it, say so in the call UI, rejoin.
+                console.log("Voice dropped but Gemini Live is still connected; keeping it and rejoining.", "INFO")
+                try:
+                    gemini_ws.window.notice_connection_lost()
+                except Exception as e:
+                    console.log(f"[Window] connection-lost notice failed: {e}", "WARN")
+                try:
+                    voice_bridge.detach(gemini_ws)
+                except Exception:
+                    pass
+                gemini_ws.voice_client = None
+            else:
+                await _drop_gemini()
 
             if _intentional_disconnect:
                 # User explicitly called leave — do nothing extra
@@ -9135,8 +9165,10 @@ async def on_voice_state_update(member, before, after):
                     return
                   
                 # 1011 The service is currently unavailable. = Timed out, return
-                if not gemini_ws.ws or gemini_ws.ws.closed:
+                _w = gemini_ws.ws
+                if not _w or _w.protocol.state.name != 'OPEN':
                     console.log("[RECONNECT] Gemini service unavailable, skipping.", "WARN")
+                    await _drop_gemini()
                     return
 
                 notify_ch = saved_text_ch or _voice_reconnect_text_ch
@@ -9157,6 +9189,7 @@ async def on_voice_state_update(member, before, after):
 
                     if not member_fresh.voice or not member_fresh.voice.channel:
                         console.log("[RECONNECT] Target user left voice, aborting.", "INFO")
+                        await _drop_gemini()
                         try:
                             await notify_ch.send("-# Reconnect cancelled — you left the voice channel.")
                         except Exception:
@@ -9176,6 +9209,7 @@ async def on_voice_state_update(member, before, after):
 
                 # All attempts exhausted
                 console.log("[RECONNECT] All attempts failed.", "ERROR")
+                await _drop_gemini()
                 try:
                     await notify_ch.send(
                         "-# Failed to reconnect after several attempts. "
@@ -9184,7 +9218,7 @@ async def on_voice_state_update(member, before, after):
                 except Exception:
                     pass
 
-            asyncio.create_task(_reconnect())
+            globals()["_reconnect_task"] = asyncio.create_task(_reconnect())
         return  # done handling bot's own state change
 
     # show joins/leaves in the virtual Discord window

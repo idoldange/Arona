@@ -471,6 +471,7 @@ class VirtualDiscordWindow:
         self._last_rendered = 0.0
         self.last_jpg: Optional[bytes] = None            # newest rendered frame (debug web view)
         self.frame_seq = 0
+        self._carry_notice: Optional[str] = None         # shown again after start() resets the window (voice rejoin)
         self._last_speaking: frozenset = frozenset()
         self._total_h = self._view_h = 0
         self._vis: tuple = (0, 0, 0, 0)      # first, last, above, below
@@ -490,6 +491,12 @@ class VirtualDiscordWindow:
                 self.add_message(m)
         except Exception as e:
             console.log(f"[Window] Failed to load history: {e}", "WARN")
+        # voice dropped but Gemini stayed up: keep the "connection lost" line across this restart
+        carry, self._carry_notice = self._carry_notice, None
+        me = voice_channel.guild.me if voice_channel and voice_channel.guild else None
+        if carry and me is not None:
+            self.add_event("lost", me, text=carry)
+            self.add_event("join", me, text="reconnected")
         self._last_sent = self._last_rendered = 0.0
         self._running, self.dirty = True, True
         self._task = asyncio.create_task(self._loop())
@@ -591,20 +598,31 @@ class VirtualDiscordWindow:
             self.entries = [x for x in self.entries if x.num != num]
             self.dirty = True
 
-    def add_event(self, kind: str, member) -> None:
+    def add_event(self, kind: str, member, text: Optional[str] = None) -> None:
         """Adds a system line ("X joined/left the voice channel") to the window. It has no #number."""
         e = _Entry()
         e.num, e.id, e.author_id = 0, 0, member.id
         e.name = getattr(member, "display_name", None) or member.name
         e.color, e.reply, e.items, e.system = None, None, [], kind
         e.time = time.strftime("%H:%M")
-        e.text = "joined the voice channel" if kind == "join" else "left the voice channel"
+        e.text = text or ("joined the voice channel" if kind == "join" else "left the voice channel")
         self._users[member.id] = member
         self._ensure_avatar(member)
         self.entries.append(e)
         if len(self.entries) > MAX_MSGS:
             del self.entries[:len(self.entries) - MAX_MSGS]
         self.dirty = True
+
+    def notice_connection_lost(self) -> None:
+        """Voice dropped while the Gemini session is still alive: show a line in the call UI.
+        It is carried over the window restart done by the rejoin (start())."""
+        guild = self.voice_channel.guild if self.voice_channel else None
+        me = guild.me if guild else None
+        if me is None:
+            return
+        self._carry_notice = "connection lost, reconnecting..."
+        self.add_event("lost", me, text=self._carry_notice)
+        self.force_next()
 
     def on_voice_state(self, member, before, after) -> None:
         """Call from on_voice_state_update: logs members entering/leaving the voice channel the bot is in."""
