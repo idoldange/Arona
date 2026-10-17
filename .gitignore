@@ -302,7 +302,10 @@ lpt9
 *tcl
 arona/tts/ttsapi/runtime
 *.wav
-# Soundfonts: file lon, tai ve tu nguon ngoai (xem soundfonts/SOURCES.md); chi giu default.sf2 trong repo
+# Soundfonts: file lon (GitHub gioi han 100 MB/file), bot tu tai ve khi soundfonts/ trong (xem soundfonts/SOURCES.md + utils/soundfont_fetch.py)
 soundfonts/*
-!soundfonts/default.sf2
 !soundfonts/SOURCES.md
+!soundfonts/INSTRUMENTS.md
+*.whl
+coauthors.txt
+comments_dump.txt

@@ -11,6 +11,7 @@ Chat text still goes through realtime text as usual (see GeminiWebSocket.send_re
 import asyncio
 import io
 import os
+from functools import lru_cache
 import re
 import shutil
 import time
@@ -20,6 +21,7 @@ import discord
 from PIL import Image, ImageDraw, ImageFont
 
 from console import console
+from arona.voice_engine.src.voice_metrics import metrics as vm
 
 # ───────────────────────── constants ─────────────────────────
 W, H = 1280, 720
@@ -176,22 +178,36 @@ _FONT_DIRS = [
     "/usr/share/fonts/truetype/dejavu",
 ]
 _FONT_CACHE: Dict[tuple, Any] = {}
-_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\U00020000-\U0003134f]")
-_NERD_GLYPH = re.compile(r"[\u2190-\u2bff\u2600-\u27bf\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
+# Glyph groups Segoe UI cannot draw. Text is split into runs by group and each run gets its own font.
+_EMOJI = re.compile(r"[\U0001F000-\U0001FAFF⌚⌛⏩-⏳⏸-⏺◽◾☔☕♈-♓♿⚓⚡⚪⚫⚽⚾⛄⛅⛎⛔⛪⛲⛳⛵⛺⛽✅✊✋✨❌❎❓-❕❗❤➕-➗➰➿⬛⬜⭐⭕‍️⃣]")
+_CJK = re.compile(r"[　-ヿ㐀-䶿一-鿿가-힯＀-￯\U00020000-\U0003134f]")
+_NERD_GLYPH = re.compile(r"[-\U000f0000-\U000ffffd\U00100000-\U0010fffd]")
+_SYMBOL = re.compile(r"[←-⯿☀-➿]")
+_SPECIAL = re.compile("|".join(p.pattern for p in (_EMOJI, _CJK, _NERD_GLYPH, _SYMBOL)))
+_EMOJI_PX = 109          # NotoColorEmoji (CBDT) only exists as a 109px strike; we render at 109 and scale down
+_EMOJI_EM = 1.25         # emoji width on screen = font size * this
 
 
-def _font(size: int, bold: bool = False, cjk: bool = False, nerd: bool = False):
-    key = (size, bold, cjk, nerd)
+def _font(size: int, bold: bool = False, role: str = "base"):
+    # Segoe UI is the base font. CJK / Nerd fonts are used only for strings that contain such glyphs,
+    # and every chain ends in Segoe UI so a missing font never drops to PIL's bitmap default
+    # (which has no Vietnamese diacritics).
+    key = (size, bold, role)
     if key in _FONT_CACHE:
         return _FONT_CACHE[key]
-    if cjk:
-        names = (["SarasaGothicNerdFont-Bold.ttf", "NotoSansCJK-Bold.ttc", "NotoSansCJKjp-Bold.otf", "YuGothB.ttc", "msyhbd.ttc"]
-                 if bold else ["SarasaGothicNerdFont-Regular.ttf", "NotoSansCJK-Regular.ttc", "NotoSansCJKjp-Regular.otf", "YuGothM.ttc", "msyh.ttc", "msgothic.ttc"])
-    elif nerd:
-        names = (["CaskaydiaCoveNerdFont-Bold.ttf", "JetBrainsMonoNerdFont-Bold.ttf", "FiraCodeNerdFont-Bold.ttf"]
-                 if bold else ["CaskaydiaCoveNerdFont-Regular.ttf", "JetBrainsMonoNerdFont-Regular.ttf", "FiraCodeNerdFont-Regular.ttf"])
+    segoe = ["segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"] if bold else ["segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"]
+    # Dirs are searched in order, so the copies bundled in <project>/fonts win over system fonts.
+    if role == "cjk":
+        names = (["NotoSansJP-Bold.otf", "NotoSansCJK-Bold.ttc", "YuGothB.ttc", "msyhbd.ttc"]
+                 if bold else ["NotoSansJP-Regular.otf", "NotoSansCJK-Regular.ttc", "YuGothM.ttc", "msyh.ttc", "msgothic.ttc"]) + segoe
+    elif role == "nerd":
+        names = ["SymbolsNerdFont-Regular.ttf", "CaskaydiaCoveNerdFont-Regular.ttf", "JetBrainsMonoNerdFont-Regular.ttf", "FiraCodeNerdFont-Regular.ttf"] + segoe
+    elif role == "sym":
+        names = ["seguisym.ttf", "SymbolsNerdFont-Regular.ttf", "DejaVuSans.ttf"] + segoe
+    elif role == "emoji":
+        names = ["NotoColorEmoji.ttf", "seguiemj.ttf"]
     else:
-        names = ["segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"] if bold else ["segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"]
+        names = segoe
     font = None
     for d in _FONT_DIRS:
         for n in names:
@@ -202,15 +218,112 @@ def _font(size: int, bold: bool = False, cjk: bool = False, nerd: bool = False):
                 continue
         if font:
             break
-    font = font or ImageFont.load_default()
+    if font is None and role != "emoji":
+        font = ImageFont.load_default()
     _FONT_CACHE[key] = font
     return font
 
 
+def _role(ch: str) -> str:
+    if _EMOJI.match(ch):
+        return "emoji"
+    if _CJK.match(ch):
+        return "cjk"
+    if _NERD_GLYPH.match(ch):
+        return "nerd"
+    if _SYMBOL.match(ch):
+        return "sym"
+    return "base"
+
+
+@lru_cache(maxsize=4096)
+def _runs(text: str) -> tuple:
+    """Splits text into (role, substring) runs; spaces stay inside the surrounding run."""
+    out: List[list] = []
+    for ch in text:
+        r = _role(ch)
+        if ch in " \t":
+            r = out[-1][0] if out and out[-1][0] != "emoji" else "base"
+        if out and out[-1][0] == r:
+            out[-1][1] += ch
+        else:
+            out.append([r, ch])
+    return tuple((r, s) for r, s in out)
+
+
+class _FontStack:
+    """Segoe UI with per-run fallback (CJK, Nerd/symbol, color emoji). Quacks like a PIL font for
+    getlength(); drawing goes through _Draw.text so every call site stays unchanged."""
+
+    def __init__(self, size: int, bold: bool = False) -> None:
+        self.size, self.bold = size, bold
+        self.base = _font(size, bold)
+        self._ek = size * _EMOJI_EM / 136.0      # 136 = NotoColorEmoji advance at 109px
+
+    def _run_font(self, role: str):
+        if role == "emoji":
+            ef = _font(_EMOJI_PX, False, "emoji")
+            if ef is not None:
+                return ef
+            return self.base
+        return _font(self.size, self.bold, role)
+
+    def _run_len(self, role: str, s: str) -> float:
+        f = self._run_font(role)
+        if role == "emoji" and f is not self.base:
+            return f.getlength(s) * self._ek
+        return f.getlength(s)
+
+    def getlength(self, text: str) -> float:
+        if not _SPECIAL.search(text):
+            return self.base.getlength(text)
+        return sum(self._run_len(r, s) for r, s in _runs(text))
+
+    def getmetrics(self):
+        return self.base.getmetrics()
+
+    def draw(self, d, xy, text: str, fill) -> None:
+        x, y = xy
+        plain = ImageDraw.ImageDraw.text
+        if not _SPECIAL.search(text):
+            plain(d, (x, y), text, font=self.base, fill=fill)
+            return
+        base_y = y + self.base.getmetrics()[0]       # shared baseline for every run
+        for role, s in _runs(text):
+            f = self._run_font(role)
+            if role == "emoji" and f is not self.base:
+                x += self._draw_emoji(d, f, x, base_y, s)
+                continue
+            plain(d, (x, base_y), s, font=f, fill=fill, anchor="ls")
+            x += f.getlength(s)
+
+    def _draw_emoji(self, d, ef, x: float, base_y: float, s: str) -> float:
+        k = self._ek
+        adv = ef.getlength(s)
+        try:
+            w = int(adv) + 8
+            tmp = Image.new("RGBA", (w, 160), (0, 0, 0, 0))
+            ImageDraw.Draw(tmp).text((0, 0), s, font=ef, embedded_color=True)
+            tmp = tmp.resize((max(1, round(w * k)), max(1, round(160 * k))), Image.LANCZOS)
+            asc = ef.getmetrics()[0]
+            d._image.paste(tmp, (round(x), round(base_y - asc * k)), tmp)
+        except Exception as e:
+            console.log(f"[Window] emoji draw failed: {e}", "WARN")
+        return adv * k
+
+
+class _Draw(ImageDraw.ImageDraw):
+    def text(self, xy, text, fill=None, font=None, *args, **kwargs):
+        if isinstance(font, _FontStack):
+            font.draw(self, xy, text, fill)
+            return
+        super().text(xy, text, fill, font, *args, **kwargs)
+
+
 def _tfont(text: str, size: int, bold: bool = False):
-    text = text or ""
-    cjk = bool(_CJK.search(text))
-    return _font(size, bold, cjk, not cjk and bool(_NERD_GLYPH.search(text)))
+    if _SPECIAL.search(text or ""):
+        return _FontStack(size, bold)
+    return _font(size, bold)
 
 
 def _wrap(font, text: str, maxw: int) -> List[str]:
@@ -784,7 +897,9 @@ class VirtualDiscordWindow:
         async with self._lock:
             self.dirty = self._force = False
             snap = self._snapshot()
+            _t0 = time.perf_counter()
             jpg = await asyncio.to_thread(self._render, snap)
+            vm.render_done((time.perf_counter() - _t0) * 1000.0, len(jpg))
             self.last_jpg, self.frame_seq = jpg, self.frame_seq + 1
             self._last_rendered = time.monotonic()
 
@@ -793,6 +908,7 @@ class VirtualDiscordWindow:
             if self.last_jpg is None:
                 return
             await self.ws.send_video_frame(self.last_jpg)
+            vm.frames_sent += 1
             self._last_sent = time.monotonic()
 
     async def _push(self) -> None:
@@ -803,7 +919,7 @@ class VirtualDiscordWindow:
     # ── rendering (worker thread) ──
     def _render(self, snap: Dict[str, Any]) -> bytes:
         frame = Image.new("RGB", (W, H), CALL_BG)
-        d = ImageDraw.Draw(frame)
+        d = _Draw(frame)
 
         # ---------- LEFT: the voice call ----------
         d.rectangle((0, 0, CALL_W, TOPBAR_H), fill=COL_SIDE)
@@ -994,7 +1110,7 @@ class VirtualDiscordWindow:
         d.text((fx1 - tf.getlength(tm), ty), tm, font=tf, fill=TEXT)
         nf = _tfont(p["name"], 19, True)
         d.text((fx0, ty + 36), _ellipsize(nf, p["name"], fx1 - fx0), font=nf, fill=TEXT)
-        d.text((fx0, ty + 64), p["ref"] + f"  ({p['kind']})  |  window_media: pause / resume / seek / stop", font=_font(15), fill=MUTED)
+        d.text((fx0, ty + 64), p["ref"] + f"  ({p['kind']})  |  window_media: pause / resume / seek / stop", font=_tfont(p["ref"], 15), fill=MUTED)
         by = ty + 94
         d.rounded_rectangle((fx0, by, fx1, by + 10), 5, fill=(64, 66, 73))
         if p["dur"]:
@@ -1016,7 +1132,7 @@ class VirtualDiscordWindow:
         out = crop.resize((max(1, int(cw * s)), max(1, int(ch * s))), Image.LANCZOS)
         frame.paste(out, (x0 + (x1 - x0 - out.width) // 2, y0 + 8 + (ah - out.height) // 2))
         cap = f"{v['label']}  |  zoom x{v['level']:.1f}  |  center ({v['cx']:.2f}, {v['cy']:.2f})  |  window_close_view to close"
-        d.text((x0 + 20, y1 - 34), cap, font=_font(16), fill=TEXT)
+        d.text((x0 + 20, y1 - 34), cap, font=_tfont(cap, 16), fill=TEXT)
 
     def _block_height(self, e: _Entry, lines: List[str]) -> int:
         if e.system:
@@ -1055,7 +1171,7 @@ class VirtualDiscordWindow:
         self.scroll_top = top
 
         view = Image.new("RGB", (mw, vh), COL_MAIN)
-        vd = ImageDraw.Draw(view)
+        vd = _Draw(view)
         vis, above, below = [], 0, 0
         for e, by, h, lines, f in blocks:
             if by + h <= top:

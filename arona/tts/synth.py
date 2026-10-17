@@ -16,6 +16,7 @@ Soundfont (./soundfonts, .sf2/.sf3): file ten `<nhac cu>_<nguon>` (piano_fluidr3
 Cu tha them file vao ./soundfonts la dung duoc ngay (tu quet thu muc).
 """
 import asyncio
+import contextvars
 import io
 import os
 import math
@@ -502,6 +503,51 @@ def classify_track(t: UTrack) -> None:
     t.program = program if program is not None else 0
 
 
+# ---- ghi de theo tung track (tu panel `!arona synth` -> synth_ui.py) --------------------------------------------------
+def vol_pct_to_db(pct: float) -> float:
+    """% (100 = giu nguyen) -> dB, gioi han [-60, +24]."""
+    return max(-60.0, min(24.0, 20 * math.log10(max(float(pct), 0.01) / 100.0)))
+
+
+def apply_track_override(t: UTrack, o: dict | None) -> None:
+    """Ghi de role / nhac cu / volume cua 1 track theo lua chon trong panel.
+    o = {"role": "inst"|"vocal"|"mute", "drums": bool, "program": int, "preset": str|None, "sf": str|None, "vol": % (100 = giu nguyen, 0 = mute)}."""
+    if not o:
+        return
+    role = o.get("role")
+    if role == "mute":
+        t.mute = True
+    elif role == "vocal":
+        t.role, t.drums = "vocal", False
+    elif role == "inst":
+        t.role = "inst"
+        t.drums = bool(o.get("drums"))
+        t.program = max(0, min(127, int(o.get("program") or 0)))
+        t.preset = o.get("preset") or None
+        t.sf_hint = o.get("sf") or None
+    vol = o.get("vol")
+    if vol is not None:
+        if vol <= 0:
+            t.mute = True
+        else:
+            t.volume_db += vol_pct_to_db(vol)
+
+
+def _file_params(params: dict | None, name: str) -> dict:
+    """Params cho 1 file trong job nhieu file: lay phan track_over cua dung file do."""
+    p = dict(params or {})
+    by_file = p.pop("track_over_by_file", None) or {}
+    p["track_over"] = by_file.get(name, {})
+    return p
+
+
+def _gain_wav(wav: bytes, pct: float) -> bytes:
+    seg = AudioSegment.from_file(io.BytesIO(wav), "wav").apply_gain(vol_pct_to_db(pct))
+    buf = io.BytesIO()
+    seg.export(buf, format="wav")
+    return buf.getvalue()
+
+
 def _tempo_at(tempos, tick: int) -> float:
     bpm = tempos[0][1]
     for pos, b in tempos:
@@ -542,6 +588,17 @@ def ustx_track_to_ust(t: UTrack, proj: UProject) -> bytes:
 
 
 # ---- soundfont ------------------------------------------------------------------------------------------------------
+async def ensure_soundfonts() -> None:
+    """Thu muc soundfonts/ chua co soundfont nao (repo chi giu SOURCES.md) -> tu tai bo soundfont ve (utils/soundfont_fetch.py)."""
+    from utils.soundfont_fetch import ensure_soundfonts as _fetch, has_soundfonts
+    if has_soundfonts(SOUNDFONT_DIR):
+        return
+    try:
+        await asyncio.to_thread(_fetch, SOUNDFONT_DIR)
+    except Exception as e:
+        console.log(f"Tu tai soundfont loi: {e}", "ERROR")
+
+
 def list_soundfonts() -> list[str]:
     """Ten file (khong duoi) cua cac soundfont co trong ./soundfonts."""
     try:
@@ -568,6 +625,15 @@ def _is_full_gm(path: str) -> bool:
     return _sf_family(path) is None and not any(k in name for k in _SF_PROGRAM_MAPS)
 
 
+# Soundfont do nguoi dung tu upload (panel `!arona synth`): chi hieu luc trong job/task hien tai (contextvar), KHONG vao thu tu uu tien auto,
+# chi duoc tim thay khi chon ro rang theo ten (sf=<stem>) - xem synth_ui.py.
+_USER_FONTS: contextvars.ContextVar = contextvars.ContextVar("synth_user_fonts", default=())
+
+
+def set_user_fonts(paths) -> None:
+    _USER_FONTS.set(tuple(paths or ()))
+
+
 def _match_soundfonts(hint: str) -> list[str]:
     """Soundfont khop hint (khong phan biet hoa thuong): trung ten > bat dau bang hint > chua hint; cung hang thi file to (day du) hon dung truoc."""
     h = hint.lower().strip()
@@ -575,8 +641,9 @@ def _match_soundfonts(hint: str) -> list[str]:
         if h.endswith(ext):
             h = h[: -len(ext)]
     ranked = []
-    for f in _sf_files():
-        stem = os.path.splitext(f)[0].lower()
+    entries = [(os.path.splitext(f)[0].lower(), os.path.join(SOUNDFONT_DIR, f)) for f in _sf_files()]
+    entries += [(os.path.splitext(os.path.basename(p))[0].lower(), p) for p in _USER_FONTS.get() if os.path.isfile(p)]
+    for stem, path in entries:
         if h == stem:
             rank = 0
         elif stem.startswith(h):
@@ -585,8 +652,8 @@ def _match_soundfonts(hint: str) -> list[str]:
             rank = 2
         else:
             continue
-        ranked.append((rank, -os.path.getsize(os.path.join(SOUNDFONT_DIR, f)), f))
-    return [os.path.join(SOUNDFONT_DIR, f) for _, _, f in sorted(ranked)]
+        ranked.append((rank, -os.path.getsize(path), path))
+    return [p for _, _, p in sorted(ranked)]
 
 
 def default_soundfont() -> str | None:
@@ -993,8 +1060,10 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
     font_opt, preset_opt = split_sf_spec(params.get("sf"))
     server_params = {k: v for k, v in params.items() if k in SERVER_PARAMS}
 
+    over = params.get("track_over") or {}
     for t in proj.tracks:
         classify_track(t)
+        apply_track_override(t, over.get(t.idx))
     active = [t for t in proj.tracks if t.notes and not (skip_inst and t.role == "inst")]
     if any(t.solo for t in active):
         active = [t for t in active if t.solo]
@@ -1009,6 +1078,8 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
 
     # --- instrument (nhanh) ---
     inst_tracks = [t for t in active if t.role == "inst"]
+    if inst_tracks:
+        await ensure_soundfonts()   # chua co soundfont nao -> tai ve truoc khi render
     n_vocal = 0 if only_vocals_off else len([t for t in active if t.role == "vocal"])
     _padd(len(inst_tracks) + n_vocal + (0 if raw else 1))
     await _pdone(f"Parsed project: {len(inst_tracks)} instrument + {n_vocal} vocal track(s)", count=False)
@@ -1086,6 +1157,7 @@ async def synth_song(body: bytes, content_type: str, params: dict | None = None,
     global last_synth_info
     last_synth_info = ""
     params = dict(params or {})
+    set_user_fonts(params.get("user_fonts"))
     fmt = detect_format(body)
     if fmt in ("ustx", "midi"):
         t0 = time.time()
@@ -1102,6 +1174,12 @@ async def synth_song(body: bytes, content_type: str, params: dict | None = None,
     await _pbegin("Vocal (UST) → Synthesizing...", key="ust")
     res = await _post_synth(body, content_type, sp, timeout_s)
     await _pdone("Vocal synthesized" if res[0] else f"Vocal failed: {res[2]}", ok=bool(res[0]), key="ust")
+    ov = (params.get("track_over") or {}).get(0)
+    if res[0] and ov and ov.get("vol") is not None and abs(float(ov["vol"]) - 100.0) > 0.01:
+        try:
+            res = (await asyncio.to_thread(_gain_wav, res[0], ov["vol"]), res[1], res[2])
+        except Exception as e:
+            console.log(f"UST volume adjust failed: {e}", "WARN")
     return res
 
 
@@ -1112,6 +1190,7 @@ async def synth_multiple_tracks(
 ):
     """Synthesize separate UST/USTX files and mix their audio, aligned at the start."""
     global last_synth_info
+    set_user_fonts((params or {}).get("user_fonts"))
     layers = []
     inst_layers = []
     track_info = []
@@ -1120,7 +1199,7 @@ async def synth_multiple_tracks(
         if detect_format(body) == "midi":
             midi_jobs.append((name, body))
             continue
-        audio, transpose, err = await synth_song(body, content_type, params, timeout_s)
+        audio, transpose, err = await synth_song(body, content_type, _file_params(params, name), timeout_s)
         if not audio:
             return None, None, f"track '{name}': {err}"
         try:
@@ -1142,7 +1221,7 @@ async def synth_multiple_tracks(
     skip_inst = str((params or {}).get("inst", "")).lower() in ("0", "false", "no", "off")
     for name, body in ([] if skip_inst else midi_jobs):
         try:
-            segs, _, err = await _synth_midi(body, dict(params or {}), timeout_s, raw=True)
+            segs, _, err = await _synth_midi(body, _file_params(params, name), timeout_s, raw=True)
         except Exception as e:
             console.log(f"MIDI synth error for '{name}': {e}", "ERROR")
             return None, None, f"track '{name}': MIDI error: {e}"

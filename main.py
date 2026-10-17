@@ -122,6 +122,7 @@ VideoFileClip.DEFAULT_AUDIO_FPS = 44100
 from debug import debug_enabled
 from arona.voice_engine.src.record import AudioProcessor
 from arona.voice_engine.src.gemini import GeminiWebSocket
+from arona.voice_engine.src.voice_metrics import metrics as voice_metrics
 from arona.voice_engine.src import video_rx
 from arona.voice_engine.src import debug_web
 from arona.voicechanger import VoiceChangerBridge
@@ -167,9 +168,10 @@ from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_
 from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to_grid_table
 from dotenv import load_dotenv
 from arona.tts.tts import text_to_speech, strip_emotion_tags
-from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts, describe_soundfonts, preset_search_text
+from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts, describe_soundfonts, preset_search_text, ensure_soundfonts
 import arona.tts.synth as _synth_mod
 from arona.tts.synth_media import render_media, media_kind, MEDIA_MAX_MB
+import arona.tts.synth_ui as synth_ui
 from config import TTS_REFS as _TTS_REFS_LIST
 from pydub import AudioSegment
 from affection import affection
@@ -1014,17 +1016,18 @@ def build_voice_member_memory(member) -> str:
     return ""
 
 
-async def join_voice_channel(user: discord.Member, text_channel: discord.TextChannel):
-    """Joins the user's voice channel and starts listening."""
+async def join_voice_channel(user: discord.Member, text_channel: discord.TextChannel, target_vc=None):
+    """Joins the user's voice channel (or target_vc if given) and starts listening."""
     global _voice_reconnect_user, _voice_reconnect_text_ch, _intentional_disconnect
 
-    if not user.voice or not user.voice.channel:
+    vch = target_vc or (user.voice.channel if user.voice else None)
+    if not vch:
         return "User not in a voice channel."
 
     # Check if bot is already connected to ANY voice channel in this guild
     if user.guild.voice_client:
         vc = user.guild.voice_client
-        if vc.channel != user.voice.channel:
+        if vc.channel != vch:
             console.log("Disconnecting from current voice channel...", "INFO")
             await vc.disconnect(force=True)
             await asyncio.sleep(1)
@@ -1045,7 +1048,7 @@ async def join_voice_channel(user: discord.Member, text_channel: discord.TextCha
                     _intentional_disconnect = True  # prevent on_voice_state_update from spawning _reconnect
                     await user.guild.voice_client.disconnect(force=True)
                     await asyncio.sleep(3)
-                voice_client: voice_recv.VoiceRecvClient = await user.voice.channel.connect(
+                voice_client: voice_recv.VoiceRecvClient = await vch.connect(
                     cls=voice_recv.VoiceRecvClient,
                     timeout=60.0,
                     reconnect=False
@@ -1053,6 +1056,7 @@ async def join_voice_channel(user: discord.Member, text_channel: discord.TextCha
                 break
             except discord.errors.ConnectionClosed as e:
                 console.log(f"Voice connect attempt {attempt+1}/3 failed (code {e.code})", "WARN")
+                voice_metrics.voice_connect_failed(e.code)
                 if e.code != 4017 or attempt == 2:
                     return f"Voice connection failed (code {e.code})."
                 await asyncio.sleep(5 * (attempt + 1))
@@ -1071,10 +1075,10 @@ async def join_voice_channel(user: discord.Member, text_channel: discord.TextCha
         gemini_ws.current_guild = user.guild
         gemini_ws.voice_client = voice_client
         voice_bridge.attach(gemini_ws)
-        await gemini_ws.window.start(text_channel, user.voice.channel)
+        await gemini_ws.window.start(text_channel, vch)
 
         # Build combined context message (single send = no duplicate)
-        voice_channel = user.voice.channel
+        voice_channel = vch
         participants = [m.display_name for m in voice_channel.members if not m.bot]
 
         context_parts = [
@@ -2769,7 +2773,11 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
     
     
     elif function_name == "join_voice":
-      return await join_voice_channel(message.author, message.channel)
+      # Link the voice session to the voice channel's OWN built-in text chat, not whatever channel
+      # the model happened to be invoked from — otherwise on_message diverts every message there
+      # (pings, mentions) to Gemini Live and they never reach handle_message.
+      _vc_chat = getattr(getattr(message.author, "voice", None), "channel", None)
+      return await join_voice_channel(message.author, _vc_chat or message.channel)
     
     
     
@@ -8090,6 +8098,7 @@ async def on_ready():
       started = True
       await asyncio.gather(fetch_public_ip(), get_browser(), init_session())
       await init_context()  # depends on browser from get_browser()
+      asyncio.create_task(ensure_soundfonts())  # soundfonts/ trong (chi co SOURCES.md) -> tai nen, khong chan bot
       if gemini_ws:
         gemini_ws.tools = get_gemini_tools(None, DEFAULT_MODEL)
         gemini_ws.function_handler = execute_function
@@ -8135,6 +8144,86 @@ def _is_duplicate_message_dispatch(message_id: int) -> bool:
     _recently_processed_message_id_set.discard(oldest)
   return False
 
+async def _run_synth_job(message, synth_inputs, media_inputs, synth_opts, media_opts, source_names):
+  """Run one synth job (queued behind synth_lock) and post the result as a reply to `message`. Shared by the attachment path and the setup panel."""
+  # Dang co job khac -> xep hang (asyncio.Lock cap theo thu tu FIFO) thay vi bao loi
+  queue_msg = None
+  if synth_lock.locked():
+    try:
+      queue_msg = await message.channel.send("-# Another synth job is running — queued, I'll start yours as soon as it's done.")
+    except Exception:
+      queue_msg = None
+  async with synth_lock:
+    if queue_msg:
+      try:
+        await queue_msg.delete()
+      except Exception as e:
+        console.log(f"Failed to delete synth queue message: {e}", "WARN")
+    synth_status = None
+    _prog = _synth_mod.Progress()
+    try:
+      synth_status = await message.channel.send(_prog.render())
+    except Exception:
+      synth_status = None
+    if synth_status:
+      async def _edit_status(txt, _m=synth_status):
+        await _m.edit(content=txt)
+      _prog.edit_cb = _edit_status
+      _synth_mod.progress = _prog
+    audio, used_transpose, synth_err = None, None, None
+    if len(synth_inputs) == 1:
+      _, body, ctype = synth_inputs[0]
+      audio, used_transpose, synth_err = await synth_song(body, ctype, synth_opts)
+    elif synth_inputs:
+      audio, used_transpose, synth_err = await synth_multiple_tracks(synth_inputs, synth_opts)
+    out_ext = "wav"
+    if media_inputs and (audio or not synth_inputs):
+      _prog.add_total(1)
+      await _prog.begin("Rendering with ffmpeg...", force=True, key="ffmpeg")
+      audio, out_ext, synth_err = await render_media(audio, media_inputs, media_opts)
+      await _prog.finish(f"Rendered .{out_ext}" if audio else "ffmpeg render failed", ok=bool(audio), key="ffmpeg")
+    _synth_mod.progress = None
+    _prog.close()
+    async def _drop_status():   # xoa tin "Synthesizing" SAU khi da gui xong tin nhan cuoi (upload file wav nang mat vai giay)
+      if synth_status:
+        try:
+          await synth_status.delete()
+        except Exception as e:
+          console.log(f"Failed to delete synth status message: {e}", "WARN")
+    if not audio:
+      await send_with_retry(message.channel, f"-# Synth error: {synth_err}")
+      await _drop_status()
+      return
+    out_name = f"synth_{int(time.time())}-{str(uuid4())}.{out_ext}"
+    if out_ext == "wav" and len(audio) > 9 * 1024 * 1024:  # Discord upload limit -> compress
+      try:
+        def _to_mp3(data):
+          buf = BytesIO()
+          AudioSegment.from_wav(BytesIO(data)).export(buf, format="mp3", bitrate="128k")
+          return buf.getvalue()
+        audio = await asyncio.to_thread(_to_mp3, audio)
+        out_name = out_name[:-4] + ".mp3"
+      except Exception as e:
+        console.log(f"Synth mp3 conversion failed: {e}", "ERROR")
+    await _prog.begin("Uploading result...", force=True)
+    try:
+      note = f" (transposed {int(used_transpose):+d} semitones)" if used_transpose not in (None, "", "0") else ""
+      source_label = source_names[0] if len(source_names) == 1 else f"{len(source_names)} files: " + ", ".join(source_names)
+      if len(source_label) > 500:
+        source_label = source_label[:497] + "..."
+      synth_msg = await message.channel.send(
+        reference=message.to_reference(fail_if_not_exists=False), mention_author=False,
+        content=f"-# ♪ {source_label}{note}" + (f"\n-# {_synth_mod.last_synth_info}" if _synth_mod.last_synth_info else ""),
+        file=discord.File(BytesIO(audio), filename=out_name)
+      )
+      console.log(f"Sent synth audio: {out_name}", "INFO")
+      for a in synth_msg.attachments:
+        console.log(f'<audio controls src="{a.url}" style="max-width:300px"></audio>')
+    except Exception as e:
+      console.log(f"Failed to send synth audio: {e}", "ERROR")
+      await send_with_retry(message.channel, f"-# Synth error: {e}")
+    await _drop_status()
+
 @client.event
 async def on_message(message):
   # Mirror every message of the voice-linked text channel (the bot's own included) into the virtual window
@@ -8170,8 +8259,9 @@ async def on_message(message):
       "- `!arona quota`: Check your remaining daily messages\n"
       "- `!arona affection`: Show your bond rank and Arona's current mood\n"
       "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
+      "- `!arona voice join/leave`: Force Arona to join your voice channel (or the voice channel whose chat you're typing in) / kick her out if she hangs (you must be in the same voice channel to make her leave)\n"
       "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
-      "- `!arona synth` (+ attach a `.ust`, `.ustx` or `.mid` file): Arona sings a UTAU/OpenUtau project and/or plays MIDI/instrument tracks with soundfonts, optionally with images/videos/audio attached to make an mp4 (`!arona synth list <instrument>` to browse; can take several minutes)\n"
+      "- `!arona synth` (+ attach a `.ust`, `.ustx` or `.mid` file): Arona sings a UTAU/OpenUtau project and/or plays MIDI/instrument tracks with soundfonts, optionally with images/videos/audio attached to make an mp4 (send it with no file to open the setup panel; `!arona synth help` = all options; `!arona synth list <instrument>` to browse; can take several minutes)\n"
       "\n"
       "**Usage**:\n"
       "- You can mention Arona in any message to get a response.\n"
@@ -8762,7 +8852,7 @@ async def on_message(message):
       return
     synth_atts = [a for a in message.attachments if a.filename.lower().endswith((".ust", ".ustx", ".mid", ".midi"))]
     media_atts = [a for a in message.attachments if media_kind(a.filename)]
-    if not synth_atts and not any(media_kind(a.filename) in ("audio", "video") for a in media_atts):
+    if synth_opts_raw.lower() in ("help", "usage", "?"):
       await send_with_retry(
         message.channel,
         "Usage: `!arona synth [options]` with one or more `.ust` (UTAU), `.ustx` (OpenUtau) or `.mid`/`.midi` files attached (any encoding). "
@@ -8807,6 +8897,10 @@ async def on_message(message):
             pass
     # gioi han upload that cua server (boost -> 50/100MB), DM/khong co guild = 10MB; chua 5% cho overhead
     media_opts["max_bytes"] = int(((getattr(message.guild, "filesize_limit", None) if message.guild else None) or 10 * 1024 * 1024) * 0.95)
+    if not synth_atts and not any(media_kind(a.filename) in ("audio", "video") for a in media_atts):
+      # no valid file attached -> setup panel (upload / instruments / volumes / config / run) instead of a usage wall
+      await synth_ui.open_setup(message, synth_opts, media_opts, message.attachments, _run_synth_job)
+      return
     synth_inputs = []
     media_inputs = []
     # Doc file TRUOC khi xep hang (link attachment co the het han neu phai cho lau)
@@ -8832,86 +8926,46 @@ async def on_message(message):
       except Exception as e:
         await send_with_retry(message.channel, f"-# Couldn't read `{att.filename}`: {e}")
         return
-    # Dang co job khac -> xep hang (asyncio.Lock cap theo thu tu FIFO) thay vi bao loi
-    queue_msg = None
-    if synth_lock.locked():
-      try:
-        queue_msg = await message.channel.send("-# Another synth job is running — queued, I'll start yours as soon as it's done.")
-      except Exception:
-        queue_msg = None
-    async with synth_lock:
-      if queue_msg:
-        try:
-          await queue_msg.delete()
-        except Exception as e:
-          console.log(f"Failed to delete synth queue message: {e}", "WARN")
-      synth_status = None
-      _prog = _synth_mod.Progress()
-      try:
-        synth_status = await message.channel.send(_prog.render())
-      except Exception:
-        synth_status = None
-      if synth_status:
-        async def _edit_status(txt, _m=synth_status):
-          await _m.edit(content=txt)
-        _prog.edit_cb = _edit_status
-        _synth_mod.progress = _prog
-      audio, used_transpose, synth_err = None, None, None
-      if len(synth_inputs) == 1:
-        _, body, ctype = synth_inputs[0]
-        audio, used_transpose, synth_err = await synth_song(body, ctype, synth_opts)
-      elif synth_inputs:
-        audio, used_transpose, synth_err = await synth_multiple_tracks(synth_inputs, synth_opts)
-      out_ext = "wav"
-      if media_inputs and (audio or not synth_inputs):
-        _prog.add_total(1)
-        await _prog.begin("Rendering with ffmpeg...", force=True, key="ffmpeg")
-        audio, out_ext, synth_err = await render_media(audio, media_inputs, media_opts)
-        await _prog.finish(f"Rendered .{out_ext}" if audio else "ffmpeg render failed", ok=bool(audio), key="ffmpeg")
-      _synth_mod.progress = None
-      _prog.close()
-      async def _drop_status():   # xoa tin "Synthesizing" SAU khi da gui xong tin nhan cuoi (upload file wav nang mat vai giay)
-        if synth_status:
-          try:
-            await synth_status.delete()
-          except Exception as e:
-            console.log(f"Failed to delete synth status message: {e}", "WARN")
-      if not audio:
-        await send_with_retry(message.channel, f"-# Synth error: {synth_err}")
-        await _drop_status()
-        return
-      out_name = f"synth_{int(time.time())}-{str(uuid4())}.{out_ext}"
-      if out_ext == "wav" and len(audio) > 9 * 1024 * 1024:  # Discord upload limit -> compress
-        try:
-          def _to_mp3(data):
-            buf = BytesIO()
-            AudioSegment.from_wav(BytesIO(data)).export(buf, format="mp3", bitrate="128k")
-            return buf.getvalue()
-          audio = await asyncio.to_thread(_to_mp3, audio)
-          out_name = out_name[:-4] + ".mp3"
-        except Exception as e:
-          console.log(f"Synth mp3 conversion failed: {e}", "ERROR")
-      await _prog.begin("Uploading result...", force=True)
-      try:
-        note = f" (transposed {int(used_transpose):+d} semitones)" if used_transpose not in (None, "", "0") else ""
-        _label_atts = synth_atts + media_atts
-        source_label = _label_atts[0].filename if len(_label_atts) == 1 else f"{len(_label_atts)} files: " + ", ".join(a.filename for a in _label_atts)
-        if len(source_label) > 500:
-          source_label = source_label[:497] + "..."
-        synth_msg = await message.channel.send(
-          reference=message.to_reference(fail_if_not_exists=False), mention_author=False,
-          content=f"-# ♪ {source_label}{note}" + (f"\n-# {_synth_mod.last_synth_info}" if _synth_mod.last_synth_info else ""),
-          file=discord.File(BytesIO(audio), filename=out_name)
-        )
-        console.log(f"Sent synth audio: {out_name}", "INFO")
-        for a in synth_msg.attachments:
-          console.log(f'<audio controls src="{a.url}" style="max-width:300px"></audio>')
-      except Exception as e:
-        console.log(f"Failed to send synth audio: {e}", "ERROR")
-        await send_with_retry(message.channel, f"-# Synth error: {e}")
-      await _drop_status()
+    await _run_synth_job(message, synth_inputs, media_inputs, synth_opts, media_opts, [a.filename for a in synth_atts + media_atts])
     return
   
+  # !arona voice join/leave — manual rescue if the live model hangs
+  voice_cmd = re.match(r"^!arona\s+voice(?:\s+(\S+))?\s*$", message.content, re.IGNORECASE)
+  if voice_cmd:
+    console.log(f"User {message.author.display_name} used !arona voice", "INFO")
+    sub = (voice_cmd.group(1) or "").lower()
+    if not message.guild:
+      await send_with_retry(message.channel, "Voice commands only work in a server.")
+      return
+    _member = message.author
+    _user_vc = getattr(getattr(_member, "voice", None), "channel", None)
+    _bot_vc = message.guild.voice_client
+    if sub == "join":
+      _chat_vc = message.channel if isinstance(message.channel, (discord.VoiceChannel, discord.StageChannel)) else None
+      _target = _user_vc or _chat_vc
+      if _target is None:
+        await send_with_retry(message.channel, "Join a voice channel first, or run this command in a voice channel's own text chat.")
+        return
+      if _bot_vc and _bot_vc.channel != _target:
+        await send_with_retry(message.channel, f"Arona is already in another voice channel ({_bot_vc.channel.mention}). Use `!arona voice leave` from there first.")
+        return
+      # text channel = the voice channel's own chat, never the channel the command was typed in
+      _res = await join_voice_channel(_member, _target, target_vc=_target)
+      await send_with_retry(message.channel, f"-# {_res}")
+      return
+    if sub == "leave":
+      if not _bot_vc:
+        await send_with_retry(message.channel, "Arona is not in a voice channel.")
+        return
+      if _user_vc != _bot_vc.channel:
+        await send_with_retry(message.channel, "You need to be in the same voice channel as Arona to make her leave.")
+        return
+      _res = await leave_voice_channel(message.guild, _member, message.channel)
+      await send_with_retry(message.channel, f"-# {_res}")
+      return
+    await send_with_retry(message.channel, "Usage: `!arona voice join` / `!arona voice leave`")
+    return
+
   if message.content.lower().startswith("!arona raided"):
     await handle_raided_command(message)
     return
@@ -9156,6 +9210,7 @@ async def on_voice_state_update(member, before, after):
                 return
 
             # Unintentional disconnect (4017, network blip, etc.) — auto-reconnect
+            voice_metrics.voice_disconnects += 1
             async def _reconnect():
                 _RECONNECT_MAX_ATTEMPTS = 3
                 RETRY_DELAY  = 5.0   # seconds between attempts
@@ -9199,6 +9254,7 @@ async def on_voice_state_update(member, before, after):
                     result = await join_voice_channel(member_fresh, _voice_reconnect_text_ch)
                     if "Successfully" in result:
                         console.log(f"[RECONNECT] Success on attempt {attempt}.", "INFO")
+                        voice_metrics.voice_reconnects += 1
                         try:
                             await notify_ch.send("-# Reconnected to voice channel!")
                         except Exception:

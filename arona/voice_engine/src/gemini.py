@@ -14,6 +14,14 @@ from arona.voice_engine.src.window import VirtualDiscordWindow, WINDOW_TOOLS, WI
 from attachment import discord_attachment_to_parts
 from console import console
 import config
+from arona.voice_engine.src.voice_metrics import metrics as vm
+
+
+def _close_code(e: BaseException):
+    """WebSocket close code carried by a websockets ConnectionClosed (None for any other error)."""
+    c = getattr(getattr(e, "rcvd", None), "code", None)
+    return c if c is not None else getattr(e, "code", None)
+
 
 class GeminiWebSocket:
     def __init__(self, voice: str = 'aoede', persona: str = "You are a helpful assistant") -> None:
@@ -30,6 +38,7 @@ class GeminiWebSocket:
         self.receive_task: Optional[asyncio.Task] = None
         self.audio_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
         self._audio_taps: set = set()   # debug web listeners: queues fed with what the bot hears
+        self.audio_tx_total = 0         # cumulative audio bytes sent to Gemini (graphed in the debug TensorBoard)
         self._tx_chunks = 0             # batched "sent audio" log counters
         self._tx_bytes = 0
         self._tx_t0 = 0.0
@@ -198,15 +207,18 @@ class GeminiWebSocket:
         if not ws:
             console.log("[Gemini Live] Listener started without a WebSocket.", "ERROR")
             return
+        vm.gemini_listening()
         try:
             while True:
                 if ws.protocol.state.name != 'OPEN':
                     break
                 try:
                     raw_response: bytes = await ws.recv()
+                    vm.gemini_message()
                     response: Dict[str, Any] = json.loads(raw_response.decode("utf-8"))
                     await self.handle_message(response)
                 except Exception as e:
+                    vm.gemini_closed(_close_code(e))
                     console.log(
                         f"[Gemini Live] Listen loop error "
                         f"(state={ws.protocol.state.name}): {type(e).__name__}: {e}",
@@ -236,6 +248,7 @@ class GeminiWebSocket:
 
         # Tool calls come as a top-level "toolCall" key, NOT inside serverContent
         if "toolCall" in response:
+            vm.model_output()
             await self.handle_tool_use(response["toolCall"])
 
         if "serverContent" in response:
@@ -262,6 +275,7 @@ class GeminiWebSocket:
                         b64data = part["inlineData"]["data"]
                         if b64data:
                             audio_bytes = base64.b64decode(b64data)
+                            vm.model_output()
                             await self.play_audio(audio_bytes)
 
             # Flush remaining audio in voice changer buffer when turn ends
@@ -288,10 +302,18 @@ class GeminiWebSocket:
 
     async def send_audio_chunk(self, audio_data: bytes) -> None:
         if not self.ws or not self.ws.protocol.state.name == 'OPEN':
+            # Every 20ms chunk used to log + call connect() while the socket was down (hundreds of
+            # WARN lines/s). Drop chunks while a reconnect is in flight and retry at most every 2s.
+            if self._connecting:
+                return
+            _rt = time.monotonic()
+            if _rt - getattr(self, "_last_audio_reconnect", 0.0) < 2.0:
+                return
+            self._last_audio_reconnect = _rt
             console.log("[Gemini] Connection lost/closed. Reconnecting for audio...", "WARN")
             await self.connect()
             
-        if not self.ws:
+        if not self.ws or self.ws.protocol.state.name != 'OPEN':
             return
 
         # batched log: one line per speech burst (or every 5 s of continuous speech), not one per packet
@@ -302,6 +324,8 @@ class GeminiWebSocket:
             self._tx_t0 = _now
         self._tx_chunks += 1
         self._tx_bytes += len(audio_data)
+        self.audio_tx_total += len(audio_data)
+        vm.user_chunk()
         self._tx_last = _now
         if _now - self._tx_t0 >= 5.0:
             self._flush_tx_log() 

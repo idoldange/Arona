@@ -1,4 +1,10 @@
-"""Debug panel under /debug (served by debug_web.py): login, system stats, bash terminal, Python console inside the bot.
+"""Debug panel under /debug (served by debug_web.py): login, TensorBoard (system + bot metrics), interactive terminal,
+Python console inside the bot.
+
+Existing tools are used wherever possible; only the glue is custom:
+  - System / bot metrics: written as scalars to logs/tb and shown by TensorBoard (own subprocess, reverse-proxied under
+    /debug/tensorboard/ so it sits behind the same login).
+  - Terminal: xterm.js in the browser + a real PTY on the server (pywinpty / ConPTY on Windows, pty on Linux/macOS).
 
 Login reuses the credentials of server.js: pass.txt (raw password) -> pass.hash (bcrypt, cost 10), user "idoldange".
 The browser only keeps a signed session token (HttpOnly cookie), never the password. If no password can be loaded the
@@ -18,16 +24,20 @@ import os
 import reprlib
 import shutil
 import signal
+import socket
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlsplit
 
+import aiohttp
 from aiohttp import web, WSMsgType
 
 from console import console
+from arona.voice_engine.src import voice_metrics as _vm
 
 try:
     import psutil as _psutil
@@ -45,8 +55,12 @@ LOGIN_MAX_FAILS, LOGIN_WINDOW = 7, 15 * 60     # same limit as server.js: 7 wron
 EXEC_TIMEOUT = 60
 OUT_LIMIT = 200_000
 
-NAV = [("/debug", "Home"), ("/debug/call_ui", "Call UI"), ("/debug/system", "System"),
-       ("/debug/terminal", "Terminal"), ("/debug/python", "Python")]
+NAV = [("/debug", "Home"), ("/debug/call_ui", "Call UI"), ("/debug/system", "System"), ("/debug/db", "Database"),
+       ("/debug/ide", "IDE"), ("/debug/terminal", "Terminal")]
+TB_PREFIX = "/debug/tensorboard"
+TB_LOGDIR = os.path.join(ROOT, "logs", "tb")
+TB_KEEP_RUNS = 8                               # old run-* folders under logs/tb beyond this are deleted
+TB_INTERVAL = 2.0                              # seconds between metric samples
 
 
 # ───────────────────────────── auth ─────────────────────────────
@@ -175,6 +189,10 @@ async def auth_middleware(request: web.Request, handler):
     raise web.HTTPFound("/debug/login?next=" + quote(nxt, safe=""))
 
 
+def _safe_next(n: str) -> str:
+    return n if n.startswith("/debug") and not n.startswith("//") and "\\" not in n else "/debug"
+
+
 async def login_page(request: web.Request) -> web.Response:
     return web.Response(text=LOGIN_HTML, content_type="text/html", headers={"Cache-Control": "no-store"})
 
@@ -297,9 +315,10 @@ async def home_page(request: web.Request) -> web.Response:
   <div class="card"><h3>Bot</h3><div id="bot" class="muted">loading...</div></div>
   <div class="card"><h3>Tools</h3>
     <p><a href="/debug/call_ui">Call UI</a> <span class="muted">- live voice-call window + what the bot hears</span></p>
-    <p><a href="/debug/system">System</a> <span class="muted">- CPU / RAM / GPU / network</span></p>
-    <p><a href="/debug/terminal">Terminal</a> <span class="muted">- run shell commands on this PC</span></p>
-    <p><a href="/debug/python">Python</a> <span class="muted">- console running inside the bot process</span></p>
+    <p><a href="/debug/system">System</a> <span class="muted">- TensorBoard: CPU / RAM / GPU / network / bot metrics</span></p>
+    <p><a href="/debug/db">Database</a> <span class="muted">- spreadsheet-style editor for the SQLite files in ./database</span></p>
+    <p><a href="/debug/terminal">Terminal</a> <span class="muted">- interactive shell on this PC</span></p>
+    <p><a href="/debug/ide">IDE</a> <span class="muted">- edit the bot source like VS Code, hot reload without restart, Python console inside the bot</span></p>
   </div>
 </div>"""
     script = r"""
@@ -320,174 +339,72 @@ fetch('/debug/api/stats').then(r => r.json()).then(s => {
 
 async def system_page(request: web.Request) -> web.Response:
     body = r"""
-<div class="grid" id="top">
-  <div class="card"><h3>CPU</h3><div class="big" id="cpuv">-</div><canvas id="cpuc"></canvas><div id="cores"></div></div>
-  <div class="card"><h3>Memory</h3><div class="big" id="ramv">-</div><div class="muted" id="ramt"></div><canvas id="ramc"></canvas><div class="muted" id="swapt"></div></div>
-  <div class="card"><h3>Network</h3><div class="row"><span>Down <b id="nd">-</b></span><span>Up <b id="nu">-</b></span></div><canvas id="netc"></canvas>
-    <h3 style="margin-top:10px">Disk</h3><div class="bar"><i id="diskb" style="width:0"></i></div><div class="muted" id="diskt"></div></div>
-  <div class="card"><h3>Bot process</h3><div id="proc" class="muted">-</div></div>
-</div>
-<div class="grid" id="gpus" style="margin-top:12px"></div>
-<p class="muted" id="note"></p>"""
+<style>main{max-width:none;padding:0}iframe{display:block;width:100%;height:calc(100vh - 49px);border:0;background:#202124}</style>
+<iframe id="tb" title="TensorBoard"></iframe>"""
     script = r"""
-const N = 120, $ = id => document.getElementById(id), H = {cpu: [], ram: [], net: []};
-const B = n => n == null ? '-' : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(1) + ' GB' : n >= 2 ** 20 ? (n / 2 ** 20).toFixed(0) + ' MB' : (n / 1024).toFixed(0) + ' KB';
-const push = (a, v) => { a.push(v == null ? 0 : v); if (a.length > N) a.shift(); };
-function spark(cv, arr, color, max) {
-  const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
-  cv.width = w * dpr; cv.height = h * dpr;
-  const g = cv.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
-  g.strokeStyle = '#2b2d31'; g.lineWidth = 1; g.beginPath(); g.moveTo(0, h - .5); g.lineTo(w, h - .5); g.stroke();
-  if (arr.length < 2) return;
-  const m = max || Math.max(1, ...arr), step = w / (N - 1);
-  g.beginPath();
-  arr.forEach((v, i) => { const x = w - (arr.length - 1 - i) * step, y = h - 2 - (h - 4) * Math.min(v, m) / m; i ? g.lineTo(x, y) : g.moveTo(x, y); });
-  g.strokeStyle = color; g.lineWidth = 1.5; g.stroke();
-}
-function bar(parent, i) {
-  const b = document.createElement('div'); b.className = 'bar'; const f = document.createElement('i'); b.appendChild(f); parent.appendChild(b); return f;
-}
-const coreBars = [], gpuCards = [];
-function gpuCard(i, name) {
-  if (gpuCards[i]) return gpuCards[i];
-  const card = document.createElement('div'); card.className = 'card';
-  const h = document.createElement('h3'); h.textContent = 'GPU ' + i + ' - ' + name; card.appendChild(h);
-  const big = document.createElement('div'); big.className = 'big'; card.appendChild(big);
-  const cv = document.createElement('canvas'); card.appendChild(cv);
-  const vb = bar(card, 0); const vt = document.createElement('div'); vt.className = 'muted'; card.appendChild(vt);
-  $('gpus').appendChild(card);
-  return gpuCards[i] = {big, cv, vb, vt, hist: []};
-}
-async function tick() {
-  let s;
-  try { const r = await fetch('/debug/api/stats'); if (r.status === 401) { location = '/debug/login?next=/debug/system'; return; } s = await r.json(); } catch (e) { return; }
-  if (s.error) $('note').textContent = s.error;
-  if (s.cpu) {
-    $('cpuv').textContent = s.cpu.percent.toFixed(0) + '%  (' + s.cpu.count + ' threads)';
-    push(H.cpu, s.cpu.percent); spark($('cpuc'), H.cpu, '#5865f2', 100);
-    s.cpu.cores.forEach((v, i) => { if (!coreBars[i]) coreBars[i] = bar($('cores'), i); coreBars[i].style.width = v + '%'; });
-  }
-  if (s.ram) {
-    $('ramv').textContent = s.ram.percent.toFixed(0) + '%'; $('ramt').textContent = B(s.ram.used) + ' / ' + B(s.ram.total);
-    push(H.ram, s.ram.percent); spark($('ramc'), H.ram, '#23a55a', 100);
-    $('swapt').textContent = 'swap ' + B(s.swap.used) + ' / ' + B(s.swap.total);
-  }
-  if (s.net) { $('nd').textContent = B(s.net.down) + '/s'; $('nu').textContent = B(s.net.up) + '/s'; push(H.net, s.net.down + s.net.up); spark($('netc'), H.net, '#f0b232'); }
-  if (s.disk) { $('diskb').style.width = s.disk.percent + '%'; $('diskt').textContent = s.disk.path + '  ' + B(s.disk.used) + ' / ' + B(s.disk.total); }
-  if (s.proc) { const p = s.proc; $('proc').textContent = 'CPU ' + p.cpu.toFixed(0) + '%   RAM ' + B(p.rss) + '   threads ' + p.threads + '   asyncio tasks ' + p.tasks; }
-  (s.gpus || []).forEach((g, i) => {
-    const c = gpuCard(i, g.name);
-    c.big.textContent = (g.util == null ? '-' : g.util.toFixed(0)) + '%' + (g.temp == null ? '' : '   ' + g.temp.toFixed(0) + ' C') + (g.power == null ? '' : '   ' + g.power.toFixed(0) + ' W');
-    push(c.hist, g.util); spark(c.cv, c.hist, '#f23f43', 100);
-    const vp = g.mem_total ? 100 * g.mem_used / g.mem_total : 0; c.vb.style.width = vp + '%';
-    c.vt.textContent = 'VRAM ' + (g.mem_used == null ? '-' : g.mem_used.toFixed(0)) + ' / ' + (g.mem_total == null ? '-' : g.mem_total.toFixed(0)) + ' MiB';
-  });
-  if (!(s.gpus || []).length && !s.error) $('note').textContent = 'No NVIDIA GPU / nvidia-smi found.';
-}
-setInterval(tick, 1000); tick();
+// TensorBoard keeps its theme in localStorage (same origin, because it is proxied under /debug): default to dark
+try { const k = '_tb_global_settings', s = JSON.parse(localStorage.getItem(k) || '{}');
+  if (!s.theme) { s.theme = 'dark'; localStorage.setItem(k, JSON.stringify(s)); } } catch (e) {}
+document.getElementById('tb').src = '/debug/tensorboard/';
 """
     return page("System", "/debug/system", body, script)
 
 
+XTERM_CSS = "https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"
+XTERM_JS = "https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"
+XTERM_FIT = "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"
+# Subresource Integrity: this page can run commands on the PC, so the browser must refuse a tampered CDN file
+SRI_CSS = "sha384-LJcOxlx9IMbNXDqJ2axpfEQKkAYbFjJfhXexLfiRJhjDU81mzgkiQq8rkV0j6dVh"
+SRI_JS = "sha384-/nfmYPUzWMS6v2atn8hbljz7NE0EI1iGx34lJaNzyVjWGDzMv+ciUZUeJpKA3Glc"
+SRI_FIT = "sha384-AQLWHRKAgdTxkolJcLOELg4E9rE89CPE2xMy3tIRFn08NcGKPTsELdvKomqji+DL"
+
+
 async def terminal_page(request: web.Request) -> web.Response:
     body = r"""
-<div class="muted" id="info">connecting...</div>
-<div class="term"><pre id="out"></pre></div>
-<div class="line"><span id="pr" class="muted"></span><input id="cmd" autocomplete="off" autofocus placeholder="command  (Up/Down = history, Ctrl+C = kill)">
-<button class="alt" id="kill">Kill</button><button class="alt" id="clr">Clear</button></div>"""
+<style>main{max-width:none}#bar{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+#term{height:calc(100vh - 110px);background:#0d0e10;border:1px solid #2b2d31;border-radius:8px;padding:6px}
+.xterm-viewport{background:#0d0e10!important}</style>
+<link rel="stylesheet" href="__CSS__" integrity="__SRI_CSS__" crossorigin="anonymous">
+<div id="bar"><span class="muted" id="info">connecting...</span><span style="flex:1"></span>
+<button class="alt" id="re">Reconnect</button></div>
+<div id="term"></div>
+<script src="__JS__" integrity="__SRI_JS__" crossorigin="anonymous"></script>
+<script src="__FIT__" integrity="__SRI_FIT__" crossorigin="anonymous"></script>"""
+    body = (body.replace("__CSS__", XTERM_CSS).replace("__JS__", XTERM_JS).replace("__FIT__", XTERM_FIT)
+            .replace("__SRI_CSS__", SRI_CSS).replace("__SRI_JS__", SRI_JS).replace("__SRI_FIT__", SRI_FIT))
     script = r"""
-const out = document.getElementById('out'), inp = document.getElementById('cmd'), pr = document.getElementById('pr'), info = document.getElementById('info');
-const wrap = out.parentElement; let ws, hist = [], hi = 0, busy = false;
-function add(s) {
-  const bottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 30;
-  out.appendChild(document.createTextNode(s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')));
-  while (out.childNodes.length > 3000) out.removeChild(out.firstChild);
-  if (bottom) wrap.scrollTop = wrap.scrollHeight;
+const info = document.getElementById('info');
+if (typeof Terminal === 'undefined') { info.textContent = 'xterm.js failed to load (CDN blocked / offline?)'; }
+else {
+  const term = new Terminal({cursorBlink: true, scrollback: 10000, fontSize: 14,
+    fontFamily: 'Consolas, "Cascadia Mono", ui-monospace, monospace',
+    theme: {background: '#0d0e10', foreground: '#dbdee1', cursor: '#dbdee1', selectionBackground: '#3b4252'}});
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit);
+  term.open(document.getElementById('term')); fit.fit(); term.focus();
+  let ws = null;
+  const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+  function connect() {
+    fit.fit();
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host +
+                       '/debug/ws/terminal?cols=' + term.cols + '&rows=' + term.rows);
+    ws.onopen = () => { info.textContent = 'connected'; term.focus(); };
+    ws.onmessage = e => term.write(e.data);
+    ws.onclose = () => { info.textContent = 'disconnected'; term.write('\r\n\x1b[31m[disconnected]\x1b[0m\r\n'); };
+  }
+  term.onData(d => send({type: 'input', data: d}));
+  term.onResize(s => send({type: 'resize', cols: s.cols, rows: s.rows}));
+  window.addEventListener('resize', () => fit.fit());
+  document.getElementById('re').onclick = () => { if (ws) ws.close(); term.reset(); connect(); };
+  connect();
 }
-function connect() {
-  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/debug/ws/shell');
-  ws.onmessage = e => {
-    const m = JSON.parse(e.data);
-    if (m.type === 'hello') { info.textContent = 'shell: ' + m.shell; pr.textContent = m.cwd + ' $'; }
-    else if (m.type === 'out') add(m.data);
-    else if (m.type === 'exit') { busy = false; pr.textContent = m.cwd + ' $'; if (m.code) add('[exit ' + m.code + ']\n'); }
-  };
-  ws.onclose = () => { add('\n[disconnected - reload the page]\n'); info.textContent = 'disconnected'; };
-}
-const kill = () => ws && ws.readyState === 1 && ws.send(JSON.stringify({type: 'kill'}));
-document.getElementById('kill').onclick = kill;
-document.getElementById('clr').onclick = () => { out.textContent = ''; };
-inp.addEventListener('keydown', e => {
-  if (e.key === 'Enter') {
-    const c = inp.value; if (!c.trim() || !ws || ws.readyState !== 1) return;
-    hist.push(c); hi = hist.length; add(pr.textContent + ' ' + c + '\n');
-    ws.send(JSON.stringify({type: 'run', cmd: c})); inp.value = ''; busy = true;
-  } else if (e.key === 'ArrowUp') { if (hi > 0) inp.value = hist[--hi]; e.preventDefault(); }
-  else if (e.key === 'ArrowDown') { hi = Math.min(hist.length, hi + 1); inp.value = hist[hi] || ''; e.preventDefault(); }
-  else if (e.key === 'c' && e.ctrlKey && busy) { kill(); e.preventDefault(); }
-});
-connect();
 """
+    if request.query.get("embed"):
+        body = "<style>nav{display:none!important}main{padding:0!important;max-width:none}#bar{display:none}#term{height:100vh!important;border:0!important;border-radius:0!important}</style>" + body
     return page("Terminal", "/debug/terminal", body, script)
 
 
-async def python_page(request: web.Request) -> web.Response:
-    body = r"""
-<div class="muted">Runs inside the bot process, in the globals of main.py (client, gemini_ws, os, ...). Top-level <code>await</code> works.
-Blocking code blocks the bot - use <code>await asyncio.to_thread(fn)</code> for slow things. Ctrl+Enter = run.</div>
-<div style="display:flex;gap:12px;margin-top:8px;align-items:flex-start;flex-wrap:wrap">
-  <div style="flex:1;min-width:320px">
-    <div class="term" style="height:calc(100vh - 330px)"><pre id="out"></pre></div>
-    <textarea id="code" rows="5" style="width:100%;margin-top:8px" placeholder="code..."></textarea>
-    <div class="line"><button id="run">Run</button><button class="alt" id="clr">Clear</button><span class="muted" id="st"></span></div>
-  </div>
-  <div class="card" style="width:300px;max-height:calc(100vh - 150px);overflow:auto"><h3>Variables</h3>
-    <div class="line" style="margin:0 0 6px"><input id="q" placeholder="filter"><button class="alt" id="rv">Refresh</button></div>
-    <div id="vars" class="muted"></div></div>
-</div>"""
-    script = r"""
-const out = document.getElementById('out'), code = document.getElementById('code'), run = document.getElementById('run'), st = document.getElementById('st');
-const wrap = out.parentElement; let hist = [], hi = 0;
-function add(s) { out.appendChild(document.createTextNode(s)); wrap.scrollTop = wrap.scrollHeight; }
-async function exec() {
-  const src = code.value; if (!src.trim()) return;
-  hist.push(src); hi = hist.length; run.disabled = true; st.textContent = 'running...';
-  add('>>> ' + src.split('\n').join('\n... ') + '\n');
-  try {
-    const r = await fetch('/debug/api/exec', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({code: src})});
-    if (r.status === 401) { location = '/debug/login?next=/debug/python'; return; }
-    const j = await r.json();
-    if (j.out) add(j.out.endsWith('\n') ? j.out : j.out + '\n');
-    if (j.result != null) add(j.result + '\n');
-    if (j.error) add(j.error + '\n');
-    st.textContent = j.ms + ' ms';
-  } catch (e) { add('request failed: ' + e + '\n'); st.textContent = ''; }
-  run.disabled = false; code.value = ''; code.focus();
-}
-run.onclick = exec;
-document.getElementById('clr').onclick = () => { out.textContent = ''; };
-code.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); exec(); }
-  else if (e.key === 'ArrowUp' && e.altKey) { if (hi > 0) code.value = hist[--hi]; e.preventDefault(); }
-  else if (e.key === 'ArrowDown' && e.altKey) { hi = Math.min(hist.length, hi + 1); code.value = hist[hi] || ''; e.preventDefault(); }
-});
-async function vars() {
-  const box = document.getElementById('vars'); box.textContent = 'loading...';
-  try {
-    const rows = await (await fetch('/debug/api/vars?q=' + encodeURIComponent(document.getElementById('q').value))).json();
-    box.textContent = '';
-    rows.forEach(v => {
-      const d = document.createElement('div'); d.style.cssText = 'padding:2px 0;border-bottom:1px solid #2b2d31;cursor:pointer';
-      const n = document.createElement('b'); n.style.color = '#dbdee1'; n.textContent = v.name; const t = document.createElement('span'); t.textContent = '  ' + v.type;
-      const r = document.createElement('div'); r.textContent = v.repr; r.style.fontSize = '12px'; d.append(n, t, r);
-      d.onclick = () => { code.value += v.name; code.focus(); }; box.appendChild(d);
-    });
-  } catch (e) { box.textContent = 'failed'; }
-}
-document.getElementById('rv').onclick = vars; document.getElementById('q').addEventListener('keydown', e => { if (e.key === 'Enter') vars(); });
-vars();
-"""
-    return page("Python", "/debug/python", body, script)
+async def python_redirect(request: web.Request) -> web.Response:
+    raise web.HTTPFound("/debug/ide")
 
 
 # ───────────────────────────── system stats ─────────────────────────────
@@ -587,7 +504,7 @@ async def api_stats(request: web.Request) -> web.Response:
 _exec_lock = asyncio.Lock()
 
 
-def _fmt_exc(e: BaseException) -> str:
+def _fmt_exc(e: BaseException, tb_frames: bool = True) -> str:
     frames = [f for f in traceback.extract_tb(e.__traceback__) if f.filename == "<debug-console>"]
     lines = (["Traceback (most recent call last):\n"] + traceback.format_list(frames)) if frames else []
     return "".join(lines + traceback.format_exception_only(type(e), e))
@@ -657,89 +574,156 @@ async def api_vars(request: web.Request) -> web.Response:
     return web.json_response(rows[:500])
 
 
-# ───────────────────────────── bash terminal ─────────────────────────────
-def _shell_argv(cmd: str) -> List[str]:
+# ───────────────────────────── interactive terminal (PTY) ─────────────────────────────
+def _shell_argv() -> List[str]:
     if os.name == "nt":
         for p in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe"):
             if os.path.exists(p):
-                return [p, "-c", cmd]
+                return [p, "--login", "-i"]
         w = shutil.which("bash")
         if w:
-            return [w, "-c", cmd]
+            return [w, "--login", "-i"]
         ps = shutil.which("powershell")
         if ps:
-            return [ps, "-NoProfile", "-Command", cmd]
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", cmd]
-    return [shutil.which("bash") or "/bin/sh", "-c", cmd]
+            return [ps, "-NoLogo"]
+        return [os.environ.get("COMSPEC", "cmd.exe")]
+    return [shutil.which("bash") or "/bin/sh", "-i"]
 
 
-def _shell_label() -> str:
-    return _shell_argv("")[0]
+class PtySession:
+    """A real terminal: pywinpty (ConPTY) on Windows, the stdlib pty module elsewhere."""
 
-
-async def _kill(state: Dict[str, Any]) -> None:
-    proc = state.get("proc")
-    if proc is None or proc.returncode is not None:
-        return
-    try:
-        if os.name == "nt":
-            await asyncio.get_running_loop().run_in_executor(
-                None, lambda: subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=10))
+    def __init__(self, argv: List[str], cwd: str, rows: int = 30, cols: int = 120) -> None:
+        env = dict(os.environ, TERM="xterm-256color", COLORTERM="truecolor")
+        self.win = os.name == "nt"
+        self._closed = False
+        if self.win:
+            from winpty import PtyProcess   # pip install pywinpty
+            self._p = PtyProcess.spawn(argv, cwd=cwd, env=env, dimensions=(rows, cols))
         else:
-            os.killpg(proc.pid, signal.SIGKILL)
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+            import fcntl, pty, struct, termios
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
-
-async def _run_command(ws: web.WebSocketResponse, state: Dict[str, Any], cmd: str) -> None:
-    async def send(obj):
-        try:
-            await ws.send_json(obj)
-        except (ConnectionResetError, RuntimeError):
-            pass
-    s = cmd.strip()
-    code = 0
-    try:
-        if s == "cd" or (s.startswith("cd ") and not any(c in s for c in "&;|<>\n")):
-            target = s[2:].strip().strip("\"'") or ROOT
-            path = os.path.abspath(os.path.join(state["cwd"], os.path.expanduser(target)))
-            if os.path.isdir(path):
-                state["cwd"] = path
-            else:
-                code = 1
-                await send({"type": "out", "data": "cd: no such directory: %s\n" % target})
-        elif s:
-            kw: Dict[str, Any] = {} if os.name == "nt" else {"start_new_session": True}
+            def _child():
+                os.setsid()
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *_shell_argv(cmd), cwd=state["cwd"], env=dict(os.environ, PYTHONUNBUFFERED="1"),
-                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **kw)
-            except Exception as e:
-                code = 1
-                await send({"type": "out", "data": "failed to start: %s\n" % e})
+                self._proc = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave, cwd=cwd, env=env,
+                                              close_fds=True, preexec_fn=_child)
+            finally:
+                os.close(slave)
+            self._master = master
+            self._dec = codecs.getincrementaldecoder("utf-8")("replace")
+
+    def read(self) -> Optional[str]:
+        """Blocking. Returns the next output chunk, or None when the shell is gone."""
+        try:
+            if self.win:
+                d = self._p.read(4096)
+                return d if d else (None if not self._p.isalive() else "")
+            d = os.read(self._master, 4096)
+            return self._dec.decode(d) if d else None
+        except (EOFError, OSError, ValueError):
+            return None
+
+    def write(self, s: str) -> None:
+        if self._closed:
+            return
+        try:
+            if self.win:
+                self._p.write(s)
             else:
-                state["proc"] = proc
-                dec = codecs.getincrementaldecoder("utf-8")("replace")
-                while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    await send({"type": "out", "data": dec.decode(chunk)})
-                code = await proc.wait()
-    finally:
-        state["proc"] = None
-    await send({"type": "exit", "code": code, "cwd": state["cwd"]})   # always: the page re-enables its prompt on this
+                os.write(self._master, s.encode("utf-8"))
+        except (EOFError, OSError, ValueError):
+            pass
+
+    def resize(self, rows: int, cols: int) -> None:
+        if self._closed or rows < 1 or cols < 1:
+            return
+        try:
+            if self.win:
+                self._p.setwinsize(rows, cols)
+            else:
+                import fcntl, struct, termios
+                fcntl.ioctl(self._master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        except (EOFError, OSError, ValueError):
+            pass
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.win:
+                pid = getattr(self._p, "pid", None)
+                if pid:   # kill the whole tree (bash + whatever it started)
+                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                try:
+                    self._p.terminate(force=True)
+                except Exception:
+                    pass
+                try:
+                    self._p.close(force=True)
+                except Exception:
+                    pass
+            else:
+                try:
+                    os.killpg(self._proc.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+                try:
+                    os.close(self._master)
+                except OSError:
+                    pass
+                try:
+                    self._proc.wait(timeout=2)
+                except Exception:
+                    pass
+        except Exception as e:   # never let cleanup raise into the websocket handler
+            console.log(f"[DebugWeb] terminal cleanup: {e}", "WARN")
 
 
-async def ws_shell(request: web.Request) -> web.WebSocketResponse:
+async def ws_terminal(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 20)
     await ws.prepare(request)
-    state: Dict[str, Any] = {"cwd": ROOT, "proc": None, "task": None}
-    await ws.send_json({"type": "hello", "shell": _shell_label(), "cwd": state["cwd"]})
+
+    def _int(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(hi, int(request.query.get(name, default))))
+        except ValueError:
+            return default
+    cols, rows = _int("cols", 120, 10, 500), _int("rows", 30, 3, 200)
+    loop = asyncio.get_running_loop()
+    try:
+        sess = await loop.run_in_executor(None, lambda: PtySession(_shell_argv(), ROOT, rows, cols))
+    except Exception as e:
+        hint = "  (pip install pywinpty)" if os.name == "nt" and isinstance(e, ImportError) else ""
+        await ws.send_str("\r\n\x1b[31mcould not start the shell: %s%s\x1b[0m\r\n" % (e, hint))
+        await ws.close()
+        return ws
     console.log(f"[DebugWeb] terminal opened from {request.remote}", "INFO")
+    q: asyncio.Queue = asyncio.Queue()
+
+    def _reader() -> None:   # daemon thread: blocking PTY reads
+        while True:
+            d = sess.read()
+            loop.call_soon_threadsafe(q.put_nowait, d)
+            if d is None:
+                return
+    threading.Thread(target=_reader, daemon=True, name="debug-pty-reader").start()
+
+    async def _pump() -> None:
+        while True:
+            d = await q.get()
+            if d is None:
+                await ws.send_str("\r\n\x1b[33m[shell exited]\x1b[0m\r\n")
+                await ws.close()
+                return
+            if d:
+                await ws.send_str(d)
+    pump = asyncio.ensure_future(_pump())
     try:
         async for msg in ws:
             if msg.type != WSMsgType.TEXT:
@@ -749,28 +733,309 @@ async def ws_shell(request: web.Request) -> web.WebSocketResponse:
             except ValueError:
                 continue
             t = data.get("type")
-            if t == "run":
-                task = state["task"]
-                if task is not None and not task.done():
-                    await ws.send_json({"type": "out", "data": "[busy] a command is still running (Ctrl+C / Kill)\n"})
-                    continue
-                state["task"] = asyncio.ensure_future(_run_command(ws, state, str(data.get("cmd", ""))[:20000]))
-            elif t == "kill":
-                await _kill(state)
+            if t == "input":
+                sess.write(str(data.get("data", "")))
+            elif t == "resize":
+                try:
+                    sess.resize(int(data["rows"]), int(data["cols"]))
+                except (KeyError, TypeError, ValueError):
+                    pass
     finally:
-        await _kill(state)
-        task = state.get("task")
-        if task is not None and not task.done():
-            task.cancel()
+        pump.cancel()
+        await loop.run_in_executor(None, sess.close)
     return ws
 
 
+# ───────────────────────────── TensorBoard: metrics + server + proxy ─────────────────────────────
+_tb: Dict[str, Any] = {"last": {}, "lat": None, "writer": None, "task": None, "proc": None, "port": None, "session": None, "log": None}
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+_HIST_LIMITS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 20, 30, 60, 1e12]   # seconds, response-latency buckets
+
+
+def _histo(vals: List[float]):
+    from tensorboard.compat.proto.summary_pb2 import HistogramProto
+    counts = [0] * len(_HIST_LIMITS)
+    for v in vals:
+        for i, lim in enumerate(_HIST_LIMITS):
+            if v <= lim:
+                counts[i] += 1
+                break
+    return HistogramProto(min=min(vals), max=max(vals), num=len(vals), sum=sum(vals),
+                          sum_squares=sum(v * v for v in vals), bucket_limit=_HIST_LIMITS, bucket=counts)
+
+
+def _voice_scalars(st: Dict[str, Any], prev: Dict[str, Any], now: float) -> Dict[str, float]:
+    """Tags under voice/ (the Call UI page shows exactly these). Rates need the previous sample, kept in prev."""
+    m = _vm.metrics
+    b = st.get("bot", {})
+    live = bool(b.get("gemini_live")) and bool(b.get("in_voice"))
+    if not live:
+        m.clear_turn()
+    out: Dict[str, float] = {
+        "voice/gemini_last_msg_age_s": m.msg_age_s() if live else 0.0,
+        "voice/unanswered_s": m.unanswered_s() if live else 0.0,
+        "voice/gemini_ws_closes": m.gemini_ws_closes,
+        "voice/gemini_ws_last_close_code": m.gemini_ws_last_close_code,
+        "voice/disconnects": m.voice_disconnects,
+        "voice/reconnects": m.voice_reconnects,
+        "voice/connect_fails": m.voice_connect_fails,
+        "voice/connect_last_fail_code": m.voice_last_fail_code,
+        "voice/dave_dropped_frames": m.dave_drops,
+        "voice/crypto_errors": m.crypto_errors,
+        "voice/opus_errors": m.opus_errors,
+        "voice/packets_lost": m.packets_lost,
+    }
+    t0 = prev.get("t")
+
+    def rate(key: str, total: float, scale: float = 1.0) -> Optional[float]:
+        p, prev[key] = prev.get(key), total
+        if p is None or t0 is None or now <= t0:
+            return None
+        return max(0.0, (total - p) / (now - t0) / scale)
+
+    gw = _bot_ns().get("gemini_ws")
+    for tag, key, total, scale in (("voice/discord_rx_kb_s", "rx", m.discord_rx_bytes, 1024.0),
+                                   ("voice/gemini_tx_kb_s", "tx", getattr(gw, "audio_tx_total", None), 1024.0),
+                                   ("voice/window_frames_sent_per_s", "fs", m.frames_sent, 1.0)):
+        if total is None:
+            continue
+        r = rate(key, total, scale)
+        if r is not None:
+            out[tag] = r
+    n, avg_ms, max_ms, avg_kb = m.drain_render()
+    if n and t0 is not None and now > t0:
+        out["voice/window_render_ms"] = avg_ms
+        out["voice/window_render_max_ms"] = max_ms
+        out["voice/window_jpeg_kb"] = avg_kb
+        out["voice/window_frames_rendered_per_s"] = n / (now - t0)
+    prev["t"] = now
+    return out
+
+
+def _scalars(st: Dict[str, Any], audio_kbs: Optional[float]) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    if "cpu" in st:
+        out["cpu/percent"] = st["cpu"]["percent"]
+    if "ram" in st:
+        out["memory/percent"] = st["ram"]["percent"]
+        out["memory/used_gb"] = st["ram"]["used"] / 2 ** 30
+    if "net" in st:
+        out["network/down_kb_s"] = st["net"]["down"] / 1024
+        out["network/up_kb_s"] = st["net"]["up"] / 1024
+    for i, g in enumerate(st.get("gpus", [])):
+        for k, tag in (("util", "utilization_percent"), ("mem_used", "vram_mb"), ("temp", "temp_c"), ("power", "power_w")):
+            if g.get(k) is not None:
+                out["gpu%d/%s" % (i, tag)] = g[k]
+    if "proc" in st:
+        p = st["proc"]
+        out["bot/cpu_percent"] = p["cpu"]
+        out["bot/rss_mb"] = p["rss"] / 2 ** 20
+        out["bot/threads"] = p["threads"]
+        out["bot/asyncio_tasks"] = p["tasks"]
+    b = st.get("bot", {})
+    if b.get("latency_ms") is not None:
+        out["bot/gateway_latency_ms"] = b["latency_ms"]
+    if "gemini_live" in b:
+        out["bot/gemini_live"] = 1.0 if b["gemini_live"] else 0.0
+        out["bot/in_voice"] = 1.0 if b.get("in_voice") else 0.0
+    if audio_kbs is not None:
+        out["bot/gemini_audio_sent_kb_s"] = audio_kbs
+    return out
+
+
+async def _metrics_loop(writer) -> None:
+    from tensorboard.compat.proto.event_pb2 import Event
+    from tensorboard.compat.proto.summary_pb2 import Summary
+    step, prev = 0, None
+    vprev: Dict[str, Any] = {}
+    lat_n, lat_hist = 0, []
+    while True:
+        try:
+            st = await collect_stats()
+            total = getattr(_bot_ns().get("gemini_ws"), "audio_tx_total", None)
+            now = time.time()
+            audio = None
+            if total is not None and prev is not None and now > prev[0]:
+                audio = max(0.0, (total - prev[1]) / (now - prev[0]) / 1024)
+            if total is not None:
+                prev = (now, total)
+            vals = _scalars(st, audio)
+            vals.update(_voice_scalars(st, vprev, now))
+            _tb["last"] = vals
+            # one point per answered turn (own step counter), plus the running latency histogram
+            for wall, lat in _vm.metrics.pop_latencies():
+                lat_n += 1
+                lat_hist = (lat_hist + [lat])[-500:]
+                _tb["lat"] = {"last": lat, "avg": sum(lat_hist) / len(lat_hist), "n": lat_n}
+                writer.add_event(Event(wall_time=wall, step=lat_n, summary=Summary(value=[
+                    Summary.Value(tag="voice/response_latency_s", simple_value=float(lat)),
+                    Summary.Value(tag="voice/response_latency_hist", histo=_histo(lat_hist))])))
+            if vals:
+                writer.add_event(Event(wall_time=now, step=step, summary=Summary(
+                    value=[Summary.Value(tag=k, simple_value=float(v)) for k, v in vals.items()])))
+                step += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            console.log(f"[DebugWeb] metrics sample failed: {e}", "WARN")
+        await asyncio.sleep(TB_INTERVAL)
+
+
+def _prune_runs() -> None:
+    try:
+        runs = sorted(d for d in os.listdir(TB_LOGDIR) if d.startswith("run-") and os.path.isdir(os.path.join(TB_LOGDIR, d)))
+        for d in runs[:-TB_KEEP_RUNS]:
+            shutil.rmtree(os.path.join(TB_LOGDIR, d), ignore_errors=True)
+    except OSError:
+        pass
+
+
+async def start_services() -> None:
+    """Called with debug mode: start the metric writer and the TensorBoard subprocess."""
+    if _tb["task"] is not None:
+        return
+    try:
+        from tensorboard.summary.writer.event_file_writer import EventFileWriter
+    except Exception as e:
+        console.log(f"[DebugWeb] TensorBoard not available (pip install tensorboard): {e}", "WARN")
+        return
+    os.makedirs(TB_LOGDIR, exist_ok=True)
+    _prune_runs()
+    run = os.path.join(TB_LOGDIR, "run-" + time.strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(run, exist_ok=True)
+    _tb["run"] = os.path.basename(run)
+    _vm.install_log_counter()
+    writer = EventFileWriter(run, flush_secs=2)
+    _tb["writer"] = writer
+    _tb["task"] = asyncio.ensure_future(_metrics_loop(writer))
+    port = _free_port()
+    argv = [sys.executable, "-m", "tensorboard.main", "--logdir", TB_LOGDIR, "--host", "127.0.0.1", "--port", str(port),
+            "--path_prefix", TB_PREFIX, "--reload_interval", "2"]
+    kw: Dict[str, Any] = {}
+    if os.name == "nt":
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
+        _tb["log"] = open(os.path.join(ROOT, "logs", "tensorboard.log"), "ab")
+        _tb["proc"] = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=_tb["log"], stderr=subprocess.STDOUT, **kw)
+        _tb["port"] = port
+        console.log(f"[DebugWeb] TensorBoard starting on 127.0.0.1:{port} (served at {TB_PREFIX}/)", "INFO")
+    except Exception as e:
+        console.log(f"[DebugWeb] could not start TensorBoard: {e}", "WARN")
+
+
+def tb_url(tag_filter: str = "") -> str:
+    """TensorBoard URL (behind this panel's login), limited to the current run and, optionally, tags matching a regex."""
+    q = []
+    if tag_filter:
+        q.append("tagFilter=" + quote(tag_filter, safe=""))
+    if _tb.get("run"):
+        q.append("runFilter=" + quote(_tb["run"], safe=""))
+    return TB_PREFIX + "/" + ("?" + "&".join(q) if q else "") + "#timeseries"
+
+
+async def api_voice(request: web.Request) -> web.Response:
+    return web.json_response({"vals": _tb["last"], "lat": _tb["lat"]}, headers={"Cache-Control": "no-store"})
+
+
+async def stop_services() -> None:
+    _vm.remove_log_counter()
+    task, _tb["task"] = _tb["task"], None
+    if task is not None:
+        task.cancel()
+    writer, _tb["writer"] = _tb["writer"], None
+    if writer is not None:
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, writer.close)
+        except Exception:
+            pass
+    proc, _tb["proc"], _tb["port"] = _tb["proc"], None, None
+    if proc is not None and proc.poll() is None:
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=10,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            else:
+                proc.terminate()
+            await asyncio.get_running_loop().run_in_executor(None, lambda: proc.wait(timeout=5))
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    log, _tb["log"] = _tb["log"], None
+    if log is not None:
+        log.close()
+    sess, _tb["session"] = _tb["session"], None
+    if sess is not None:
+        await sess.close()
+
+
+_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding",
+        "upgrade", "host", "content-length", "content-encoding", "cookie", "accept-encoding"}
+
+
+async def tb_proxy(request: web.Request) -> web.Response:
+    """Reverse proxy to the local TensorBoard (it has no login of its own; auth_middleware already ran)."""
+    return await _proxy_tb(request, request.raw_path)
+
+
+async def tb_fonts(request: web.Request) -> web.Response:
+    """TensorBoard's CSS asks for /font-roboto/... at the site root, outside its path prefix (public static font files)."""
+    return await _proxy_tb(request, TB_PREFIX + request.raw_path)
+
+
+async def _proxy_tb(request: web.Request, target: str) -> web.Response:
+    port, proc = _tb["port"], _tb["proc"]
+    if not port or proc is None:
+        return web.Response(status=503, text="TensorBoard is not running (debug mode off, or 'tensorboard' is not installed).")
+    if proc.poll() is not None:
+        return web.Response(status=503, text="TensorBoard exited (code %s); see logs/tensorboard.log" % proc.returncode)
+    if _tb["session"] is None:
+        _tb["session"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP}
+    headers["Host"] = request.host
+    try:
+        async with _tb["session"].request(request.method, "http://127.0.0.1:%d%s" % (port, target), headers=headers,
+                                          data=await request.read() or None, allow_redirects=False) as r:
+            body = await r.read()
+            out = {k: v for k, v in r.headers.items() if k.lower() not in _HOP}
+            return web.Response(status=r.status, body=body, headers=out)
+    except (aiohttp.ClientConnectionError, asyncio.TimeoutError):
+        return web.Response(status=503, text="TensorBoard is still starting, reload in a few seconds.")
+
+
 # ───────────────────────────── wiring ─────────────────────────────
+async def _on_startup(app: web.Application) -> None:
+    await start_services()
+
+
+async def _on_cleanup(app: web.Application) -> None:
+    await stop_services()
+
+
 def add_routes(app: web.Application) -> None:
+    # TensorBoard + metrics follow the web server's life (runner.setup() / runner.cleanup()), debug_web.py needs no hooks
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
+    from arona.voice_engine.src import debug_db, debug_ide, debug_lsp
+    debug_db.add_routes(app)
+    debug_lsp.add_routes(app)
+    debug_ide.add_routes(app)
     app.add_routes([
+        web.get("/debug/api/voice", api_voice),
         web.get("/debug", home_page), web.get("/debug/", home_page),
         web.get("/debug/login", login_page), web.post("/debug/login", login_post), web.get("/debug/logout", logout),
-        web.get("/debug/system", system_page), web.get("/debug/terminal", terminal_page), web.get("/debug/python", python_page),
+        web.get("/debug/system", system_page), web.get("/debug/terminal", terminal_page), web.get("/debug/python", python_redirect),
         web.get("/debug/api/stats", api_stats), web.post("/debug/api/exec", api_exec), web.get("/debug/api/vars", api_vars),
-        web.get("/debug/ws/shell", ws_shell),
+        web.get("/debug/ws/terminal", ws_terminal),
+        web.route("*", TB_PREFIX, tb_proxy), web.route("*", TB_PREFIX + "/{tail:.*}", tb_proxy),
+        web.get("/font-roboto/{tail:.*}", tb_fonts),
     ])

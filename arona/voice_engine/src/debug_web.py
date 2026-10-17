@@ -4,7 +4,7 @@ Started / stopped together with debug mode (console: debug start / debug stop, o
   GET /debug/call_ui        page that shows the stream
   GET /debug/call_ui.mjpg   raw MJPEG stream (multipart/x-mixed-replace)
   WS  /debug/call_audio     what the bot hears: raw 16 kHz mono PCM16 chunks (played by the page)
-  /debug, /debug/system, /debug/terminal, /debug/python   see debug_panel.py
+  /debug, /debug/system, /debug/terminal, /debug/ide      see debug_panel.py
 Every /debug/* route needs a login (same user / password as server.js: pass.txt -> pass.hash); see debug_panel.py.
 """
 import asyncio
@@ -24,15 +24,29 @@ PAGE = """<!doctype html>
 <title>Call UI debug</title>
 <style>
   html, body { margin: 0; background: #111214; color: #949ba4; font: 14px system-ui, sans-serif; }
-  body { display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
-  img { max-width: 100vw; max-height: calc(100vh - 36px); object-fit: contain; background: #000; }
-  p { margin: 8px; }
+  body { min-height: 100vh; }
+  .wrap { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; }
+  @media (min-width: 1250px) { .wrap { grid-template-columns: minmax(0, 7fr) minmax(0, 6fr); } iframe { position: sticky; top: 12px; height: calc(100vh - 80px) !important; } }
+  img { width: 100%; height: auto; display: block; background: #000; border-radius: 8px; }
+  p { margin: 6px 0; }
+  iframe { display: block; width: 100%; height: 78vh; min-height: 480px; border: 1px solid #2b2d31; border-radius: 8px; background: #202124; }
+  #chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .chip { background: #1a1b1e; border: 1px solid #2b2d31; border-left: 4px solid #23a55a; border-radius: 8px; padding: 6px 10px; }
+  .chip small { display: block; color: #949ba4; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .chip b { font-size: 18px; color: #dbdee1; font-weight: 600; }
+  .chip.l1 { border-left-color: #f0b232; } .chip.l2 { border-left-color: #f23f43; } .chip.l0.off { border-left-color: #4e5058; }
 </style></head>
 <body>
 __NAV__
-<img src="/debug/call_ui.mjpg" alt="voice call UI">
-<p>Live voice-call UI (rendered up to 30 fps; model receives one screenshot per second) - debug mode only</p>
-<p><button id="a">Listen to what the bot hears</button> <span id="s"></span></p>
+<div class="wrap">
+  <div>
+    <div id="chips"></div>
+    <img src="/debug/call_ui.mjpg" alt="voice call UI">
+    <p>Live voice-call UI (rendered up to 30 fps; the model receives one screenshot per second)</p>
+    <p><button id="a">Listen to what the bot hears</button> <span id="s"></span></p>
+  </div>
+  <iframe id="tb" title="TensorBoard: voice metrics"></iframe>
+</div>
 <script>
 const btn = document.getElementById('a'), st = document.getElementById('s');
 let ctx = null, ws = null, t = 0;
@@ -59,6 +73,36 @@ btn.onclick = () => {
     if (ctx) { ctx.close(); ctx = null; }
   };
 };
+</script>
+<script>
+// Voice metrics (voice/*): TensorBoard of the current run, same origin because it is proxied under /debug.
+// Default to dark theme + auto reload (5 s) unless the user already chose something.
+try {
+  const k = '_tb_global_settings', s = JSON.parse(localStorage.getItem(k) || '{}');
+  let ch = false;
+  if (!s.theme) { s.theme = 'dark'; ch = true; }
+  if (s.autoReload === undefined) { s.autoReload = true; s.autoReloadPeriodInMs = 5000; ch = true; }
+  if (ch) localStorage.setItem(k, JSON.stringify(s));
+} catch (e) {}
+document.getElementById('tb').src = '__TB_SRC__';
+// status chips: green / yellow / red from the same numbers TensorBoard graphs (polled every 2 s)
+const f = d => x => x.toFixed(d), lvl = (a, b) => v => v > b ? 2 : v > a ? 1 : 0;
+const CH = [['Model silent for', 'voice/gemini_last_msg_age_s', v => v.toFixed(1) + ' s', lvl(8, 20)],
+  ['Waiting for answer', 'voice/unanswered_s', v => v.toFixed(1) + ' s', lvl(8, 20)],
+  ['Discord to bot', 'voice/discord_rx_kb_s', v => v.toFixed(1) + ' KB/s'], ['Bot to Gemini', 'voice/gemini_tx_kb_s', v => v.toFixed(1) + ' KB/s'],
+  ['Window render', 'voice/window_render_ms', v => v.toFixed(0) + ' ms', lvl(60, 150)],
+  ['DAVE dropped', 'voice/dave_dropped_frames', f(0)], ['Crypto errors', 'voice/crypto_errors', f(0)],
+  ['Reconnects', 'voice/reconnects', f(0)], ['Gemini WS closes', 'voice/gemini_ws_closes', f(0)], ['Reply latency (last / avg)', 'lat']];
+const box = document.getElementById('chips'), els = CH.map(c => { const d = document.createElement('div'), s = document.createElement('small'), b = document.createElement('b');
+  d.className = 'chip l0 off'; s.textContent = c[0]; b.textContent = '-'; d.append(s, b); box.appendChild(d); return [d, b]; });
+async function tick() { try {
+  const j = await (await fetch('/debug/api/voice')).json(), v = j.vals || {};
+  CH.forEach((c, i) => { const x = c[1] === 'lat' ? (j.lat ? 1 : undefined) : v[c[1]]; const [d, b] = els[i];
+    if (x === undefined) { d.className = 'chip l0 off'; b.textContent = '-'; return; }
+    b.textContent = c[1] === 'lat' ? j.lat.last.toFixed(1) + ' / ' + j.lat.avg.toFixed(1) + ' s' : c[2](x);
+    d.className = 'chip l' + (c[3] ? c[3](x) : 0); });
+} catch (e) {} }
+setInterval(tick, 2000); tick();
 </script>
 </body></html>
 """
@@ -138,11 +182,12 @@ async def start(window: Any, host: str, port: int) -> None:
     global _runner
     if _runner is not None:
         return
-    app = web.Application(middlewares=[debug_panel.auth_middleware])
+    app = web.Application(middlewares=[debug_panel.auth_middleware], client_max_size=16 * 2 ** 20)
     debug_panel.add_routes(app)
 
     async def page(request: web.Request) -> web.Response:
-        return web.Response(text=PAGE, content_type="text/html")
+        return web.Response(text=PAGE.replace("__TB_SRC__", debug_panel.tb_url("voice/")), content_type="text/html",
+                            headers={"Cache-Control": "no-store"})
 
     async def stream(request: web.Request) -> web.StreamResponse:
         return await _stream(request, window)

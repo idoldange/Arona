@@ -8,6 +8,7 @@ from typing import Optional, Dict, Set, Any
 from arona.voice_engine.src.gemini import GeminiWebSocket 
 from discord.ext import voice_recv, commands
 from console import console
+from arona.voice_engine.src.voice_metrics import metrics as vm
 
 # --- diagnostics: find out who stops the reader (the sink gets cleaned up a few seconds after joining) ---
 try:
@@ -89,6 +90,7 @@ class AudioProcessor(voice_recv.AudioSink):
             # 2. Resample 48000 -> 16000
             resampled_data, state = audioop.ratecv(mono_data, 2, 1, 48000, 16000, state)
             self.resample_states[user_id] = state
+            vm.discord_audio(len(resampled_data))   # what Discord delivers, before the silence gate
             
             # 3. Stream to Gemini only while this user is actually making sound (see GATE_* above)
             now = time.monotonic()
