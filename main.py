@@ -8171,6 +8171,7 @@ async def _run_synth_job(message, synth_inputs, media_inputs, synth_opts, media_
       _prog.edit_cb = _edit_status
       _synth_mod.progress = _prog
     audio, used_transpose, synth_err = None, None, None
+    _synth_mod.last_synth_info = ""   # reset: job chi co media (khong goi synth_song) khong duoc ke thua caption cua job truoc
     if len(synth_inputs) == 1:
       _, body, ctype = synth_inputs[0]
       audio, used_transpose, synth_err = await synth_song(body, ctype, synth_opts)
