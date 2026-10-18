@@ -107,6 +107,7 @@ class SynthSession:
         self.msg = None
         self.view = None
         self.started = False
+        self.uploading = False
         self.lock = asyncio.Lock()
 
     # ---- state -------------------------------------------------------------------------------------------------
@@ -421,6 +422,9 @@ class SynthView(discord.ui.View):
             self.inst_sel.options = [discord.SelectOption(label="(no track selected)", value="-")]
             self.inst_sel.placeholder = "UTAU .ust is always sung — use Volume" if cur is not None else "Instrument"
             self.inst_sel.disabled = True
+        self.btn_upload.label = "Uploading..." if s.uploading else "Upload files"
+        self.btn_upload.emoji = "⏳" if s.uploading else "📎"
+        self.btn_upload.disabled = s.uploading
         self.btn_vol.disabled = cur is None
         self.btn_custom.disabled = cur is None or cur.kind == "ust"
         self.btn_run.disabled = not s.has_input()
@@ -519,8 +523,14 @@ class UploadModal(discord.ui.Modal):
         await interaction.response.defer()
         atts = list(self.files.values)
         console.log(f"Synth panel upload: {[(a.filename, a.size) for a in atts]}", "INFO")
+        self.s.uploading = True
         try:
-            await self.s.add_attachments(atts)
+            self.s.view.sync()
+            await self.s.msg.edit(view=self.s.view)
+        except Exception as e:
+            console.log(f"Synth panel uploading-state edit failed: {e}", "WARN")
+        try:
+            await self.s.add_attachments(atts, refresh=False)
         except Exception as e:
             import traceback
             console.log(f"Synth panel upload failed: {e}\n{traceback.format_exc()}", "ERROR")
@@ -528,6 +538,9 @@ class UploadModal(discord.ui.Modal):
                 await interaction.followup.send(f"Upload failed: `{e}`", ephemeral=True)
             except Exception:
                 pass
+        finally:
+            self.s.uploading = False
+            await self.s.refresh_message()
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         import traceback
