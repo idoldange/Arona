@@ -517,7 +517,21 @@ class UploadModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        await self.s.add_attachments(list(self.files.values))
+        atts = list(self.files.values)
+        console.log(f"Synth panel upload: {[(a.filename, a.size) for a in atts]}", "INFO")
+        try:
+            await self.s.add_attachments(atts)
+        except Exception as e:
+            import traceback
+            console.log(f"Synth panel upload failed: {e}\n{traceback.format_exc()}", "ERROR")
+            try:
+                await interaction.followup.send(f"Upload failed: `{e}`", ephemeral=True)
+            except Exception:
+                pass
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        import traceback
+        console.log(f"Synth upload modal error: {error}\n{''.join(traceback.format_exception(error))}", "ERROR")
 
 
 def _apply_preset(ti: TrackInfo, bank: int, prog: int, path: str, name: str):
