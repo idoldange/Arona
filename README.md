@@ -140,3 +140,7 @@ This script launches the Java UI and provides quick access to the control tools.
 
 - Repository: https://github.com/idoldange/Arona
 - Project page: https://github.com/idoldange/arona-ai
+
+## License
+
+GNU AGPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Earlier releases were MIT (kept in `LICENSES/`).

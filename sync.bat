@@ -12,6 +12,19 @@ setlocal enabledelayedexpansion
 :: git and python resolve correctly; on a local path it behaves exactly like cd.
 pushd "%~dp0"
 
+:: Pull first, so the force-push below can never overwrite commits that exist only on origin.
+:: --rebase keeps history linear and --autostash carries uncommitted local work across the pull.
+echo [%date% %time%] Pulling latest changes from origin main...
+git pull --rebase --autostash origin main
+if errorlevel 1 (
+    echo [%date% %time%] git pull failed - conflict or network problem. Nothing was committed or pushed.
+    echo Fix it by hand, for example: git status
+    echo Waiting 30 seconds before exiting...
+    timeout /t 30
+    exit /b 1
+)
+
+
 echo [%date% %time%] Checking for Git repository changes...
 
 :: Check for changes (no ">nul" redirect — a shadow file named "nul" in the repo
