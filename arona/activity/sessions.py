@@ -16,6 +16,9 @@ class Session:
     created: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     users: set = field(default_factory=set)   # user id da goi API thanh cong
+    text_channel_id: int | None = None        # kenh text noi bam Open DAW -> noi bot dang file export
+    imports: list = field(default_factory=list)   # project da parse tu file ustx/mid trong panel (xem imports.py)
+    last_export: float = 0.0
 
     def alive(self, now: float | None = None) -> bool:
         return ((now or time.time()) - self.last_seen) < SESSION_TTL_S
@@ -30,16 +33,21 @@ class SessionRegistry:
     def __init__(self):
         self._by_channel: dict[int, Session] = {}
 
-    def create(self, channel_id: int, guild_id: int | None, owner_id: int) -> Session:
-        """Moi kenh 1 session; bam nut lan nua thi gia han va giu nguyen session cu."""
+    def create(self, channel_id: int, guild_id: int | None, owner_id: int,
+               text_channel_id: int | None = None, imports: list | None = None) -> Session:
+        """Moi kenh 1 session; bam nut lan nua thi gia han, giu session cu va cap nhat kenh text / file nhap moi."""
         self.purge()
         s = self._by_channel.get(channel_id)
         if s and s.alive():
             s.touch(owner_id)
-            return s
-        s = Session(channel_id, guild_id, owner_id)
-        s.users.add(owner_id)
-        self._by_channel[channel_id] = s
+        else:
+            s = Session(channel_id, guild_id, owner_id)
+            s.users.add(owner_id)
+            self._by_channel[channel_id] = s
+        if text_channel_id is not None:
+            s.text_channel_id = text_channel_id
+        if imports is not None:
+            s.imports = imports
         return s
 
     def get(self, channel_id: int) -> Session | None:

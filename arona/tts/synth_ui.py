@@ -395,7 +395,10 @@ class SynthView(discord.ui.View):
             await interaction.response.send_message("Join a voice channel first, then press **Open DAW** again.", ephemeral=True)
             return
         from arona.activity.sessions import registry
-        registry.create(voice.channel.id, interaction.guild_id, interaction.user.id)
+        from arona.activity.imports import build_imports
+        imports = build_imports(list(self.s.files))     # ustx/mid dang co trong panel -> Activity tai ve khi mo
+        registry.create(voice.channel.id, interaction.guild_id, interaction.user.id,
+                        text_channel_id=interaction.channel_id, imports=imports)
         try:
             await interaction.response.launch_activity()
         except Exception as e:

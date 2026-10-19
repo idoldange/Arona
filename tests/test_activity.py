@@ -11,6 +11,56 @@ from arona.activity.sessions import registry
 
 PPQ, TEMPOS = 480, [[0, 120]]      # 120 bpm -> 1 beat = 0.5 s
 
+USTX = b"""ustx_version: 0.6
+resolution: 480
+bpm: 120
+tracks:
+- track_name: Vocal
+  singer: X
+voice_parts:
+- track_no: 0
+  position: 0
+  notes:
+  - {position: 0, duration: 480, tone: 60, lyric: la}
+  - {position: 480, duration: 480, tone: 62, lyric: li}
+"""
+
+
+def make_wav(seconds=1.0, rate=44100) -> bytes:
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * int(rate * seconds))
+    return buf.getvalue()
+
+
+class FakeGuild:
+    def __init__(self, limit):
+        self.filesize_limit = limit
+
+
+class FakeChannel:
+    def __init__(self, limit=10 << 20, error=None):
+        self.guild, self.sent, self.error = FakeGuild(limit), [], error
+
+    async def send(self, **kw):
+        if self.error:
+            raise self.error
+        self.sent.append(kw)
+        return type("Msg", (), {"jump_url": "https://discord.com/channels/1/2/3"})()
+
+
+class FakeBot:
+    def __init__(self, channel):
+        self.channel = channel
+
+    def get_channel(self, cid):
+        return self.channel if cid == 7 else None
+
 
 def song():
     """3 cau hat, moi cau 4 note, cach nhau 2 beat (1 s) -> 3 chunk."""
@@ -72,11 +122,41 @@ class ChunkingTests(unittest.TestCase):
         self.assertTrue(ust.split("\r\n")[6] == "[#0000]" and "Lyric=R" not in ust.split("[#0000]")[1].split("[#0001]")[0])
 
 
+class ImportsTests(unittest.TestCase):
+    def test_ustx_and_midi_become_projects_and_junk_is_skipped(self):
+        import io
+        import mido
+        from arona.activity.imports import build_imports
+        mid = mido.MidiFile(ticks_per_beat=480)
+        track = mido.MidiTrack()
+        mid.tracks.append(track)
+        track.append(mido.Message("note_on", note=60, velocity=90, time=0))
+        track.append(mido.Message("note_off", note=60, velocity=0, time=480))
+        buf = io.BytesIO()
+        mid.save(file=buf)
+        out = build_imports([("song.ustx", USTX), ("tune.mid", buf.getvalue()), ("junk.txt", b"hello"), ("bad.ustx", b"tracks: [")])
+        self.assertEqual([p["name"] for p in out], ["song", "tune"])
+        vocal = out[0]
+        self.assertEqual((vocal["ppq"], vocal["tempos"]), (480, [[0, 120.0]]))
+        self.assertEqual([(n["pos"], n["dur"], n["tone"], n["lyric"]) for n in vocal["tracks"][0]["notes"]],
+                         [(0, 480, 60, "la"), (480, 480, 62, "li")])
+        self.assertEqual(out[1]["tracks"][0]["notes"][0]["tone"], 60)
+
+
 class ServerAuthTests(AioHTTPTestCase):
     async def get_application(self):
         self._tmp = tempfile.TemporaryDirectory()
         server.CACHE_DIR = self._tmp.name
         self.calls = 0
+        self.synth_result = (b"RIFFfakewav", "0", None)
+        self.gate = None                      # asyncio.Event: neu co thi fake_post doi toi khi duoc set
+        server._jobs.clear()
+        server._job_errors.clear()
+        server.WAIT_S, server.CACHE_TTL_S = 5, 3600
+        self.channel = FakeChannel()
+        orig_bot = server._bot
+        server._bot = FakeBot(self.channel)
+        self.addCleanup(lambda: setattr(server, "_bot", orig_bot))
         server._user_cache.clear()
         registry._by_channel.clear()
         orig_user, orig_voice = server._user_id, server._in_voice
@@ -92,7 +172,9 @@ class ServerAuthTests(AioHTTPTestCase):
 
         async def fake_post(body, ctype, params=None, timeout_s=0):
             self.calls += 1
-            return b"RIFFfakewav", "0", None
+            if self.gate is not None:
+                await self.gate.wait()
+            return self.synth_result
         S._post_synth = fake_post
         self.addCleanup(lambda: setattr(S, "_post_synth", orig_post))
         return server.make_app()
@@ -140,6 +222,153 @@ class ServerAuthTests(AioHTTPTestCase):
 
         r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0, hash="stale"), headers=good)
         self.assertEqual(r.status, 409)
+
+    async def _ready(self):
+        registry.create(42, 1, 111)
+        good = {"Authorization": "Bearer good-token-xx", "X-Channel-Id": "42"}
+        body = {"track": "t1", "ppq": PPQ, "tempos": TEMPOS, "notes": song()}
+        return good, body
+
+    async def test_slow_synth_returns_202_then_cached_wav(self):
+        import asyncio
+        good, body = await self._ready()
+        server.WAIT_S = 0.05
+        self.gate = asyncio.Event()
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)
+        self.assertEqual(r.status, 202)
+        self.assertEqual(r.headers["Retry-After"], str(server.RETRY_AFTER_S))
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)   # retry luc job con chay: khong gen lan 2
+        self.assertEqual(r.status, 202)
+        self.gate.set()
+        await asyncio.sleep(0.1)                              # job nen chay xong, ghi cache
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)
+        self.assertEqual((r.status, r.headers["X-Cache"]), (200, "HIT"))
+        self.assertEqual(self.calls, 1)
+
+    async def test_failed_job_reports_502_and_can_retry(self):
+        import asyncio
+        good, body = await self._ready()
+        self.synth_result = (None, "0", "gpu exploded")
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)
+        self.assertEqual(r.status, 502)
+        self.assertIn("gpu exploded", (await r.json())["error"])
+        self.synth_result = (b"RIFFfakewav", "0", None)
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)
+        self.assertEqual(r.status, 200)
+        self.assertEqual(self.calls, 2)
+
+    async def test_error_while_nobody_waiting_is_reported_on_next_poll(self):
+        import asyncio
+        good, body = await self._ready()
+        server.WAIT_S = 0.05
+        self.gate = asyncio.Event()
+        self.synth_result = (None, "0", "late failure")
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)
+        self.assertEqual(r.status, 202)
+        self.gate.set()
+        await asyncio.sleep(0.1)
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)
+        self.assertEqual(r.status, 502)
+        self.assertIn("late failure", (await r.json())["error"])
+
+    async def test_cache_expires_after_ttl(self):
+        import time
+        good, body = await self._ready()
+        r = await self.client.post("/api/vocal/plan", json=body, headers=good)
+        h = (await r.json())["chunks"][0]["hash"]
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)
+        self.assertEqual(r.status, 200)
+        r = await self.client.post("/api/vocal/plan", json=body, headers=good)
+        self.assertTrue((await r.json())["chunks"][0]["cached"])
+        old = time.time() - server.CACHE_TTL_S - 5
+        os.utime(server._cache_path(h), (old, old))           # gia lap qua 1 gio
+        r = await self.client.post("/api/vocal/plan", json=body, headers=good)
+        self.assertFalse((await r.json())["chunks"][0]["cached"])
+        r = await self.client.post("/api/vocal/chunk", json=dict(body, index=0), headers=good)
+        self.assertEqual(r.headers["X-Cache"], "MISS")
+        self.assertEqual(self.calls, 2)
+
+    GOOD = {"Authorization": "Bearer good-token-xx", "X-Channel-Id": "42"}
+
+    def form(self, mode, wav=None, ustx=None, name="my song"):
+        from aiohttp import FormData
+        f = FormData()
+        f.add_field("mode", mode)
+        f.add_field("name", name)
+        if wav is not None:
+            f.add_field("audio", wav, filename="a.wav", content_type="audio/wav")
+        if ustx is not None:
+            f.add_field("ustx", ustx, filename="p.ustx", content_type="text/plain")
+        return f
+
+    async def test_imports_need_session_and_return_projects(self):
+        r = await self.client.get("/api/session/imports", headers=self.GOOD)
+        self.assertEqual(r.status, 403)
+        registry.create(42, 1, 111, text_channel_id=7, imports=[{"name": "p", "ppq": 480, "tempos": [[0, 120]], "tracks": []}])
+        r = await self.client.get("/api/session/imports", headers=self.GOOD)
+        self.assertEqual((r.status, (await r.json())["projects"][0]["name"]), (200, "p"))
+
+    async def test_export_without_session_403(self):
+        r = await self.client.post("/api/export", data=self.form("ustx", ustx=USTX), headers=self.GOOD)
+        self.assertEqual(r.status, 403)
+        self.assertEqual(self.channel.sent, [])
+
+    async def test_export_audio_and_ustx_posts_one_message_with_both_files(self):
+        registry.create(42, 1, 111, text_channel_id=7)
+        r = await self.client.post("/api/export", data=self.form("audio+ustx", make_wav(0.2), USTX), headers=self.GOOD)
+        body = await r.json()
+        self.assertEqual((r.status, body["files"], body["converted_to_mp3"]), (200, ["my_song.wav", "my_song.ustx"], False))
+        self.assertEqual(len(self.channel.sent), 1)
+        self.assertIn("<@111>", self.channel.sent[0]["content"])
+
+    async def test_export_ustx_only(self):
+        registry.create(42, 1, 111, text_channel_id=7)
+        r = await self.client.post("/api/export", data=self.form("ustx", ustx=USTX), headers=self.GOOD)
+        self.assertEqual((r.status, (await r.json())["files"]), (200, ["my_song.ustx"]))
+
+    async def test_big_wav_is_converted_to_mp3(self):
+        registry.create(42, 1, 111, text_channel_id=7)
+        self.channel.guild.filesize_limit = 60 * 1024          # wav 1s = 88 KB > limit, mp3 nho hon nhieu
+        r = await self.client.post("/api/export", data=self.form("audio", make_wav(1.0)), headers=self.GOOD)
+        body = await r.json()
+        self.assertEqual((r.status, body["files"], body["converted_to_mp3"]), (200, ["my_song.mp3"], True))
+
+    async def test_export_too_big_even_as_mp3_is_413(self):
+        registry.create(42, 1, 111, text_channel_id=7)
+        self.channel.guild.filesize_limit = 100
+        r = await self.client.post("/api/export", data=self.form("audio", make_wav(0.5)), headers=self.GOOD)
+        self.assertEqual(r.status, 413)
+        self.assertEqual(self.channel.sent, [])
+
+    async def test_export_validation(self):
+        registry.create(42, 1, 111, text_channel_id=7)
+        for data in (self.form("nonsense", ustx=USTX),
+                     self.form("audio", b"not a wav at all"),
+                     self.form("audio"),
+                     self.form("ustx", ustx=b"hello world"),
+                     self.form("audio+ustx", make_wav(0.1))):
+            registry.get(42).last_export = 0
+            r = await self.client.post("/api/export", data=data, headers=self.GOOD)
+            self.assertEqual(r.status, 400, await r.text())
+        self.assertEqual(self.channel.sent, [])
+
+    async def test_export_rate_limit_and_missing_text_channel(self):
+        registry.create(42, 1, 111, text_channel_id=7)
+        r = await self.client.post("/api/export", data=self.form("ustx", ustx=USTX), headers=self.GOOD)
+        self.assertEqual(r.status, 200)
+        r = await self.client.post("/api/export", data=self.form("ustx", ustx=USTX), headers=self.GOOD)
+        self.assertEqual(r.status, 429)
+        registry.create(42, 1, 111, text_channel_id=999)       # kenh khong ton tai
+        registry.get(42).last_export = 0
+        r = await self.client.post("/api/export", data=self.form("ustx", ustx=USTX), headers=self.GOOD)
+        self.assertEqual(r.status, 409)
+
+    async def test_export_forbidden_channel_is_502(self):
+        import discord
+        registry.create(42, 1, 111, text_channel_id=7)
+        self.channel.error = discord.Forbidden(type("R", (), {"status": 403, "reason": "x"})(), "no perms")
+        r = await self.client.post("/api/export", data=self.form("ustx", ustx=USTX), headers=self.GOOD)
+        self.assertEqual(r.status, 502)
 
     async def test_token_endpoint_needs_no_session(self):
         r = await self.client.post("/api/token", json={"code": "x"})
