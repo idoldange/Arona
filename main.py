@@ -811,6 +811,21 @@ client = commands.Bot(command_prefix="/", intents=intents)
 cdn_refresh.init(client)
 tree = client.tree
 
+# discord.py ban pin chua biet Entry Point command (type 4, nut Activity); tree.sync() PUT ghi de toan bo lenh nen Discord tu choi
+# (error 50240). Giu nguyen lenh Entry Point dang co bang cach them no vao payload truoc khi gui.
+_orig_bulk_upsert = client.http.bulk_upsert_global_commands
+async def _bulk_upsert_keep_entry_point(application_id, payload):
+  try:
+    existing = await client.http.get_global_commands(application_id)
+    entry = next((c for c in existing if c.get("type") == 4), None)
+    if entry and not any(p.get("type") == 4 for p in payload):
+      keep = {k: entry[k] for k in ("id", "name", "description", "type", "handler", "contexts", "integration_types", "default_member_permissions", "nsfw") if k in entry}
+      payload = list(payload) + [keep]
+  except Exception as e:
+    console.log(f"Could not preserve Activity entry point command: {e}", "WARN")
+  return await _orig_bulk_upsert(application_id, payload)
+client.http.bulk_upsert_global_commands = _bulk_upsert_keep_entry_point
+
 # § USER INSTALL SLASH COMMANDS (user can install bot to their account)
 
 class _SafeTyping:
