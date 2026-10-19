@@ -172,6 +172,7 @@ from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_
 import arona.tts.synth as _synth_mod
 from arona.tts.synth_media import render_media, media_kind, MEDIA_MAX_MB
 import arona.tts.synth_ui as synth_ui
+import arona.activity.server as activity_server
 from config import TTS_REFS as _TTS_REFS_LIST
 from pydub import AudioSegment
 from affection import affection
@@ -8090,6 +8091,15 @@ async def init_context(force: bool = False):
   return global_context
 
 @client.event
+async def on_interaction(interaction: discord.Interaction):
+  # Entry Point command (type 4) cua Activity: chan mo thu cong, chi cho mo qua nut Open DAW trong menu !arona synth
+  if interaction.type is discord.InteractionType.application_command and (interaction.data or {}).get("type") == 4:
+    try:
+      await interaction.response.send_message("The DAW can't be started directly. Join a voice channel, run `!arona synth`, then press **Open DAW**.", ephemeral=True)
+    except Exception as e:
+      console.log(f"Activity entry point reply failed: {e}", "WARN")
+
+@client.event
 async def on_ready():
   try:
     await tree.sync()
@@ -8099,6 +8109,10 @@ async def on_ready():
       await asyncio.gather(fetch_public_ip(), get_browser(), init_session())
       await init_context()  # depends on browser from get_browser()
       asyncio.create_task(ensure_soundfonts())  # soundfonts/ trong (chi co SOURCES.md) -> tai nen, khong chan bot
+      try:
+        await activity_server.start(client)  # backend cua Discord Activity (DAW); chi bind 127.0.0.1
+      except Exception as e:
+        console.log(f"Activity server failed to start: {e}", "ERROR")
       if gemini_ws:
         gemini_ws.tools = get_gemini_tools(None, DEFAULT_MODEL)
         gemini_ws.function_handler = execute_function

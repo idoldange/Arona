@@ -375,9 +375,11 @@ class SynthView(discord.ui.View):
         self.btn_cfg.callback = self._on_config
         self.btn_run = discord.ui.Button(label="Run", emoji="▶️", style=discord.ButtonStyle.success, row=3)
         self.btn_run.callback = self._on_run
+        self.btn_daw = discord.ui.Button(label="Open DAW", emoji="🎹", style=discord.ButtonStyle.secondary, row=3)
+        self.btn_daw.callback = self._on_daw
         self.btn_cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.danger, row=3)
         self.btn_cancel.callback = self._on_cancel
-        for item in (self.track_sel, self.inst_sel, self.btn_upload, self.btn_vol, self.btn_custom, self.btn_cfg, self.btn_run, self.btn_cancel):
+        for item in (self.track_sel, self.inst_sel, self.btn_upload, self.btn_vol, self.btn_custom, self.btn_cfg, self.btn_run, self.btn_daw, self.btn_cancel):
             self.add_item(item)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -385,6 +387,22 @@ class SynthView(discord.ui.View):
             await interaction.response.send_message("This panel belongs to someone else — run `!arona synth` to get your own.", ephemeral=True)
             return False
         return True
+
+    async def _on_daw(self, interaction: discord.Interaction):
+        """Cach DUY NHAT de mo Activity: tao session cho kenh voice cua nguoi bam, roi launch. Khong co session -> API tra 403."""
+        voice = getattr(interaction.user, "voice", None)
+        if not (voice and voice.channel):
+            await interaction.response.send_message("Join a voice channel first, then press **Open DAW** again.", ephemeral=True)
+            return
+        from arona.activity.sessions import registry
+        registry.create(voice.channel.id, interaction.guild_id, interaction.user.id)
+        try:
+            await interaction.response.launch_activity()
+        except Exception as e:
+            console.log(f"Open DAW failed: {e}", "ERROR")
+            registry.end(voice.channel.id)
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"Couldn't launch the DAW: `{e}`", ephemeral=True)
 
     async def on_timeout(self):
         if not self.s.started:
