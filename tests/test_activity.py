@@ -290,6 +290,26 @@ class ServerAuthTests(AioHTTPTestCase):
 
     GOOD = {"Authorization": "Bearer good-token-xx", "X-Channel-Id": "42"}
 
+    async def test_static_files_are_served_and_confined(self):
+        web_dir = os.path.join(self._tmp.name, "web")
+        os.makedirs(web_dir)
+        open(os.path.join(web_dir, "index.html"), "w").write("<h1>hi</h1>")
+        open(os.path.join(self._tmp.name, "secret.txt"), "w").write("nope")
+        orig = server.STATIC_DIR
+        server.STATIC_DIR = web_dir
+        self.addCleanup(lambda: setattr(server, "STATIC_DIR", orig))
+        r = await self.client.get("/")
+        self.assertEqual((r.status, await r.text()), (200, "<h1>hi</h1>"))
+        r = await self.client.get("/index.html")
+        self.assertEqual(r.status, 200)
+        for evil in ("/../secret.txt", "/%2e%2e/secret.txt", "/..%2fsecret.txt"):
+            r = await self.client.get(evil)
+            self.assertEqual(r.status, 404, evil)
+        r = await self.client.get("/missing.js")
+        self.assertEqual(r.status, 404)
+        r = await self.client.get("/api/config")                  # route /api khong bi static nuot
+        self.assertEqual(r.status, 200)
+
     def form(self, mode, wav=None, ustx=None, name="my song"):
         from aiohttp import FormData
         f = FormData()

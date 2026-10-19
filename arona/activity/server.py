@@ -393,6 +393,17 @@ async def coi_mw(request, handler):
     return resp
 
 
+async def h_static(request):
+    rel = request.match_info.get("path", "") or "index.html"
+    root = os.path.realpath(STATIC_DIR)
+    full = os.path.realpath(os.path.join(root, rel))
+    if os.path.isdir(full):
+        full = os.path.join(full, "index.html")
+    if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
+        raise web.HTTPNotFound()          # ke ca path traversal (../) va symlink thoat ra ngoai
+    return web.FileResponse(full)
+
+
 def make_app() -> web.Application:
     app = web.Application(middlewares=[coi_mw, auth_mw], client_max_size=EXPORT_MAX_AUDIO_BYTES + EXPORT_MAX_USTX_BYTES + (1 << 20))
     app.add_routes([
@@ -404,11 +415,7 @@ def make_app() -> web.Application:
         web.post("/api/vocal/plan", h_plan),
         web.post("/api/vocal/chunk", h_chunk),
     ])
-    if os.path.isdir(STATIC_DIR):
-        async def index(_):
-            return web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
-        app.router.add_get("/", index)
-        app.router.add_static("/", STATIC_DIR, follow_symlinks=False)
+    app.router.add_get("/{path:.*}", h_static)      # dang ky sau cac route /api; doc thu muc web theo tung request (build lai khong can restart)
     return app
 
 
@@ -430,4 +437,4 @@ async def start(bot=None) -> None:
         ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ssl_ctx.load_cert_chain(CERT, KEY)
     await web.TCPSite(_runner, HOST, PORT, ssl_context=ssl_ctx).start()   # mac dinh chi bind localhost; tunnel hoac Cloudflare proxy tro vao day
-    console.log(f"Activity server listening on {'https' if ssl_ctx else 'http'}://{HOST}:{PORT} (static: {STATIC_DIR if os.path.isdir(STATIC_DIR) else 'none'})", "INFO")
+    console.log(f"Activity server listening on {'https' if ssl_ctx else 'http'}://{HOST}:{PORT} (static: {STATIC_DIR if os.path.isdir(STATIC_DIR) else 'MISSING - build the web app into this folder'})", "INFO")
