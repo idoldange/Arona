@@ -315,3 +315,7 @@ activity/cache/
 activity/opendaw/
 activity/openutau/
 activity/*.log
+activity/web/
+games/assets/engine/stockfish.exe
+ffmpeg.exe
+ffprobe.exe

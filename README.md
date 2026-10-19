@@ -143,4 +143,4 @@ This script launches the Java UI and provides quick access to the control tools.
 
 ## License
 
-GNU AGPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md). Earlier releases were MIT (kept in `LICENSES/`).
+MIT, see [LICENSE](LICENSE). The DAW Activity uses a separate AGPL-3.0 fork of openDAW, see [NOTICE.md](NOTICE.md).

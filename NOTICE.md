@@ -1,21 +1,19 @@
 # License notice
 
-Arona is licensed under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`), see `LICENSE`.
-Copyright (c) 2026 idoldange.
+Arona is licensed under the **MIT License**, see `LICENSE`. Copyright (c) 2026 idoldange.
 
-## Why AGPL
+## DAW Activity and openDAW
 
-The DAW Activity (`activity/`) serves a modified copy of [openDAW](https://github.com/andremichelle/openDAW), which is
-licensed under AGPL-3.0-or-later. Because that code is run as a network service, section 13 of the AGPL applies: users who
-interact with it over the network must be offered the Corresponding Source of the version they are using, including the
-changes made here (lyrics on notes, the vocal generation client, Discord Activity login, USTX/Discord import and export).
+The DAW Activity (`activity/`) loads a modified build of [openDAW](https://github.com/andremichelle/openDAW), which is
+licensed under **AGPL-3.0-or-later**. The modified openDAW is kept in its own repository (a fork) and is not part of this
+repository, nor is its build output. It talks to Arona only through the HTTP API in `arona/activity/server.py`, so the two
+programs stay separate works under their own licenses.
 
-## Earlier releases
+The fork carries the AGPL-3.0-or-later license and the source link that AGPL section 13 requires for network users.
+Do not copy openDAW source code into this repository, and do not commit its build (`activity/web/`) here; doing so would
+put AGPL code inside an MIT repository.
 
-Versions of this project published before 2026-10-19 were released under the MIT License. Those copies stay available under
-MIT; the original text is kept in `LICENSES/MIT-before-AGPL.txt`. Anything added from now on is AGPL-3.0-or-later.
+## Third-party binaries
 
-## Third-party code
-
-- openDAW: AGPL-3.0-or-later.
-- OpenUtau (MIT) was cloned only as a UI reference; no OpenUtau code has been copied into this project.
+Engines and other third-party programs (for example Stockfish, GPL-3.0) are not redistributed from this repository.
+Download them yourself and place them where the configuration expects them.
