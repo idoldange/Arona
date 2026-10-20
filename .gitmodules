@@ -1,4 +1,4 @@
-[submodule "activity/opendaw"]
-	path = activity/opendaw
-	url = git@github.com:idoldange/openDAW.git
+[submodule "activity/signal"]
+	path = activity/signal
+	url = git@github.com:idoldange/signal.git
 	branch = arona-activity

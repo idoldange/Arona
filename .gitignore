@@ -318,3 +318,6 @@ activity/web/
 games/assets/engine/stockfish.exe
 ffmpeg.exe
 ffprobe.exe
+activity/asset-cache/
+activity/opendaw/
+activity/client/node_modules/

@@ -143,4 +143,4 @@ This script launches the Java UI and provides quick access to the control tools.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The DAW Activity uses a separate AGPL-3.0 fork of openDAW, see [NOTICE.md](NOTICE.md).
+MIT, see [LICENSE](LICENSE). The DAW Activity uses a fork of Signal (MIT), see [NOTICE.md](NOTICE.md).

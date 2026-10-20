@@ -1,0 +1,12 @@
+[18924:740:1020/114316.979:WARNING:chrome\browser\chrome_browser_main_win.cc:1721] Edge is running elevated: 4
+[18924:740:1020/114317.042:ERROR:components\edge_ess\vbs_encoder.cc:100] LoadEnclaveImageW failed, error code 577
+[18924:3816:1020/114317.420:INFO:chrome\common\importer\edge_chrome_importer_utils_win.cc:34] Google chrome user data path not found.
+[18924:740:1020/114317.493:WARNING:chrome\browser\edge_pinned_sites\pinned_sites_cache.cc:304] Cache isn't initialized
+[18924:740:1020/114317.502:INFO:CONSOLE:6150] "[ProtocolLaunch] handler constructed; wiring port events.", source: chrome-extension://ndcpkimcihhghdcddljkfmmjccdmcmof/background.rollup.js (6150)
+[18924:740:1020/114317.655:INFO:CONSOLE:2448] "Failed to initialize Firebase: FirebaseError: Firebase: Error (auth/invalid-api-key).", source: https://localhost:2083/assets/StyledFirebaseAuth-RapfD-Ni.js (2448)
+[18924:740:1020/114317.797:WARNING:chrome\browser\edge_pinned_sites\pinned_sites_cache.cc:304] Cache isn't initialized
+[18924:740:1020/114317.811:INFO:CONSOLE:63276] "SW registration failed:  TypeError: Failed to register a ServiceWorker for scope ('https://localhost:2083/edit') with script ('https://localhost:2083/service-worker.js'): A bad HTTP response code (404) was received when fetching the script.", source: https://localhost:2083/assets/main-BitxrKAG.js (63276)
+[18924:740:1020/114318.017:ERROR:chrome\browser\task_manager\providers\fallback_task_provider.cc:126] Every renderer should have at least one task provided by a primary task provider. If a "Renderer" fallback task is shown, it is a bug. If you have repro steps, please file a new bug and tag it as a dependency of crbug.com/40528867.
+[18924:740:1020/114318.179:WARNING:chrome\browser\edge_pinned_sites\pinned_sites_cache.cc:304] Cache isn't initialized
+[18924:740:1020/114318.246:WARNING:chrome\browser\edge_pinned_sites\pinned_sites_cache.cc:304] Cache isn't initialized
+[18924:740:1020/114318.252:INFO:CONSOLE:4160] "Invalid date: "17-7-05". Replacing with the current date!", source: https://localhost:2083/assets/index-DMwSAEPj.js (4160)

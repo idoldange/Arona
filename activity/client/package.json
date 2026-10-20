@@ -1,0 +1,11 @@
+{
+  "name": "arona-activity-client",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Discord login bootstrap and diagnostics bundled into activity/web by build-web.sh",
+  "dependencies": {
+    "@discord/embedded-app-sdk": "^2.5.0",
+    "esbuild": "^0.28.2"
+  }
+}
