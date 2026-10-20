@@ -312,7 +312,6 @@ comments_dump.txt
 *.pem
 *.key
 activity/cache/
-activity/opendaw/
 activity/openutau/
 activity/*.log
 activity/web/

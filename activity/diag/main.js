@@ -45,6 +45,7 @@ const testPlan = async () => {
 const main = async () => {
     log(`page loaded (${location.origin})`, "ok")
     log(`frame_id present: ${new URLSearchParams(location.search).has("frame_id")}`)
+    log(`crossOriginIsolated: ${window.crossOriginIsolated} (openDAW needs true)`, window.crossOriginIsolated ? "ok" : "err")
     const config = await step("GET /api/config (server reachable through Discord proxy)", async () => {
         const response = await fetch("/api/config")
         if (!response.ok) {throw new Error(`HTTP ${response.status}`)}

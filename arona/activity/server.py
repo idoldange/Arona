@@ -31,6 +31,7 @@ HOST = os.environ.get("ACTIVITY_HOST", "127.0.0.1")   # 0.0.0.0 neu Cloudflare (
 CLIENT_ID = os.environ.get("ACTIVITY_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("ACTIVITY_CLIENT_SECRET", "")
 REQUIRE_VOICE = os.environ.get("ACTIVITY_REQUIRE_VOICE", "1") != "0"
+START_PAGE = os.environ.get("ACTIVITY_START_PAGE", "index.html")   # trang phuc vu cho "/"; dat diag.html de chan doan Activity trong Discord
 COI = os.environ.get("ACTIVITY_COI", "0") == "1"      # cross-origin isolation headers (SharedArrayBuffer)
 DISCORD_API = "https://discord.com/api/v10"
 CACHE_MAX_FILES = 400
@@ -394,7 +395,7 @@ async def coi_mw(request, handler):
 
 
 async def h_static(request):
-    rel = request.match_info.get("path", "") or "index.html"
+    rel = request.match_info.get("path", "") or START_PAGE
     root = os.path.realpath(STATIC_DIR)
     full = os.path.realpath(os.path.join(root, rel))
     if os.path.isdir(full):

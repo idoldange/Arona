@@ -307,6 +307,11 @@ class ServerAuthTests(AioHTTPTestCase):
             self.assertEqual(r.status, 404, evil)
         r = await self.client.get("/missing.js")
         self.assertEqual(r.status, 404)
+        open(os.path.join(web_dir, "diag.html"), "w").write("<h1>diag</h1>")
+        server.START_PAGE = "diag.html"
+        self.addCleanup(lambda: setattr(server, "START_PAGE", "index.html"))
+        r = await self.client.get("/")
+        self.assertEqual(await r.text(), "<h1>diag</h1>")        # ACTIVITY_START_PAGE doi trang cho "/"
         r = await self.client.get("/api/config")                  # route /api khong bi static nuot
         self.assertEqual(r.status, 200)
 
