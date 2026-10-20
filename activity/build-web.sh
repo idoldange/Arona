@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dong goi Activity: ban build cua Signal (activity/signal/dist) + dau vao Discord + trang chan doan -> activity/web (server phuc vu thu muc nay).
+# Dong goi Activity: ban build cua Signal (activity/signal/app/dist) + dau vao Discord + trang chan doan -> activity/web (server phuc vu thu muc nay).
 # Truoc do: cd activity/signal && npx pnpm@10.34.5 install && npx pnpm@10.34.5 run build
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -9,7 +9,7 @@ ESBUILD=./client/node_modules/.bin/esbuild
 export NODE_PATH="$PWD/client/node_modules"
 
 rm -rf web && mkdir web
-cp -r signal/dist/. web/
+cp -r signal/app/dist/. web/
 
 # Khong dung service worker trong iframe (cache cu rat kho debug) va khong dung Google Analytics / Google Fonts (Discord chan, va khong gui du lieu nguoi dung di)
 rm -f web/service-worker.js* web/workbox-*
@@ -28,15 +28,11 @@ for page in ("web/edit.html", "web/index.html"):
     open(page, "w", encoding="utf-8").write(html)
 PYEOF
 
-# Signal nap soundfont tu CDN jsdelivr (Discord chan) -> tai ve 1 lan, phuc vu tu server cua minh va tro duong dan ve do
+# Soundfont cua Signal (duong dan /A320U.sf2 da sua trong ma nguon) -> tai ve 1 lan tu CDN goc va phuc vu tu server cua minh
 mkdir -p asset-cache
 fetch() { [ -s "asset-cache/$2" ] || curl -fsSL --retry 3 -o "asset-cache/$2" "$1"; cp "asset-cache/$2" "web/$2"; }
 fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@4569a31/public/A320U.sf2" A320U.sf2
 fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@6959f35/public/A320U_drums.sf2" A320U_drums.sf2
-for f in web/assets/*.js; do
-    sed -i -e 's#https://cdn.jsdelivr.net/gh/ryohey/signal@4569a31/public/A320U.sf2#/A320U.sf2#g' \
-           -e 's#https://cdn.jsdelivr.net/gh/ryohey/signal@6959f35/public/A320U_drums.sf2#/A320U_drums.sf2#g' "$f"
-done
 
 "$ESBUILD" client/boot.js --bundle --format=esm --minify --outfile=web/arona-boot.js
 "$ESBUILD" diag/main.js --bundle --format=esm --minify --outfile=web/arona-diag.js

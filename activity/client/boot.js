@@ -3,7 +3,7 @@
 import {DiscordSDK} from "@discord/embedded-app-sdk"
 
 const query = new URLSearchParams(location.search)
-const state = {auth: null, error: null, ready: Promise.resolve(null)}
+const state = {auth: null, user: null, error: null, ready: Promise.resolve(null)}
 window.__arona = state
 
 // Trong Discord: neu app bi trang man hinh thi hien loi ngay tren man hinh (loi JS, bi CSP chan, luu tru khong dung duoc).
@@ -52,8 +52,9 @@ if (query.has("frame_id")) {
         })
         if (!tokenResponse.ok) {throw new Error(`Token exchange failed (${tokenResponse.status})`)}
         const {access_token} = await tokenResponse.json()
-        await sdk.commands.authenticate({access_token})
+        const authenticated = await sdk.commands.authenticate({access_token})
         if (sdk.channelId === null) {throw new Error("Activity has no voice channel")}
+        state.user = authenticated.user ?? null      // {id, username, global_name, avatar}: tai khoan Discord thay cho he thong tai khoan cua Signal
         state.auth = {baseUrl: "", token: access_token, channelId: sdk.channelId}
         window.dispatchEvent(new CustomEvent("arona-auth", {detail: state.auth}))
         return state.auth
