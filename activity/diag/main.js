@@ -46,6 +46,17 @@ const main = async () => {
     log(`page loaded (${location.origin})`, "ok")
     log(`frame_id present: ${new URLSearchParams(location.search).has("frame_id")}`)
     log(`crossOriginIsolated: ${window.crossOriginIsolated} (openDAW needs true)`, window.crossOriginIsolated ? "ok" : "err")
+    log(`user agent: ${navigator.userAgent}`)
+    const sabType = typeof SharedArrayBuffer
+    let sabWorks = false
+    try {sabWorks = new SharedArrayBuffer(8).byteLength === 8} catch (error) {log(`new SharedArrayBuffer failed: ${describe(error)}`, "err")}
+    log(`SharedArrayBuffer: typeof=${sabType}, usable=${sabWorks}`, sabWorks ? "ok" : "err")
+    log(`AudioWorklet: ${typeof AudioWorkletNode !== "undefined"}, WebAssembly: ${typeof WebAssembly !== "undefined"}, Worker: ${typeof Worker !== "undefined"}`)
+    try {
+        const context = new AudioContext()
+        log(`AudioContext created, state=${context.state}, sampleRate=${context.sampleRate}`, "ok")
+        context.close()
+    } catch (error) {log(`AudioContext failed: ${describe(error)}`, "err")}
     const config = await step("GET /api/config (server reachable through Discord proxy)", async () => {
         const response = await fetch("/api/config")
         if (!response.ok) {throw new Error(`HTTP ${response.status}`)}
