@@ -8,31 +8,20 @@ window.__arona = state
 const WIKI_URL = "https://bluearchive.wiki/wiki/Main_Page"
 
 // Activity mo truc tiep (App Launcher/Entry Point) khong qua nut Open DAW -> khong co
-// session, nen hien trang Blue Archive wiki thay vi mot DAW trong.
-function showWiki(sdk) {
+// session, nen hien trang Blue Archive wiki thay vi mot DAW trong. Nen den chu trang,
+// it nhat css: wiki khong nhung duoc iframe (X-Frame-Options: SAMEORIGIN) nen chi de link.
+function showWiki() {
     const cover = document.createElement("div")
-    cover.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;" +
-        "align-items:center;justify-content:center;gap:18px;background:#0b1220;color:#e8ecf4;" +
-        "font:16px/1.5 system-ui,Segoe UI,sans-serif;text-align:center;padding:24px"
-    const title = document.createElement("div")
-    title.textContent = "Blue Archive Wiki"
-    title.style.cssText = "font-size:28px;font-weight:700;letter-spacing:.5px"
-    const hint = document.createElement("div")
-    hint.textContent = "Open the DAW from the !arona synth menu to use the editor."
-    hint.style.cssText = "opacity:.65;max-width:420px"
+    cover.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:#000;color:#fff;" +
+        "display:grid;place-items:center"
     const link = document.createElement("a")
     link.href = WIKI_URL
     link.target = "_blank"
     link.rel = "noreferrer"
-    link.textContent = "Open bluearchive.wiki"
-    link.style.cssText = "color:#7cc4ff;font-weight:600;text-decoration:none;border:1px solid #2b4a6f;" +
-        "border-radius:10px;padding:10px 18px;background:#12233a"
-    cover.append(title, hint, link)
+    link.textContent = WIKI_URL
+    link.style.color = "#fff"
+    cover.appendChild(link)
     ;(document.body || document.documentElement).appendChild(cover)
-    // Thu mo bang trinh duyet cua Discord; neu bi chan thi nut tren van dung duoc.
-    if (sdk && sdk.commands && sdk.commands.openExternalLink) {
-        sdk.commands.openExternalLink({url: WIKI_URL}).catch(() => {})
-    }
 }
 
 // Trong Discord: neu app bi trang man hinh thi hien loi ngay tren man hinh (loi JS, bi CSP chan, luu tru khong dung duoc).
@@ -73,7 +62,7 @@ if (query.has("frame_id")) {
         const {access_token} = await tokenResponse.json()
         const authenticated = await sdk.commands.authenticate({access_token})
         if (sdk.channelId === null) {
-            showWiki(sdk)
+            showWiki()
             return null
         }
         // Chi vao DAW khi kenh da co session (bam Open DAW). Mo tu App Launcher/Entry Point
@@ -84,7 +73,7 @@ if (query.has("frame_id")) {
                 signal: AbortSignal.timeout(2000)
             })
             if (check.ok && (await check.json()).exists === false) {
-                showWiki(sdk)
+                showWiki()
                 return null
             }
         } catch (error) {
