@@ -315,6 +315,7 @@ activity/cache/
 activity/openutau/
 activity/*.log
 activity/web/
+activity/saves/
 games/assets/engine/stockfish.exe
 ffmpeg.exe
 ffprobe.exe

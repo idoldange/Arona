@@ -18,6 +18,7 @@ class Session:
     users: set = field(default_factory=set)   # user id da goi API thanh cong
     text_channel_id: int | None = None        # kenh text noi bam Open DAW -> noi bot dang file export
     imports: list = field(default_factory=list)   # project da parse tu file ustx/mid trong panel (xem imports.py)
+    fonts: list = field(default_factory=list)     # [(stem, path)] soundfont nguoi dung upload trong panel (Activity tai ve)
     last_export: float = 0.0
 
     def alive(self, now: float | None = None) -> bool:
@@ -34,7 +35,8 @@ class SessionRegistry:
         self._by_channel: dict[int, Session] = {}
 
     def create(self, channel_id: int, guild_id: int | None, owner_id: int,
-               text_channel_id: int | None = None, imports: list | None = None) -> Session:
+               text_channel_id: int | None = None, imports: list | None = None,
+               fonts: list | None = None) -> Session:
         """Moi kenh 1 session; bam nut lan nua thi gia han, giu session cu va cap nhat kenh text / file nhap moi."""
         self.purge()
         s = self._by_channel.get(channel_id)
@@ -48,6 +50,8 @@ class SessionRegistry:
             s.text_channel_id = text_channel_id
         if imports is not None:
             s.imports = imports
+        if fonts is not None:
+            s.fonts = fonts
         return s
 
     def get(self, channel_id: int) -> Session | None:

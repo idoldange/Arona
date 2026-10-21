@@ -53,10 +53,10 @@ class TrackInfo:
     over: dict = dataclasses.field(default_factory=dict)
 
 
-def _parse_file(name: str, data: bytes) -> list:
+def _parse_file(name: str, data: bytes):
     fmt = S.detect_format(data)
     if fmt == "ust":
-        return [TrackInfo(name, "ust", S.UTrack(idx=0, name=name, role="vocal"), 0)]
+        return [TrackInfo(name, "ust", S.UTrack(idx=0, name=name, role="vocal"), 0)], None
     proj = S.parse_midi(data) if fmt == "midi" else S.parse_ustx(data)
     out = []
     for t in proj.tracks:
@@ -64,7 +64,7 @@ def _parse_file(name: str, data: bytes) -> list:
         if not t.notes:
             continue
         out.append(TrackInfo(name, fmt, dataclasses.replace(t, notes=[]), len(t.notes)))
-    return out
+    return out, proj
 
 
 def _label(ti: TrackInfo) -> str:
@@ -97,6 +97,8 @@ class SynthSession:
         self.media_opts = media_opts
         self.run_cb = run_cb
         self.files: list = []     # [(name, bytes)]  .ust/.ustx/.mid
+        self.projects: list = []  # [(name, UProject)] ban parse day du, dung lai import JSON khi doi nhac cu
+        self.imports: list = []   # project JSON cho Activity, parse san luc upload (tranh block 3s khi bam Open DAW)
         self.media: list = []     # [(name, kind, bytes)]
         self.infos: list = []     # [TrackInfo]
         self.fonts: list = []     # [(stem, path)] soundfont nguoi dung upload (thu muc tam, xoa khi panel dong / job xong)
@@ -180,6 +182,7 @@ class SynthSession:
             self._note(f"`{fn}` isn't a valid soundfont")
             return False
         self.fonts.append((stem, path))
+        self.rebuild_imports()              # preset cua font moi co the doi nhac cu cua track da co
         return True
 
     async def relabel(self):
@@ -220,7 +223,7 @@ class SynthSession:
                 name = self._unique(fn)
                 if ext:
                     try:
-                        infos = await asyncio.to_thread(_parse_file, name, data)
+                        infos, proj = await asyncio.to_thread(_parse_file, name, data)
                     except Exception as e:
                         self._note(f"`{fn}` can't be parsed: {e}")
                         continue
@@ -229,13 +232,61 @@ class SynthSession:
                         continue
                     self.files.append((name, data))
                     self.infos.extend(infos)
+                    if proj is not None:
+                        self.projects.append((name, proj))
                 else:
                     self.media.append((name, mk, data))
                 added = True
             if added or self.notes:
                 await self.relabel()
+                await asyncio.to_thread(self.rebuild_imports)
         if refresh:
             await self.refresh_message()
+
+    def _resolve_font(self, t):
+        """Track -> (soundfont stem, bank, program) ma bot se dung. Stem rong = soundfont mac dinh (bank main cua DAW)."""
+        if t.role == "vocal":
+            return "", 0, 52                                   # choir: khong con la piano
+        bank = 128 if t.drums else 0
+        program = max(0, min(127, int(t.program)))
+        stem = (t.sf_hint or "").strip()
+        path = None
+        if stem:
+            for s, p in self.fonts:
+                if s.lower() == stem.lower():
+                    path = p
+                    break
+            if path is None:
+                found = S._match_soundfonts(stem)
+                path = found[0] if found else None
+            if path is None:
+                return "", bank, program
+        if path is not None and (t.preset or "").strip():
+            table = S._presets(path) or {}
+            want = t.preset.strip().lower()
+            for (b, p), nm in table.items():
+                if str(nm).strip().lower() == want:
+                    bank, program = int(b), int(p)
+                    break
+        if path is None:
+            return "", bank, program
+        name = stem or os.path.splitext(os.path.basename(path))[0]
+        default_path = S.default_soundfont()
+        if default_path and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(default_path)):
+            name = ""                                          # da la soundfont mac dinh -> khong tai them
+        return name, bank, program
+
+    def rebuild_imports(self):
+        """Import JSON cho Activity tu project da parse + lua chon hien tai trong panel (goi trong thread)."""
+        from arona.activity.imports import projects_to_json
+        overrides: dict = {}
+        for ti in self.infos:
+            if ti.over:
+                overrides.setdefault(ti.fname, {})[ti.track.idx] = ti.over
+        try:
+            self.imports = projects_to_json(self.projects, overrides, self._resolve_font)
+        except Exception as e:
+            console.log(f"Synth panel import build failed: {e}", "WARN")
 
     # ---- render ------------------------------------------------------------------------------------------------
     def config_text(self) -> str:
@@ -395,17 +446,24 @@ class SynthView(discord.ui.View):
             await interaction.response.send_message("Join a voice channel first, then press **Open DAW** again.", ephemeral=True)
             return
         from arona.activity.sessions import registry
-        from arona.activity.imports import build_imports
-        imports = build_imports(list(self.s.files))     # ustx/mid dang co trong panel -> Activity tai ve khi mo
+        # ustx/mid dang co trong panel -> Activity tai ve khi mo. Da parse san luc upload:
+        # parse lai o day (nhat la .mid lon) co the qua 3s -> Discord tra 10062 Unknown interaction.
+        imports = list(self.s.imports)
         registry.create(voice.channel.id, interaction.guild_id, interaction.user.id,
-                        text_channel_id=interaction.channel_id, imports=imports)
+                        text_channel_id=interaction.channel_id, imports=imports,
+                        fonts=list(self.s.fonts))
         try:
             await interaction.response.launch_activity()
+        except discord.NotFound:
+            console.log("Open DAW: interaction expired before launch (10062)", "WARN")
+            registry.end(voice.channel.id)
         except Exception as e:
             console.log(f"Open DAW failed: {e}", "ERROR")
             registry.end(voice.channel.id)
-            if not interaction.response.is_done():
+            try:
                 await interaction.response.send_message(f"Couldn't launch the DAW: `{e}`", ephemeral=True)
+            except discord.HTTPException:
+                pass
 
     async def on_timeout(self):
         if not self.s.started:
@@ -446,12 +504,14 @@ class SynthView(discord.ui.View):
         self.btn_upload.label = "Uploading..." if s.uploading else "Upload files"
         self.btn_upload.emoji = "⏳" if s.uploading else "📎"
         self.btn_upload.disabled = s.uploading
+        self.btn_daw.disabled = s.uploading
         self.btn_vol.disabled = cur is None
         self.btn_custom.disabled = cur is None or cur.kind == "ust"
         self.btn_run.disabled = not s.has_input()
 
     async def after(self, interaction: discord.Interaction):
         await self.s.relabel()
+        await asyncio.to_thread(self.s.rebuild_imports)
         self.sync()
         await interaction.response.edit_message(embed=self.s.embed(), view=self)
 

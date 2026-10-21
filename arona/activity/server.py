@@ -301,6 +301,19 @@ async def h_imports(request):
     return web.json_response({"projects": request["session"].imports})
 
 
+async def h_font(request):
+    """Soundfont cho Activity: font nguoi dung upload trong panel, hoac font co san trong ./soundfonts."""
+    from arona.tts import synth as S
+    stem = request.match_info.get("stem", "")
+    path = next((p for name, p in request["session"].fonts if name == stem), None)
+    if path is None:
+        found = S._match_soundfonts(stem)
+        path = found[0] if found else None
+    if not path or not os.path.isfile(path):
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
+
+
 def _safe_name(raw) -> str:
     name = re.sub(r"[^\w\- ]+", "", str(raw or "")).strip().replace(" ", "_")[:60]
     return name or "arona_export"
@@ -479,6 +492,7 @@ def make_app() -> web.Application:
         web.post("/api/token", h_token),
         web.get("/api/session", h_session),
         web.get("/api/session/imports", h_imports),
+        web.get("/api/session/font/{stem}", h_font),
         web.post("/api/export", h_export),
         web.post("/api/save", h_save),
         web.get("/api/save/latest", h_save_latest),

@@ -142,6 +142,23 @@ class ImportsTests(unittest.TestCase):
                          [(0, 480, 60, "la"), (480, 480, 62, "li")])
         self.assertEqual(out[1]["tracks"][0]["notes"][0]["tone"], 60)
 
+    def test_tracks_are_classified_and_overrides_do_not_mutate_the_parse(self):
+        from arona.activity.imports import build_imports
+        tr = build_imports([("song.ustx", USTX)])[0]["tracks"][0]
+        self.assertEqual((tr["role"], tr["program"], tr["bank"], tr["sf"]), ("vocal", 0, 0, ""))
+
+        def resolve(t):
+            return "user_x", (128 if t.drums else 0), t.program
+
+        out = build_imports([("song.ustx", USTX)],
+                            {"song.ustx": {0: {"role": "inst", "program": 25}}}, resolve)[0]
+        self.assertEqual((out["tracks"][0]["role"], out["tracks"][0]["program"], out["tracks"][0]["sf"]),
+                         ("inst", 25, "user_x"))
+        # project goc khong bi sua -> lan build sau van la vocal
+        self.assertEqual(build_imports([("song.ustx", USTX)])[0]["tracks"][0]["role"], "vocal")
+        self.assertEqual(build_imports([("song.ustx", USTX)],
+                                       {"song.ustx": {0: {"role": "mute"}}}), [])
+
 
 class ServerAuthTests(AioHTTPTestCase):
     async def get_application(self):
