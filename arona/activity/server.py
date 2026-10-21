@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import re
 import time
 from urllib.parse import quote, unquote
 
+import chess
 import discord
 from aiohttp import web, ClientSession
 
@@ -122,7 +124,7 @@ async def h_session_check(request):
     sess = registry.get(channel_id)
     if sess is None:
         return web.json_response({"exists": False})
-    return web.json_response({"exists": True, "channel_id": str(sess.channel_id)})
+    return web.json_response({"exists": True, "channel_id": str(sess.channel_id), "kind": sess.kind})
 
 
 @web.middleware
@@ -653,8 +655,8 @@ async def _chess_state(channel_id: int, uid: int, guild_id: int | None) -> dict:
         name, avatar = await _discord_user_info(seat_uid, guild_id)
         return {"name": name, "is_bot": False, "avatar_url": avatar}
 
-    white_seated = black_id if is_pvp else (0 if white_bot else uid)
-    black_seated = black_id if False else (black_id if is_pvp else (0 if black_bot else uid))
+    white_seated = white_id if is_pvp else (0 if white_bot else uid)
+    black_seated = black_id if is_pvp else (0 if black_bot else uid)
     white = await profile(white_seated or 0, white_bot)
     black = await profile(black_seated or 0, black_bot)
     over = chess_manager.is_game_over(channel_id)
@@ -675,9 +677,143 @@ async def _chess_state(channel_id: int, uid: int, guild_id: int | None) -> dict:
     }
 
 
-@ChessAccessError
-def _nothing():  # pragma: no cover - marker only, never called
-    pass
+# `import chess` inside the helper keeps chess deps off the module import path.
+def _chess_deps():
+    import chess
+    from games.chess import chess_manager
+    from utils.discord_ui_chess import refresh_channel_board
+    return chess, chess_manager, refresh_channel_board
+
+
+def _human_repop_count(chess, chess_manager, channel_id, board) -> int:
+    """How many plies to pop for an undo: the human's last move plus Arona's reply."""
+    human_is_white = chess_manager.get_user_color(channel_id) == "white"
+    human_color = chess.WHITE if human_is_white else chess.BLACK
+    if board.turn == human_color:
+        return 2 if len(board.move_stack) >= 2 else 1
+    return 1                      # human just moved, Arona has not replied yet
+
+
+async def h_chess_state(request):
+    s, uid = request["session"], request["user_id"]
+    return web.json_response(await _chess_state(_chess_board_channel(s), uid, s.guild_id))
+
+
+async def h_chess_move(request):
+    s, uid = request["session"], request["user_id"]
+    channel_id = _chess_board_channel(s)
+    _, chess_manager, refresh_channel_board = _chess_deps()
+    try:
+        body = await request.json()
+    except Exception:
+        return _deny(400, "bad json")
+    from_sq = str(body.get("from", "")).strip()
+    to_sq = str(body.get("to", "")).strip()
+    promotion = str(body.get("promotion", "") or "").strip()
+    if not from_sq or not to_sq:
+        return _deny(400, "missing from/to squares")
+    try:
+        _ensure_player(channel_id, uid)
+        _ensure_view_turn(channel_id, uid)
+    except ChessAccessError as e:
+        return _deny(403, str(e))
+    success, msg, _ = chess_manager.play_user_move(channel_id, f"{from_sq}{to_sq}{promotion}")
+    if not success:
+        return _deny(400, msg)
+    lines = [msg]
+    if chess_manager.is_engine_game(channel_id) and not chess_manager.is_game_over(channel_id):
+        # Show the player's move on the Discord board right away, then Arona thinks.
+        await refresh_channel_board(channel_id, f"<@{uid}>: {msg}\nArona is thinking...")
+        eng_success, eng_msg, _ = await chess_manager.engine_play_move(channel_id)
+        lines.append(eng_msg if eng_success else f"Engine move failed: {eng_msg}")
+    elif chess_manager.is_pvp_game(channel_id) and not chess_manager.is_game_over(channel_id):
+        next_id = chess_manager.get_pvp_turn_user_id(channel_id)
+        lines.append(f"It's <@{next_id}>'s turn.")
+    await refresh_channel_board(channel_id, "\n".join(lines))
+    return web.json_response(await _chess_state(channel_id, uid, s.guild_id))
+
+
+async def h_chess_resign(request):
+    s, uid = request["session"], request["user_id"]
+    channel_id = _chess_board_channel(s)
+    _, chess_manager, refresh_channel_board = _chess_deps()
+    try:
+        role = _ensure_player(channel_id, uid)
+    except ChessAccessError as e:
+        return _deny(403, str(e))
+    resigning_side = role if role in ("white", "black") else None
+    success, msg = chess_manager.resign_game(channel_id, resigning_side=resigning_side)
+    if not success:
+        return _deny(400, msg)
+    await refresh_channel_board(channel_id, f"<@{uid}> resigned.")
+    return web.json_response(await _chess_state(channel_id, uid, s.guild_id))
+
+
+async def h_chess_newgame(request):
+    s, uid = request["session"], request["user_id"]
+    channel_id = _chess_board_channel(s)
+    _, chess_manager, refresh_channel_board = _chess_deps()
+    try:
+        _ensure_player(channel_id, uid)
+    except ChessAccessError as e:
+        return _deny(403, str(e))
+    if chess_manager.is_pvp_game(channel_id):
+        white_id, black_id = chess_manager.get_pvp_players(channel_id)
+        success, msg = chess_manager.start_pvp_game(channel_id, white_id, black_id)
+    else:
+        success, msg = chess_manager.restart_engine_game(channel_id)
+    if not success:
+        return _deny(400, msg)
+    if not chess_manager.is_pvp_game(channel_id) and chess_manager.get_user_color(channel_id) == "black":
+        # Arona is White and makes the opening move of the new game itself.
+        eng_success, eng_msg, _ = await chess_manager.engine_play_move(channel_id)
+        msg = f"{msg}\n{eng_msg if eng_success else f'Engine move failed: {eng_msg}'}"
+    await refresh_channel_board(channel_id, msg)
+    return web.json_response(await _chess_state(channel_id, uid, s.guild_id))
+
+
+async def h_chess_undo(request):
+    s, uid = request["session"], request["user_id"]
+    channel_id = _chess_board_channel(s)
+    chess_package, chess_manager, refresh_channel_board = _chess_deps()
+    if not chess_manager.is_engine_game(channel_id):
+        return _deny(403, "Take-backs are only available in games against Arona.")
+    if chess_manager.is_game_over(channel_id):
+        return _deny(400, "The game is over — start a new game instead.")
+    lock = chess_manager._get_engine_lock(channel_id)
+    if lock.locked():
+        return _deny(409, "Arona is thinking — try undoing again in a second.")
+    board = chess_manager._get_game(channel_id)
+    pop_count = _human_repop_count(chess_package, chess_manager, channel_id, board)
+    if pop_count == 0:
+        return _deny(400, "Nothing to undo.")
+    for _ in range(pop_count):
+        board.pop()
+    chess_manager.save_games()
+    chess_manager._last_user_move_time.pop(channel_id, None)
+    await refresh_channel_board(channel_id, f"<@{uid}> took back their last move.")
+    return web.json_response(await _chess_state(channel_id, uid, s.guild_id))
+
+
+async def h_chess_hint(request):
+    s, uid = request["session"], request["user_id"]
+    channel_id = _chess_board_channel(s)
+    _, chess_manager, _refresh = _chess_deps()
+    if not chess_manager.is_engine_game(channel_id):
+        return _deny(403, "Hints are only available in games against Arona.")
+    if chess_manager.is_game_over(channel_id):
+        return _deny(400, "The game is over.")
+    try:
+        _ensure_view_turn(channel_id, uid)
+    except ChessAccessError as e:
+        return _deny(403, str(e))
+    hint = await chess_manager.engine_hint(channel_id, time_limit=1.0)
+    if not hint:
+        return _deny(409, "No hint available right now — Arona is busy.")
+    return web.json_response({"hint": hint})
+
+
+# ------------------------------------------------------------------------------------------------ app
 @web.middleware
 async def coi_mw(request, handler):
     resp = await handler(request)
@@ -714,6 +850,12 @@ def make_app() -> web.Application:
         web.get("/api/save/latest", h_save_latest),
         web.post("/api/vocal/plan", h_plan),
         web.post("/api/vocal/chunk", h_chunk),
+        web.get("/api/chess/state", h_chess_state),
+        web.post("/api/chess/move", h_chess_move),
+        web.post("/api/chess/resign", h_chess_resign),
+        web.post("/api/chess/newgame", h_chess_newgame),
+        web.post("/api/chess/undo", h_chess_undo),
+        web.post("/api/chess/hint", h_chess_hint),
     ])
     app.router.add_get("/{path:.*}", h_static)      # dang ky sau cac route /api; doc thu muc web theo tung request (build lai khong can restart)
     return app

@@ -145,12 +145,9 @@ async def refresh_channel_board(channel_id: int, content: str = None) -> bool:
         if existing is not None:
             existing.stop()
         result = chess_manager.get_game_result_text(channel_id)
-        if result and content:
-            lines = [content] if result in content else [content, result]
-        else:
-            lines = [content, result]
+        lines = [line for line in (content, result) if line]
         try:
-            await message.edit(content="\n".join(lines), attachments=[file], view=None)
+            await message.edit(content="\n".join(lines) or "Game over.", attachments=[file], view=None)
             return True
         except Exception as e:
             console.log(f"[ChessBoard] Web-driven final board refresh failed in {channel_id}: {e}", "WARN")
@@ -249,9 +246,7 @@ class ChessActivityButton(discord.ui.Button):
         member_voice = getattr(interaction.user, "voice", None)
         if member_voice and member_voice.channel:
             voice_id = member_voice.channel.id
-        primary = voice_id or launch_id
-        registry.create(primary, interaction.guild_id, interaction.user.id,
-                        text_channel_id=launch_id, kind="chess")
+        primary = create_chess_session(launch_id, interaction.guild_id, interaction.user.id, voice_id=voice_id)
         try:
             await interaction.response.launch_activity()
         except discord.NotFound:

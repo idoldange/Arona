@@ -178,7 +178,11 @@ class DiscordChessManager:
         board = self._get_game(channel_id)
         if not board.move_stack:
             return []
-        return board.variation_san(board.move_stack).split()
+        # variation_san validates from the position its first move is played in, so
+        # replay from the root board rather than the (possibly mid-game) current one.
+        # Its output mixes in "1."/"1..." move-number tokens — strip those out.
+        raw = board.root().variation_san(board.move_stack).split()
+        return [token for token in raw if not re.match(r"^\d+\.+\s*$", token)]
 
     def get_game_result_text(self, channel_id):
         """

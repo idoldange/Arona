@@ -40,4 +40,11 @@ fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@6959f35/public/A320U_drums.sf2"
 "$ESBUILD" client/boot.js --bundle --format=esm --minify --outfile=web/arona-boot.js
 "$ESBUILD" diag/main.js --bundle --format=esm --minify --outfile=web/arona-diag.js
 cp diag/index.html web/diag.html
+
+# Chess interactive board (separate page, router sits in arona-boot.js via /api/session/check kind)
+"$ESBUILD" board/main.js --bundle --format=esm --minify --outfile=web/arona-board.js
+cp board/index.html web/board.html
+[ -s ../arona.png ] && cp ../arona.png web/arona.png
+mkdir -p web/chess-pieces
+cp ../games/assets/chess-pieces/*.png web/chess-pieces/
 echo "web/ ready: $(du -sh web | cut -f1)"

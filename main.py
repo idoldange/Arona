@@ -8815,7 +8815,8 @@ async def on_message(message):
       "`!arona chess board` — show the interactive click-to-move board for the current game\n"
       "`!arona chess move <move>` — play a move (UCI or SAN, e.g. `e2e4` or `Nf3`)\n"
       "`!arona chess resign` — resign the current game\n"
-      "`!arona chess stop` — end the current game (engine or PvP)"
+      "`!arona chess stop` — end the current game (engine or PvP)\n"
+      "The board message also has an **Interactive board** button that opens the game inside the Arona Activity — other members watching a PvP game join as spectators there."
     )
     return
 

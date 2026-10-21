@@ -72,9 +72,19 @@ if (query.has("frame_id")) {
                 headers: {"X-Channel-Id": sdk.channelId},
                 signal: AbortSignal.timeout(2000)
             })
-            if (check.ok && (await check.json()).exists === false) {
-                showWiki()
-                return null
+            if (check.ok) {
+                const session = await check.json()
+                if (session.exists === false) {
+                    showWiki()
+                    return null
+                }
+                // Chess session (Interactive board button on a chess game) -> route to
+                // the chess board page instead of the DAW. The query string is kept so
+                // the Discord Embedded App SDK login still works on the new page.
+                if (session.kind === "chess") {
+                    location.replace("/board.html" + location.search)
+                    return null
+                }
             }
         } catch (error) {
             console.warn("[arona] session check failed", error)
