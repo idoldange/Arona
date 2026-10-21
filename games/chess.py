@@ -173,6 +173,43 @@ class DiscordChessManager:
     def has_engine(self) -> bool:
         return bool(self.engine_path)
 
+    def get_move_history(self, channel_id) -> list:
+        """SAN move list for the channel's game, e.g. ['e4','e5','Nf3'] for the side panel."""
+        board = self._get_game(channel_id)
+        if not board.move_stack:
+            return []
+        return board.variation_san(board.move_stack).split()
+
+    def get_game_result_text(self, channel_id):
+        """
+        Human-readable game-over line for the board message, e.g.
+        'White wins by checkmate!'. Empty string while the game is still running
+        (or no engine/PvP session — legacy channels just show nothing).
+        """
+        board = self._get_game(channel_id)
+        if not self.is_engine_game(channel_id) and not self.is_pvp_game(channel_id):
+            return ""
+        resigning_side = self.resigned.get(channel_id)
+        if resigning_side is True:
+            return "You resigned — Arona wins."
+        if resigning_side in ("white", "black"):
+            winner = "White" if resigning_side == "black" else "Black"
+            return f"{winner} wins by resignation!"
+        if board.is_checkmate():
+            winner = "White" if board.turn == chess.BLACK else "Black"
+            return f"{winner} wins by checkmate!"
+        if board.is_stalemate():
+            return "Draw — stalemate."
+        if board.is_insufficient_material():
+            return "Draw — insufficient material."
+        if board.is_check():
+            return ""
+        if board.is_fifty_moves():
+            return "Draw — fifty-move rule."
+        if board.is_repetition():
+            return "Draw — threefold repetition."
+        return ""
+
     def load_engine_sessions(self):
         """Load per-channel engine session (elo) state from disk."""
         try:
@@ -522,6 +559,53 @@ class DiscordChessManager:
             except Exception as e:
                 console.log(f"Arona move error: {e}", "ERROR")
                 return False, f"Arona failed to produce a move: {e}", None
+            finally:
+                try:
+                    await engine.quit()
+                except Exception:
+                    pass
+
+    async def engine_hint(self, channel_id, time_limit: float = 1.0) -> Optional[str]:
+        """
+        Ask the local engine for a suggested move in this channel WITHOUT pushing
+        it to the board — purely a hint for the interactive web board UI. Returns
+        the move in UCI (e.g. 'e2e4') or None if there is nothing to hint about.
+        """
+        if not self.has_engine():
+            return None
+        board = self._get_game(channel_id)
+        if board.is_game_over():
+            return None
+        elo = self.get_engine_elo(channel_id) or CHESS_ENGINE_DEFAULT_ELO
+        lock = self._get_engine_lock(channel_id)
+        if lock.locked():
+            # Arona is already searching a real reply — don't stack a hint search on top.
+            return None
+        async with lock:
+            try:
+                transport, engine = await chess.engine.popen_uci(self.engine_path)
+            except Exception as e:
+                console.log(f"Failed to start chess engine for hint in {channel_id}: {e}", "ERROR")
+                return None
+            try:
+                options = {}
+                if "UCI_LimitStrength" in engine.options:
+                    options["UCI_LimitStrength"] = True
+                if "UCI_Elo" in engine.options:
+                    opt = engine.options["UCI_Elo"]
+                    lo = getattr(opt, "min", None) or CHESS_ENGINE_MIN_ELO
+                    hi = getattr(opt, "max", None) or CHESS_ENGINE_MAX_ELO
+                    options["UCI_Elo"] = max(lo, min(hi, elo))
+                if options:
+                    await engine.configure(options)
+                result = await engine.play(board, chess.engine.Limit(time=time_limit))
+                hint = result.move
+                if hint is not None and hint in board.legal_moves:
+                    return hint.uci()
+                return None
+            except Exception as e:
+                console.log(f"Arona hint error: {e}", "ERROR")
+                return None
             finally:
                 try:
                     await engine.quit()

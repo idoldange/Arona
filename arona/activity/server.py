@@ -559,7 +559,125 @@ async def h_save_latest(request):
         "Access-Control-Expose-Headers": "X-Save-Name,X-Saved-At,X-Saved-By"})
 
 
-# ------------------------------------------------------------------------------------------------ app
+# ------------------------------------------------------------------------------------------------ chess (interactive board)
+_CHESS_USER_INFO_TTL_S = 300
+_chess_user_info: dict[str, tuple[str, str | None, float]] = {}     # uid -> (display_name, avatar_url, fetched_at)
+
+
+def _chess_board_channel(sess) -> int:
+    """Chess games live in the text channel of the session (or the launch channel itself)."""
+    return sess.text_channel_id if sess.text_channel_id else sess.channel_id
+
+
+async def _discord_user_info(uid: int, guild_id: int | None) -> tuple[str, str | None]:
+    """Display name + avatar URL for a Discord user (guild nick preferred), cached for 5 minutes."""
+    key = str(uid)
+    hit = _chess_user_info.get(key)
+    if hit and hit[2] > time.time():
+        return hit[0], hit[1]
+    name, avatar = f"Player {uid}", None
+    guild = _bot.get_guild(guild_id) if (_bot is not None and guild_id) else None
+    user = guild.get_member(uid) if guild else None
+    if user is None and _bot is not None:
+        try:
+            user = await _bot.fetch_user(uid)
+        except discord.HTTPException:
+            user = None
+    if user is not None:
+        name = getattr(user, "display_name", None) or getattr(user, "name", None) or name
+        avatar_obj = getattr(user, "display_avatar", None)
+        if avatar_obj is not None:
+            avatar = str(avatar_obj.url)
+    _chess_user_info[key] = (str(name), avatar, time.time() + _CHESS_USER_INFO_TTL_S)
+    if len(_chess_user_info) > 500:
+        for k in [k for k, v in _chess_user_info.items() if v[2] < time.time()]:
+            del _chess_user_info[k]
+    return name, avatar
+
+
+def _chess_role(channel_id: int, uid: int) -> str:
+    """'white' / 'black' player seat in PvP, or 'player' (engine-side human) / 'spectator'."""
+    from games.chess import chess_manager
+    if chess_manager.is_pvp_game(channel_id):
+        white_id, black_id = chess_manager.get_pvp_players(channel_id)
+        if uid == white_id:
+            return "white"
+        if uid == black_id:
+            return "black"
+        return "spectator"
+    return "player"
+
+
+class ChessAccessError(Exception):
+    """Raised as a 403'd reply when a spectator tries to change game state."""
+
+
+def _ensure_player(channel_id: int, uid: int) -> str:
+    role = _chess_role(channel_id, uid)
+    if role == "spectator":
+        raise ChessAccessError("You are only watching this game — spectators cannot interact.")
+    return role
+
+
+def _ensure_view_turn(channel_id: int, uid: int) -> None:
+    """403 unless uid may move right now on this board (respects PvP seats)."""
+    from games.chess import chess_manager
+    board = chess_manager._get_game(channel_id)
+    if chess_manager.is_pvp_game(channel_id):
+        expected_id = chess_manager.get_pvp_turn_user_id(channel_id)
+        if uid != expected_id:
+            raise ChessAccessError("It's not your turn yet.")
+        return
+    human_color = chess_manager.get_user_color(channel_id)
+    human_turn = board.turn == (chess.WHITE if human_color == "white" else chess.BLACK)
+    if not human_turn:
+        raise ChessAccessError("Arona is moving right now.")
+
+
+async def _chess_state(channel_id: int, uid: int, guild_id: int | None) -> dict:
+    """Full board snapshot for one viewer: seats, perspective, move list, legality."""
+    from games.chess import chess_manager
+    if not (chess_manager.is_engine_game(channel_id) or chess_manager.is_pvp_game(channel_id)):
+        return {"active": False}
+    board = chess_manager._get_game(channel_id)
+    is_pvp = chess_manager.is_pvp_game(channel_id)
+    white_id, black_id = chess_manager.get_pvp_players(channel_id) if is_pvp else (0, 0)
+    user_color = chess_manager.get_user_color(channel_id)
+    elo = None if is_pvp else chess_manager.get_engine_elo(channel_id)
+    white_bot = not is_pvp and user_color == "black"
+    black_bot = not is_pvp and user_color == "white"
+
+    async def profile(seat_uid: int, is_bot: bool):
+        if is_bot:
+            return {"name": "Arona", "is_bot": True, "avatar_url": "/arona.png", "elo": elo}
+        name, avatar = await _discord_user_info(seat_uid, guild_id)
+        return {"name": name, "is_bot": False, "avatar_url": avatar}
+
+    white_seated = black_id if is_pvp else (0 if white_bot else uid)
+    black_seated = black_id if False else (black_id if is_pvp else (0 if black_bot else uid))
+    white = await profile(white_seated or 0, white_bot)
+    black = await profile(black_seated or 0, black_bot)
+    over = chess_manager.is_game_over(channel_id)
+    return {
+        "active": True,
+        "mode": "pvp" if is_pvp else "engine",
+        "fen": board.fen(),
+        "turn": "white" if board.turn == chess.WHITE else "black",
+        "check": board.is_check(),
+        "over": over,
+        "result": chess_manager.get_game_result_text(channel_id),
+        "moves": chess_manager.get_move_history(channel_id),
+        "last_move": board.peek().uci() if board.move_stack else None,
+        "legal_moves": sorted(m.uci() for m in board.legal_moves) if not over else [],
+        "you": {"id": str(uid), "role": _chess_role(channel_id, uid)},
+        "white": white,
+        "black": black,
+    }
+
+
+@ChessAccessError
+def _nothing():  # pragma: no cover - marker only, never called
+    pass
 @web.middleware
 async def coi_mw(request, handler):
     resp = await handler(request)

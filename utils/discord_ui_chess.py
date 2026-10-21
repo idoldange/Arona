@@ -114,6 +114,49 @@ def _board_file(channel_id, **kwargs) -> discord.File:
     return discord.File(BytesIO(png), filename="chess_board.png")
 
 
+async def refresh_channel_board(channel_id: int, content: str = None) -> bool:
+    """
+    Push the current board state to the live interactive board message for this
+    channel. Called by the Activity backend (arona/activity/server.py) every time
+    a move/resign/undo happens on the web board, so the Discord and web boards
+    never diverge.
+    - Game still running: re-attach a rebuilt ChessBoardView with a fresh PNG and
+      (optional) status text.
+    - Game over: drop the components and show the result line instead, so the
+      finished board stops offering moves.
+    Returns True when the Discord message was actually updated (best effort).
+    """
+    existing = _channel_views.get(channel_id)
+    message = getattr(existing, "message", None)
+    if message is None:
+        return False
+    file = _board_file(channel_id)
+    if not chess_manager.is_game_over(channel_id):
+        if existing is not None:
+            existing.current_targets = []
+            existing._build_from_stage()
+            try:
+                await message.edit(content=content, attachments=[file], view=existing)
+                return True
+            except Exception as e:
+                console.log(f"[ChessBoard] Web-driven board refresh failed in {channel_id}: {e}", "WARN")
+                return False
+    else:
+        if existing is not None:
+            existing.stop()
+        result = chess_manager.get_game_result_text(channel_id)
+        if result and content:
+            lines = [content] if result in content else [content, result]
+        else:
+            lines = [content, result]
+        try:
+            await message.edit(content="\n".join(lines), attachments=[file], view=None)
+            return True
+        except Exception as e:
+            console.log(f"[ChessBoard] Web-driven final board refresh failed in {channel_id}: {e}", "WARN")
+            return False
+
+
 class ChessPromoSelect(discord.ui.Select):
     def __init__(self, parent_view: "ChessBoardView", from_sq: str, to_sq: str):
         self.parent_view = parent_view
@@ -172,11 +215,61 @@ class ChessFromSelect(discord.ui.Select):
         await self.parent_view.show_targets(interaction, self.values[0])
 
 
+def create_chess_session(interaction_channel_id: int, guild_id: int | None, user_id: int,
+                         voice_id: int | None = None) -> int | None:
+    """
+    Register (or refresh) a chess-kind Activity session for the board button,
+    mirroring how the DAW panel does it: primary key is the voice channel (when
+    launching from voice) with the text channel kept in sync for API lookups.
+    Returns the primary channel id used for the registry.
+    """
+    from arona.activity.sessions import registry
+    launch_id = interaction_channel_id
+    primary = voice_id or launch_id
+    registry.create(primary, guild_id, user_id, text_channel_id=launch_id, kind="chess")
+    return primary
+
+
+class ChessActivityButton(discord.ui.Button):
+    """Opens this chess game on the interactive board inside the Arona Discord
+    Activity. Any user may click it — spectators land on the board in view mode,
+    the two PvP players (or engine humans) can also play from there."""
+
+    def __init__(self, parent_view: "ChessBoardView"):
+        super().__init__(label="Interactive board", style=discord.ButtonStyle.primary, row=4)
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        from arona.activity.sessions import registry
+        launch_id = interaction.channel_id
+        if launch_id is None:
+            await interaction.response.send_message("Couldn't tell which channel this board is in.", ephemeral=True)
+            return
+        voice_id = None
+        member_voice = getattr(interaction.user, "voice", None)
+        if member_voice and member_voice.channel:
+            voice_id = member_voice.channel.id
+        primary = voice_id or launch_id
+        registry.create(primary, interaction.guild_id, interaction.user.id,
+                        text_channel_id=launch_id, kind="chess")
+        try:
+            await interaction.response.launch_activity()
+        except discord.NotFound:
+            console.log("Interactive board: interaction expired before launch (10062)", "WARN")
+            registry.end(primary)
+        except Exception as e:
+            console.log(f"Interactive board launch failed: {e}", "ERROR")
+            registry.end(primary)
+            try:
+                await interaction.response.send_message(f"Couldn't open the interactive board: `{e}`", ephemeral=True)
+            except discord.HTTPException:
+                pass
+
+
 class ChessResignButton(discord.ui.Button):
     def __init__(self, parent_view: "ChessBoardView"):
         super().__init__(label="Resign", style=discord.ButtonStyle.danger, row=4)
         self.parent_view = parent_view
-
     async def callback(self, interaction: discord.Interaction):
         if not await self.parent_view._check_owner(interaction, require_turn=False):
             return
@@ -307,6 +400,7 @@ class ChessBoardView(discord.ui.View):
         self.add_item(ChessRefreshButton(self))
         self.add_item(ChessResignButton(self))
         self.add_item(ChessNewGameButton(self))
+        self.add_item(ChessActivityButton(self))
 
     async def show_targets(self, interaction: discord.Interaction, from_sq: str):
         targets = chess_manager.get_legal_targets(self.channel_id, from_sq)
@@ -319,6 +413,7 @@ class ChessBoardView(discord.ui.View):
             self.add_item(ChessToSelect(self, from_sq, targets))
         self.add_item(ChessRefreshButton(self))
         self.add_item(ChessNewGameButton(self))
+        self.add_item(ChessActivityButton(self))
         file = _board_file(self.channel_id, highlight_from=from_sq, highlight_targets=[t for t, _ in targets])
         await interaction.response.edit_message(attachments=[file], view=self)
 
@@ -327,6 +422,7 @@ class ChessBoardView(discord.ui.View):
         self.add_item(ChessPromoSelect(self, from_sq, to_sq))
         self.add_item(ChessRefreshButton(self))
         self.add_item(ChessNewGameButton(self))
+        self.add_item(ChessActivityButton(self))
         file = _board_file(self.channel_id, highlight_from=from_sq, highlight_targets=[to_sq])
         await interaction.response.edit_message(attachments=[file], view=self)
 
