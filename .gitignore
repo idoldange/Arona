@@ -321,3 +321,4 @@ ffprobe.exe
 activity/asset-cache/
 activity/opendaw/
 activity/client/node_modules/
+tests/

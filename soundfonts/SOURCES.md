@@ -17,3 +17,5 @@ Mac dinh (instrument): GeneralUser-GS -> MuseScore_General -> FluidR3_GM -> TimG
 | piano / chromatic_percussion / organ / guitar / bass / ensemble / brass / reed / pipe / ethnic / percussive / drums `_fluidr3.sf2` | download.linuxaudio.org/musical-instrument-libraries/sf2/fluidr3-splitted/ | FluidR3 GM (MIT) cat theo nhom nhac cu, giu nguyen so GM. ensemble = GM 48-55 (string ensemble, choir, synth strings), reed = sax/oboe/clarinet..., pipe = flute/recorder/..., chromatic_percussion = celesta/glock/vibes/marimba... |
 | ChaosBank.sf2, Jnsgm2.sf2, Masterpiece.sf2, Unison.sf2, WeedsGM3.sf2, merlin_gmv32.sf2 | github.com/bratpeki/soundfonts, github.com/wrightflyer/SF2_SoundFonts | Soundfont GM cong dong, license tuy file (thuong "free", chua kiem chung) -> chi dung ca nhan |
 | default.sf2 | (co san) | dung boi utils/file_converter.py (MIDI -> wav) |
+
+- A320U.sf2 and A320U_drums.sf2: the soundfonts used by the DAW Activity (Signal). Shared: `activity/build-web.sh` serves them from this folder.

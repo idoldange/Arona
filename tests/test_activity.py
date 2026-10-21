@@ -395,6 +395,29 @@ class ServerAuthTests(AioHTTPTestCase):
         r = await self.client.post("/api/export", data=self.form("ustx", ustx=USTX), headers=self.GOOD)
         self.assertEqual(r.status, 502)
 
+    async def test_saves_per_channel(self):
+        server.SAVE_DIR = os.path.join(self._tmp.name, "saves")
+        mid = b"MThd" + b"\x00" * 20
+        r = await self.client.post("/api/save", data=mid, headers=self.GOOD)
+        self.assertEqual(r.status, 403)                         # chua co session
+        registry.create(42, 1, 111, text_channel_id=7)
+        r = await self.client.get("/api/save/latest", headers=self.GOOD)
+        self.assertEqual(r.status, 404)                         # chua co ban luu
+        r = await self.client.post("/api/save", data=b"not midi", headers=self.GOOD)
+        self.assertEqual(r.status, 400)
+        for i in range(7):                                      # giu toi da SAVE_KEEP ban, moi nhat truoc
+            r = await self.client.post("/api/save", data=mid + bytes([i]), headers=dict(self.GOOD, **{"X-Save-Name": "My%20song%20%E3%81%82"}))
+            self.assertEqual(r.status, 200)
+            await __import__("asyncio").sleep(0.005)
+        r = await self.client.get("/api/save/latest", headers=self.GOOD)
+        self.assertEqual((r.status, (await r.read())[-1]), (200, 6))
+        from urllib.parse import unquote
+        self.assertEqual(unquote(r.headers["X-Save-Name"]), "My_song_あ")
+        self.assertEqual(len(server._save_files(42)), server.SAVE_KEEP)
+        registry.create(43, 1, 111)                              # kenh khac co session rieng, khong thay ban luu cua kenh 42
+        r = await self.client.get("/api/save/latest", headers={"Authorization": "Bearer good-token-xx", "X-Channel-Id": "43"})
+        self.assertEqual(r.status, 404)
+
     async def test_token_endpoint_needs_no_session(self):
         r = await self.client.post("/api/token", json={"code": "x"})
         self.assertEqual(r.status, 500)                      # khong co client secret trong test: loi cau hinh, khong phai 403

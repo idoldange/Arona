@@ -30,7 +30,7 @@ PYEOF
 
 # Soundfont cua Signal (duong dan /A320U.sf2 da sua trong ma nguon) -> tai ve 1 lan tu CDN goc va phuc vu tu server cua minh
 mkdir -p asset-cache
-fetch() { [ -s "asset-cache/$2" ] || curl -fsSL --retry 3 -o "asset-cache/$2" "$1"; cp "asset-cache/$2" "web/$2"; }
+fetch() { [ -s "../soundfonts/$2" ] && { cp "../soundfonts/$2" "web/$2"; return; }; [ -s "asset-cache/$2" ] || curl -fsSL --retry 3 -o "asset-cache/$2" "$1"; cp "asset-cache/$2" "web/$2"; }
 fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@4569a31/public/A320U.sf2" A320U.sf2
 fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@6959f35/public/A320U_drums.sf2" A320U_drums.sf2
 

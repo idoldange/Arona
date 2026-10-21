@@ -13,6 +13,7 @@ import io
 import os
 import re
 import time
+from urllib.parse import quote, unquote
 
 import discord
 from aiohttp import web, ClientSession
@@ -35,6 +36,10 @@ START_PAGE = os.environ.get("ACTIVITY_START_PAGE", "index.html")   # trang phuc 
 COI = os.environ.get("ACTIVITY_COI", "0") == "1"      # cross-origin isolation headers (SharedArrayBuffer)
 DISCORD_API = "https://discord.com/api/v10"
 CACHE_MAX_FILES = 400
+SAVE_DIR = os.path.join(ROOT, "activity", "saves")
+SAVE_KEEP = 5                         # so ban luu giu lai moi kenh voice
+SAVE_TTL_S = 7 * 24 * 3600            # ban luu qua 7 ngay bi xoa
+SAVE_MAX_BYTES = 4 * 1024 * 1024
 EXPORT_MODES = {"audio", "audio+ustx", "ustx"}
 EXPORT_MAX_AUDIO_BYTES = 100 * 1024 * 1024
 EXPORT_MAX_USTX_BYTES = 5 * 1024 * 1024
@@ -383,6 +388,68 @@ async def h_export(request):
                               "converted_to_mp3": converted})
 
 
+# ------------------------------------------------------------------------------------------------ saves
+def _save_files(channel_id: int) -> list[str]:
+    d = os.path.join(SAVE_DIR, str(int(channel_id)))
+    try:
+        names = [n for n in os.listdir(d) if n.endswith(".mid")]
+    except OSError:
+        return []
+    return sorted((os.path.join(d, n) for n in names), reverse=True)     # ten file la timestamp ms -> moi nhat truoc
+
+
+def _prune_saves(channel_id: int) -> None:
+    now = time.time()
+    for i, path in enumerate(_save_files(channel_id)):
+        if i >= SAVE_KEEP or now - os.path.getmtime(path) > SAVE_TTL_S:
+            for p in (path, path[:-4] + ".json"):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
+async def h_save(request):
+    """Activity tu luu: body = file MIDI cua Signal (loi hat nam trong su kien Lyric), header X-Save-Name = ten bai (url-encoded)."""
+    s, uid = request["session"], request["user_id"]
+    body = await request.read()
+    if not body or len(body) > SAVE_MAX_BYTES or body[:4] != b"MThd":
+        return _deny(400, "body must be a MIDI file (max %d MB)" % (SAVE_MAX_BYTES >> 20))
+    name = _safe_name(unquote(request.headers.get("X-Save-Name", "")))
+    d = os.path.join(SAVE_DIR, str(s.channel_id))
+    os.makedirs(d, exist_ok=True)
+    stamp = int(time.time() * 1000)
+    base = os.path.join(d, f"{stamp}")
+    with open(base + ".mid.tmp", "wb") as f:
+        f.write(body)
+    os.replace(base + ".mid.tmp", base + ".mid")
+    with open(base + ".json", "w", encoding="utf-8") as f:
+        f.write('{"name": %s, "user": %d}' % (__import__("json").dumps(name), uid))
+    _prune_saves(s.channel_id)
+    return web.json_response({"ok": True, "saved_at": stamp})
+
+
+async def h_save_latest(request):
+    """Ban luu gan nhat cua kenh voice nay (de Activity moi tu mo lai)."""
+    s = request["session"]
+    _prune_saves(s.channel_id)
+    files = _save_files(s.channel_id)
+    if not files:
+        return _deny(404, "no save for this channel")
+    path = files[0]
+    name, user = "", 0
+    try:
+        meta = __import__("json").load(open(path[:-4] + ".json", encoding="utf-8"))
+        name, user = str(meta.get("name", "")), int(meta.get("user", 0))
+    except (OSError, ValueError):
+        pass
+    with open(path, "rb") as f:
+        data = f.read()
+    return web.Response(body=data, content_type="audio/midi", headers={
+        "X-Save-Name": quote(name), "X-Saved-At": os.path.basename(path)[:-4], "X-Saved-By": str(user),
+        "Access-Control-Expose-Headers": "X-Save-Name,X-Saved-At,X-Saved-By"})
+
+
 # ------------------------------------------------------------------------------------------------ app
 @web.middleware
 async def coi_mw(request, handler):
@@ -413,6 +480,8 @@ def make_app() -> web.Application:
         web.get("/api/session", h_session),
         web.get("/api/session/imports", h_imports),
         web.post("/api/export", h_export),
+        web.post("/api/save", h_save),
+        web.get("/api/save/latest", h_save_latest),
         web.post("/api/vocal/plan", h_plan),
         web.post("/api/vocal/chunk", h_chunk),
     ])
