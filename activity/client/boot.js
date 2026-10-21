@@ -80,7 +80,8 @@ if (query.has("frame_id")) {
         // thi khong co session -> hien wiki. Loi mang/route cu -> coi nhu binh thuong.
         try {
             const check = await fetch("/api/session/check", {
-                headers: {"Authorization": `Bearer ${access_token}`, "X-Channel-Id": sdk.channelId}
+                headers: {"X-Channel-Id": sdk.channelId},
+                signal: AbortSignal.timeout(2000)
             })
             if (check.ok && (await check.json()).exists === false) {
                 showWiki(sdk)

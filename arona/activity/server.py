@@ -113,20 +113,15 @@ async def h_session_check(request):
     KHONG tao session: chi bam nut Open DAW moi tao. Khong co -> {"exists": false} de
     client hien trang Blue Archive wiki thay vi man hinh trong.
     """
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer ") or len(auth) < 12:
-        return _deny(401, "missing token")
     try:
         channel_id = int(request.headers.get("X-Channel-Id", ""))
     except ValueError:
         return _deny(400, "bad channel id")
-    uid = await _user_id(auth[7:])
-    if uid is None:
-        return _deny(401, "invalid token")
+    # Khong goi Discord API o day: boot goi endpoint nay truoc khi dispatch auth, mot
+    # request /users/@me cham se lam Activity dung o "Initializing..." rat lau.
     sess = registry.get(channel_id)
     if sess is None:
         return web.json_response({"exists": False})
-    sess.touch(uid)
     return web.json_response({"exists": True, "channel_id": str(sess.channel_id)})
 
 
@@ -437,8 +432,9 @@ async def _field_bytes(form, key: str, limit: int) -> bytes | None:
 
 
 async def h_export(request):
-    """Nhan file tu Activity (multipart: mode, name, audio=wav, ustx=text) -> bot dang 1 message kem file vao kenh text cua session.
-    mode: audio | audio+ustx | ustx. Wav qua lon so voi gioi han upload cua server Discord thi doi sang mp3."""
+    """Nhan file tu Activity (multipart: mode, name, audio=wav, project=ustx|mid) -> bot dang 1 message kem file vao kenh text cua session.
+    mode: audio | audio+ustx | ustx. Project co loi hat gui USTX, nhac cu gui MIDI.
+    Wav qua lon so voi gioi han upload cua server Discord thi doi sang mp3."""
     s, uid = request["session"], request["user_id"]
     if time.time() - s.last_export < EXPORT_COOLDOWN_S:
         return _deny(429, "slow down; wait a few seconds between exports")
@@ -454,26 +450,32 @@ async def h_export(request):
         return _deny(400, "mode must be one of: " + ", ".join(sorted(EXPORT_MODES)))
     name = _safe_name(form.get("name"))
 
-    audio = ustx = None
+    audio = project = None
+    project_ext = "ustx"
     if "audio" in mode:
         audio = await _field_bytes(form, "audio", EXPORT_MAX_AUDIO_BYTES)
         if audio is None or len(audio) > EXPORT_MAX_AUDIO_BYTES or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
             return _deny(400, "audio must be a WAV file (max %d MB)" % (EXPORT_MAX_AUDIO_BYTES >> 20))
     if "ustx" in mode:
-        ustx = await _field_bytes(form, "ustx", EXPORT_MAX_USTX_BYTES)
         from arona.tts import synth as S
-        if ustx is None or len(ustx) > EXPORT_MAX_USTX_BYTES or S.detect_format(ustx) != "ustx":
-            return _deny(400, "ustx must be a valid USTX project (max %d MB)" % (EXPORT_MAX_USTX_BYTES >> 20))
-        try:
-            ustx.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            return _deny(400, "ustx must be UTF-8")
+        project = await _field_bytes(form, "project", EXPORT_MAX_USTX_BYTES)
+        if project is None:                       # client cu gui field "ustx"
+            project = await _field_bytes(form, "ustx", EXPORT_MAX_USTX_BYTES)
+        fmt = S.detect_format(project or b"")
+        if project is None or len(project) > EXPORT_MAX_USTX_BYTES or fmt not in ("ustx", "midi"):
+            return _deny(400, "project must be a valid USTX or MIDI file (max %d MB)" % (EXPORT_MAX_USTX_BYTES >> 20))
+        project_ext = "ustx" if fmt == "ustx" else "mid"
+        if fmt == "ustx":
+            try:
+                project.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                return _deny(400, "ustx must be UTF-8")
 
     limit = _upload_limit(channel)
     audio_name, converted = f"{name}.wav", False
-    if audio is not None and len(audio) + len(ustx or b"") > limit:
+    if audio is not None and len(audio) + len(project or b"") > limit:
         audio, audio_name, converted = await _wav_to_mp3(audio), f"{name}.mp3", True
-    total = len(audio or b"") + len(ustx or b"")
+    total = len(audio or b"") + len(project or b"")
     if total > limit:
         return _deny(413, f"export is {total >> 20} MB, over this server's {limit >> 20} MB upload limit even as mp3")
 
@@ -481,8 +483,8 @@ async def h_export(request):
     files = []
     if audio is not None:
         files.append(discord.File(io.BytesIO(audio), filename=audio_name))
-    if ustx is not None:
-        files.append(discord.File(io.BytesIO(ustx), filename=f"{name}.ustx"))
+    if project is not None:
+        files.append(discord.File(io.BytesIO(project), filename=f"{name}.{project_ext}"))
     try:
         msg = await channel.send(content=f"🎹 **{name}** exported from the DAW by <@{uid}>", files=files,
                                  allowed_mentions=discord.AllowedMentions.none())

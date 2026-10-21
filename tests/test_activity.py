@@ -254,6 +254,13 @@ class ServerAuthTests(AioHTTPTestCase):
         r = await self.client.get("/api/session", headers={"Authorization": "Bearer other-token-xx", "X-Channel-Id": "99"})
         self.assertEqual(r.status, 403)                     # khong phai member
 
+        server.SAVE_DIR = os.path.join(self._tmp.name, "saves")
+        mid = b"MThd" + b"\x00" * 20
+        r = await self.client.post("/api/save", data=mid, headers=good)
+        self.assertEqual(r.status, 200)                     # autosave tu text channel alias
+        r = await self.client.get("/api/save/latest", headers=good)
+        self.assertEqual((r.status, await r.read()), (200, mid))
+
     async def test_session_flow_and_chunk_cache(self):
         good = {"Authorization": "Bearer good-token-xx", "X-Channel-Id": "42"}
         r = await self.client.get("/api/session", headers=good)
@@ -378,7 +385,7 @@ class ServerAuthTests(AioHTTPTestCase):
         r = await self.client.get("/api/config")                  # route /api khong bi static nuot
         self.assertEqual(r.status, 200)
 
-    def form(self, mode, wav=None, ustx=None, name="my song"):
+    def form(self, mode, wav=None, ustx=None, project=None, name="my song"):
         from aiohttp import FormData
         f = FormData()
         f.add_field("mode", mode)
@@ -387,6 +394,8 @@ class ServerAuthTests(AioHTTPTestCase):
             f.add_field("audio", wav, filename="a.wav", content_type="audio/wav")
         if ustx is not None:
             f.add_field("ustx", ustx, filename="p.ustx", content_type="text/plain")
+        if project is not None:
+            f.add_field("project", project, filename="p", content_type="application/octet-stream")
         return f
 
     async def test_imports_need_session_and_return_projects(self):
@@ -413,6 +422,15 @@ class ServerAuthTests(AioHTTPTestCase):
         registry.create(42, 1, 111, text_channel_id=7)
         r = await self.client.post("/api/export", data=self.form("ustx", ustx=USTX), headers=self.GOOD)
         self.assertEqual((r.status, (await r.json())["files"]), (200, ["my_song.ustx"]))
+
+    async def test_export_instrumental_project_is_midi(self):
+        registry.create(42, 1, 111, text_channel_id=7)
+        mid = b"MThd" + b"\x00" * 20
+        r = await self.client.post("/api/export", data=self.form("ustx", project=mid), headers=self.GOOD)
+        self.assertEqual((r.status, (await r.json())["files"]), (200, ["my_song.mid"]))
+        registry.get(42).last_export = 0
+        r = await self.client.post("/api/export", data=self.form("audio+ustx", make_wav(0.1), project=mid), headers=self.GOOD)
+        self.assertEqual((r.status, (await r.json())["files"]), (200, ["my_song.wav", "my_song.mid"]))
 
     async def test_big_wav_is_converted_to_mp3(self):
         registry.create(42, 1, 111, text_channel_id=7)
