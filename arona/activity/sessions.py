@@ -1,5 +1,5 @@
-"""Session cua Activity, quan ly THEO KENH VOICE: chi co session khi ai do bam nut "Open DAW" trong menu `!arona synth`.
-Khong co session cho kenh do -> API tra 403 (xem server.py)."""
+"""Session cua Activity, quan ly THEO KENH MO ACTIVITY (voice hoac text): chi co session khi ai do bam nut
+"Open DAW" trong menu `!arona synth`. Khong co session cho kenh do -> API tra 403 (xem server.py)."""
 from __future__ import annotations
 
 import time
@@ -47,6 +47,11 @@ class SessionRegistry:
             s.users.add(owner_id)
             self._by_channel[channel_id] = s
         if text_channel_id is not None:
+            # Activity co the duoc mo tu text channel (sdk.channelId = text id) trong khi
+            # session duoc tao tu voice channel -> don session cu cua text id neu co.
+            old = self.get(text_channel_id)
+            if old is not None and old is not s:
+                self.end(old.channel_id)
             s.text_channel_id = text_channel_id
         if imports is not None:
             s.imports = imports
@@ -56,13 +61,24 @@ class SessionRegistry:
 
     def get(self, channel_id: int) -> Session | None:
         s = self._by_channel.get(channel_id)
+        if s is None:
+            # Session tao tu voice channel nhung Activity mo o text channel: tim theo
+            # text_channel_id de khong phu thuoc vao viec Discord chon kenh nao.
+            s = next((x for x in self._by_channel.values() if x.text_channel_id == channel_id), None)
         if s and not s.alive():
-            del self._by_channel[channel_id]
+            self.end(s.channel_id)
             return None
         return s
 
     def end(self, channel_id: int) -> bool:
-        return self._by_channel.pop(channel_id, None) is not None
+        s = self._by_channel.get(channel_id)
+        if s is None:
+            s = next((x for x in self._by_channel.values() if x.text_channel_id == channel_id), None)
+        if s is None:
+            return False
+        for key in [k for k, v in self._by_channel.items() if v is s]:
+            del self._by_channel[key]
+        return True
 
     def purge(self) -> None:
         now = time.time()

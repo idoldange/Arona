@@ -440,26 +440,33 @@ class SynthView(discord.ui.View):
         return True
 
     async def _on_daw(self, interaction: discord.Interaction):
-        """Cach DUY NHAT de mo Activity: tao session cho kenh voice cua nguoi bam, roi launch. Khong co session -> API tra 403."""
-        voice = getattr(interaction.user, "voice", None)
-        if not (voice and voice.channel):
-            await interaction.response.send_message("Join a voice channel first, then press **Open DAW** again.", ephemeral=True)
+        """Tao session cho kenh noi bam Open DAW (text hoac voice), roi launch.
+
+        Activity co the mo o text channel hoac voice channel; session duoc dang ky theo ca 2
+        id nen API van tim thay du Discord chon kenh nao. Khong bat buoc phai o trong voice.
+        """
+        launch_id = interaction.channel_id
+        if launch_id is None:
+            await interaction.response.send_message("Couldn't tell which channel this panel is in.", ephemeral=True)
             return
+        voice = getattr(interaction.user, "voice", None)
+        voice_id = voice.channel.id if (voice and voice.channel) else None
         from arona.activity.sessions import registry
         # ustx/mid dang co trong panel -> Activity tai ve khi mo. Da parse san luc upload:
         # parse lai o day (nhat la .mid lon) co the qua 3s -> Discord tra 10062 Unknown interaction.
         imports = list(self.s.imports)
-        registry.create(voice.channel.id, interaction.guild_id, interaction.user.id,
-                        text_channel_id=interaction.channel_id, imports=imports,
+        primary = voice_id or launch_id
+        registry.create(primary, interaction.guild_id, interaction.user.id,
+                        text_channel_id=launch_id, imports=imports,
                         fonts=list(self.s.fonts))
         try:
             await interaction.response.launch_activity()
         except discord.NotFound:
             console.log("Open DAW: interaction expired before launch (10062)", "WARN")
-            registry.end(voice.channel.id)
+            registry.end(primary)
         except Exception as e:
             console.log(f"Open DAW failed: {e}", "ERROR")
-            registry.end(voice.channel.id)
+            registry.end(primary)
             try:
                 await interaction.response.send_message(f"Couldn't launch the DAW: `{e}`", ephemeral=True)
             except discord.HTTPException:

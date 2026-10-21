@@ -205,13 +205,16 @@ class ServerAuthTests(AioHTTPTestCase):
         self.addCleanup(lambda: setattr(server, "_bot", orig_bot))
         server._user_cache.clear()
         registry._by_channel.clear()
-        orig_user, orig_voice = server._user_id, server._in_voice
+        orig_user, orig_voice, orig_member = server._user_id, server._in_voice, server._member_ok
 
         async def fake_user(token):
             return 111 if token.startswith("good") else (222 if token.startswith("other") else None)
         server._user_id = fake_user
-        server._in_voice = lambda uid, g, c: uid == 111          # chi user 111 dang o voice
-        self.addCleanup(lambda: (setattr(server, "_user_id", orig_user), setattr(server, "_in_voice", orig_voice)))
+        server._in_voice = lambda uid, g, c: uid == 111 and c != 99   # 99 la text channel
+        server._member_ok = lambda uid, g: uid == 111                 # user 111 la member guild
+        self.addCleanup(lambda: (setattr(server, "_user_id", orig_user),
+                                 setattr(server, "_in_voice", orig_voice),
+                                 setattr(server, "_member_ok", orig_member)))
 
         from arona.tts import synth as S
         orig_post = S._post_synth
@@ -236,6 +239,20 @@ class ServerAuthTests(AioHTTPTestCase):
     async def test_missing_channel_403(self):
         r = await self.client.get("/api/session", headers={"Authorization": "Bearer good-token-xx"})
         self.assertEqual(r.status, 403)
+
+    async def test_text_channel_session_and_check(self):
+        good = {"Authorization": "Bearer good-token-xx", "X-Channel-Id": "99"}
+        r = await self.client.get("/api/session/check", headers=good)
+        self.assertEqual((r.status, (await r.json())["exists"]), (200, False))   # khong tu tao session
+        self.assertIsNone(registry.get(99))
+
+        registry.create(42, 1, 111, text_channel_id=99)      # panel tao tu voice 42, mo Activity o text 99
+        r = await self.client.get("/api/session/check", headers=good)
+        self.assertEqual((r.status, (await r.json())["exists"]), (200, True))
+        r = await self.client.get("/api/session", headers=good)
+        self.assertEqual(r.status, 200)                     # text channel: chi can la member guild
+        r = await self.client.get("/api/session", headers={"Authorization": "Bearer other-token-xx", "X-Channel-Id": "99"})
+        self.assertEqual(r.status, 403)                     # khong phai member
 
     async def test_session_flow_and_chunk_cache(self):
         good = {"Authorization": "Bearer good-token-xx", "X-Channel-Id": "42"}

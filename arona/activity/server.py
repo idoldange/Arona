@@ -1,9 +1,10 @@
 """Backend cua Discord Activity (DAW): aiohttp chay chung process voi bot.
 
-Auth cho moi /api/* (tru /api/token): header `Authorization: Bearer <discord access token>` + `X-Channel-Id: <voice channel id>`.
+Auth cho moi /api/* (tru /api/token, /api/config, /api/session/check): header `Authorization: Bearer <discord access token>` + `X-Channel-Id: <channel id>`.
   - token khong hop le                              -> 401
   - kenh khong co session (chua ai bam nut Open DAW) -> 403
-  - nguoi goi khong o trong kenh voice do            -> 403   (ACTIVITY_REQUIRE_VOICE=0 de tat, mac dinh bat)
+  - kenh voice: nguoi goi khong o trong kenh do     -> 403   (ACTIVITY_REQUIRE_VOICE=0 de tat)
+  - kenh text:  nguoi goi phai la member cua guild   -> 403
 Env: ACTIVITY_CLIENT_ID, ACTIVITY_CLIENT_SECRET (Developer Portal), ACTIVITY_PORT (8787), ACTIVITY_STATIC_DIR, ACTIVITY_REQUIRE_VOICE, ACTIVITY_COI.
 """
 from __future__ import annotations
@@ -96,10 +97,43 @@ def _in_voice(uid: int, guild_id: int | None, channel_id: int) -> bool:
     return bool(member and member.voice and member.voice.channel and member.voice.channel.id == channel_id)
 
 
+def _member_ok(uid: int, guild_id: int | None) -> bool:
+    """Text channel khong co khai niem 'dang o trong kenh' -> chi can la member cua guild."""
+    if guild_id is None:
+        return True                                  # DM
+    if _bot is None:
+        return False
+    guild = _bot.get_guild(guild_id)
+    return bool(guild and guild.get_member(uid))
+
+
+async def h_session_check(request):
+    """Kiem tra kenh da co session chua (Activity mo truc tiep thi chua co).
+
+    KHONG tao session: chi bam nut Open DAW moi tao. Khong co -> {"exists": false} de
+    client hien trang Blue Archive wiki thay vi man hinh trong.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or len(auth) < 12:
+        return _deny(401, "missing token")
+    try:
+        channel_id = int(request.headers.get("X-Channel-Id", ""))
+    except ValueError:
+        return _deny(400, "bad channel id")
+    uid = await _user_id(auth[7:])
+    if uid is None:
+        return _deny(401, "invalid token")
+    sess = registry.get(channel_id)
+    if sess is None:
+        return web.json_response({"exists": False})
+    sess.touch(uid)
+    return web.json_response({"exists": True, "channel_id": str(sess.channel_id)})
+
+
 @web.middleware
 async def auth_mw(request: web.Request, handler):
     path = request.path
-    if not path.startswith("/api/") or path in ("/api/token", "/api/config"):
+    if not path.startswith("/api/") or path in ("/api/token", "/api/config", "/api/session/check"):
         return await handler(request)
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer ") or len(auth) < 12:
@@ -115,7 +149,9 @@ async def auth_mw(request: web.Request, handler):
     if sess is None:
         return _deny(403, "no active session for this channel; open the DAW from the !arona synth menu")
     if not _in_voice(uid, sess.guild_id, channel_id):
-        return _deny(403, "you are not in this voice channel")
+        launched_from_text = sess.text_channel_id is not None and channel_id == sess.text_channel_id
+        if not (launched_from_text and _member_ok(uid, sess.guild_id)):
+            return _deny(403, "you are not in this voice/text channel")
     sess.touch(uid)
     if path not in ("/api/export", "/api/import") and (request.content_length or 0) > JSON_MAX_BYTES:
         return _deny(413, "request too large")
@@ -549,6 +585,7 @@ def make_app() -> web.Application:
         web.get("/api/config", h_config),
         web.post("/api/token", h_token),
         web.get("/api/session", h_session),
+        web.get("/api/session/check", h_session_check),
         web.get("/api/session/imports", h_imports),
         web.get("/api/session/font/{stem}", h_font),
         web.post("/api/import", h_import_file),
