@@ -13,29 +13,23 @@ if (query.has("frame_id")) {
     panel.style.cssText = "position:fixed;left:0;right:0;bottom:0;max-height:45vh;overflow:auto;margin:0;padding:6px 8px;" +
         "background:rgba(20,21,26,.94);color:#d8dae0;font:11px/1.4 Consolas,monospace;z-index:2147483647;white-space:pre-wrap"
     panel.hidden = true
-    panel.onclick = () => {panel.hidden = true}
+    panel.style.display = "none"                  // [hidden] mot so CSS cua app bi override -> an han
+    panel.onclick = () => {panel.hidden = true; panel.style.display = "none"}
+    // Chi hien khi co loi that su; khong hien cac dong "ok ..." luc khoi dong.
     const add = (text, bad) => {
         const line = document.createElement("div")
-        line.style.color = bad ? "#ff7b72" : "#6fcf97"
+        line.style.color = "#ff7b72"
         line.textContent = text
         panel.appendChild(line)
-        if (bad) {panel.hidden = false}
+        if (bad) {panel.hidden = false; panel.style.display = "block"}
         if (!panel.isConnected) {(document.body || document.documentElement).appendChild(panel)}
     }
-    const probe = (name, fn) => {
-        try {fn(); add(`ok   ${name}`, false)} catch (error) {add(`FAIL ${name}: ${error && error.message || error}`, true)}
-    }
-    probe("localStorage", () => {localStorage.setItem("arona-probe", "1"); localStorage.removeItem("arona-probe")})
-    probe("sessionStorage", () => {sessionStorage.setItem("arona-probe", "1")})
-    probe("indexedDB", () => {if (!indexedDB) {throw new Error("missing")}; indexedDB.open("arona-probe")})
-    probe("navigator.storage", () => {if (!navigator.storage) {throw new Error("missing")}})
     window.addEventListener("error", event => add(`error: ${event.message} (${(event.filename || "").split("/").pop()}:${event.lineno})`, true))
     window.addEventListener("unhandledrejection", event => add(`rejection: ${event.reason && event.reason.message || event.reason}`, true))
     document.addEventListener("securitypolicyviolation", event => add(`CSP blocked ${event.violatedDirective}: ${event.blockedURI}`, true))
-    window.addEventListener("DOMContentLoaded", () => add("DOMContentLoaded", false))
     window.addEventListener("load", () => {
         const root = document.getElementById("root")
-        add(`load; #root children=${root ? root.childElementCount : "no #root"}`, !root || root.childElementCount === 0)
+        if (!root || root.childElementCount === 0) {add("load; #root is empty", true)}
     })
 }
 

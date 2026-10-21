@@ -86,6 +86,21 @@ def clean_notes(raw_notes) -> list[Note]:
     return out
 
 
+def auto_transpose(raw_notes, voice_center: float = 66.0) -> int:
+    """Octave shift cho CA TRACK (giong quy tac auto_octave cua /synth).
+
+    Phai tinh tu toan bo note cua track, khong phai tung chunk: neu de server tinh rieng
+    thi moi chunk se roi vao 1 quang 8 khac nhau -> giong bi nhay octave giua cac cau.
+    """
+    nums = sorted(int(n["tone"]) for n in raw_notes or []
+                  if str(n.get("lyric", "")).strip().lower() not in ("", "r"))
+    if not nums:
+        return 0
+    mid = len(nums) // 2
+    med = float(nums[mid]) if len(nums) % 2 else (nums[mid - 1] + nums[mid]) / 2.0
+    return 12 * int(round((float(voice_center) - med) / 12.0))
+
+
 def _split_long(notes: list[Note], ppq: int, tempos) -> list[list[Note]]:
     """Cat chunk qua dai o khoang lang lon nhat ben trong (de quy)."""
     def too_long(ns):

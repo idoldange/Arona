@@ -52,6 +52,56 @@ def project_to_json(name: str, proj, overrides: dict | None = None, resolve=None
             "tracks": tracks}
 
 
+def _parse_ust(name: str, data: bytes):
+    """UST (UTAU) don gian: 1 track vocal, tick 480. Lyric 'R' la khoang nghi."""
+    from arona.tts import synth as S
+
+    text = data.decode("utf-8-sig", errors="replace")
+    notes, tempos = [], []
+    pos, bpm = 0, 120.0
+    cur: dict = {}
+
+    def flush():
+        nonlocal pos
+        dur = int(cur.get("Length") or 0)
+        lyric = str(cur.get("Lyric") or "").strip()
+        try:
+            tone = int(cur.get("NoteNum") or 60)
+        except (TypeError, ValueError):
+            tone = 60
+        if dur > 0 and lyric and lyric.upper() not in ("R", "-"):
+            notes.append(S.UNote(pos=pos, dur=dur, tone=max(0, min(127, tone)), lyric=lyric))
+        pos += max(0, dur)
+        cur.clear()
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("[#"):                     # [#0000] = note moi, [#SETTING] / [#TRACKEND] = het note
+            flush()
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if key == "Tempo":
+            try:
+                bpm = float(value)
+                tempos.append((pos, bpm))
+            except ValueError:
+                pass
+        elif key in ("Length", "Lyric", "NoteNum"):
+            cur[key] = value
+    flush()
+    if not tempos:
+        tempos = [(0, bpm)]
+    tempos.sort()
+    if tempos[0][0] != 0:
+        tempos.insert(0, (0, tempos[0][1]))
+    track = S.UTrack(idx=0, name=os.path.splitext(os.path.basename(name))[0] or "vocal", notes=notes)
+    track.role, track.fixed = "vocal", True
+    return S.UProject(480, tempos, [track])
+
+
 def _parse(name: str, data: bytes):
     from arona.tts import synth as S
     kind = S.detect_format(data)
@@ -59,6 +109,8 @@ def _parse(name: str, data: bytes):
         return S.parse_ustx(data)
     if kind == "midi":
         return S.parse_midi(data)
+    if kind == "ust":
+        return _parse_ust(name, data)
     return None
 
 

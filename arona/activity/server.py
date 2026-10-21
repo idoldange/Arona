@@ -40,6 +40,7 @@ SAVE_DIR = os.path.join(ROOT, "activity", "saves")
 SAVE_KEEP = 5                         # so ban luu giu lai moi kenh voice
 SAVE_TTL_S = 7 * 24 * 3600            # ban luu qua 7 ngay bi xoa
 SAVE_MAX_BYTES = 4 * 1024 * 1024
+IMPORT_MAX_BYTES = 32 * 1024 * 1024
 EXPORT_MODES = {"audio", "audio+ustx", "ustx"}
 EXPORT_MAX_AUDIO_BYTES = 100 * 1024 * 1024
 EXPORT_MAX_USTX_BYTES = 5 * 1024 * 1024
@@ -116,7 +117,7 @@ async def auth_mw(request: web.Request, handler):
     if not _in_voice(uid, sess.guild_id, channel_id):
         return _deny(403, "you are not in this voice channel")
     sess.touch(uid)
-    if path != "/api/export" and (request.content_length or 0) > JSON_MAX_BYTES:
+    if path not in ("/api/export", "/api/import") and (request.content_length or 0) > JSON_MAX_BYTES:
         return _deny(413, "request too large")
     request["session"], request["user_id"] = sess, uid
     return await handler(request)
@@ -160,6 +161,10 @@ def _parse_track(body: dict):
     from arona.tts import synth as S
     params = {k: v for k, v in (body.get("params") or {}).items() if k in S.SERVER_PARAMS}
     params.setdefault("temperature", S.DEFAULT_SYNTH_TEMPERATURE)
+    # Lock one transpose for the whole track. Letting /synth auto-transpose each chunk
+    # independently makes the octave jump between phrases (different median per chunk).
+    if "transpose" not in params and params.get("auto_octave", True):
+        params["transpose"] = chunking.auto_transpose(notes, float(params.get("voice_center", 66.0)))
     chunks, usts = chunking.plan_track(notes, ppq, tempos, params, str(body.get("track", "vocal")))
     return chunks, usts, params
 
@@ -299,6 +304,59 @@ async def h_chunk(request):
 async def h_imports(request):
     """File ustx/mid ma nguoi dung da up qua modal cua panel `!arona synth` (da parse san)."""
     return web.json_response({"projects": request["session"].imports})
+
+
+def _session_resolver(sess):
+    """Track -> (sf stem, bank, program) dung soundfont cua panel (ke ca font nguoi dung upload)."""
+    from arona.tts import synth as S
+    try:
+        default = S.default_soundfont()
+    except Exception:
+        default = None
+
+    def resolve(t):
+        if t.role == "vocal":
+            return "", 0, 52
+        bank = 128 if t.drums else 0
+        program = max(0, min(127, int(t.program)))
+        stem = (t.sf_hint or "").strip()
+        if not stem:
+            return "", bank, program
+        path = next((p for name, p in sess.fonts if name == stem), None)
+        if path is None:
+            found = S._match_soundfonts(stem)
+            path = found[0] if found else None
+        if path is None:
+            return "", bank, program
+        if (t.preset or "").strip():
+            want = t.preset.strip().lower()
+            for (b, p), name in (S._presets(path) or {}).items():
+                if str(name).strip().lower() == want:
+                    bank, program = int(b), int(p)
+                    break
+        same = default and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(default))
+        return ("" if same else stem), bank, program
+
+    return resolve
+
+
+async def h_import_file(request):
+    """Mo truc tiep file .mid/.ust/.ustx trong Activity (khong qua panel), tra ve project JSON."""
+    if request.content_length and request.content_length > IMPORT_MAX_BYTES:
+        return _deny(413, "file too large")
+    body = await request.read()
+    if not body:
+        return _deny(400, "empty file")
+    name = unquote(request.headers.get("X-File-Name", "import"))
+    name = os.path.basename(name.replace("\\", "/")) or "import"
+    from arona.activity.imports import build_imports
+    try:
+        projects = await asyncio.to_thread(build_imports, [(name, body)], None, _session_resolver(request["session"]))
+    except Exception as e:
+        return _deny(400, str(e))
+    if not projects:
+        return _deny(400, "no track with notes found")
+    return web.json_response({"projects": projects})
 
 
 async def h_font(request):
@@ -493,6 +551,7 @@ def make_app() -> web.Application:
         web.get("/api/session", h_session),
         web.get("/api/session/imports", h_imports),
         web.get("/api/session/font/{stem}", h_font),
+        web.post("/api/import", h_import_file),
         web.post("/api/export", h_export),
         web.post("/api/save", h_save),
         web.get("/api/save/latest", h_save_latest),

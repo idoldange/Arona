@@ -116,6 +116,23 @@ class ChunkingTests(unittest.TestCase):
         t = chunking.normalize_tempos([[0, 120], [PPQ * 4, 60]])
         self.assertAlmostEqual(chunking.tick_to_sec(PPQ * 6, PPQ, t), 4 * 0.5 + 2 * 1.0, places=6)
 
+    def test_one_transpose_for_the_whole_track(self):
+        notes = [
+            {"pos": 0, "dur": PPQ, "tone": 36, "lyric": "la"},        # cau 1: quang thap
+            {"pos": 4 * PPQ, "dur": PPQ, "tone": 72, "lyric": "la"},  # cau 2: quang cao
+        ]
+        chunks, _, params = server._parse_track({"notes": notes, "ppq": PPQ, "tempos": TEMPOS})
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(params["transpose"], 12)              # median 54 -> +1 octave
+        self.assertEqual(chunking.auto_transpose(notes), 12)
+        # Neu auto tinh rieng tung chunk thi 2 cau se lech nhau 2 octave (24 vs 0)
+        self.assertNotEqual(chunking.auto_transpose(notes[:1]), params["transpose"])
+        self.assertNotEqual(chunking.auto_transpose(notes[1:]), params["transpose"])
+
+    def test_explicit_transpose_is_kept(self):
+        body = {"notes": song(), "ppq": PPQ, "tempos": TEMPOS, "params": {"transpose": 7}}
+        self.assertEqual(server._parse_track(body)[2]["transpose"], 7)
+
     def test_ust_starts_at_first_note(self):
         c = self.plan(song())[1]
         ust = chunking.chunk_to_ust(c, PPQ, TEMPOS).decode()
@@ -158,6 +175,18 @@ class ImportsTests(unittest.TestCase):
         self.assertEqual(build_imports([("song.ustx", USTX)])[0]["tracks"][0]["role"], "vocal")
         self.assertEqual(build_imports([("song.ustx", USTX)],
                                        {"song.ustx": {0: {"role": "mute"}}}), [])
+
+    def test_ust_file_is_a_single_vocal_track(self):
+        from arona.activity.imports import build_imports
+        ust = (b"[#VERSION]\r\nUST Version1.2\r\n[#SETTING]\r\nTempo=120.00\r\n[#0000]\r\n"
+               b"Length=480\r\nLyric=la\r\nNoteNum=60\r\n[#0001]\r\nLength=240\r\nLyric=R\r\nNoteNum=60\r\n"
+               b"[#0002]\r\nLength=480\r\nLyric=li\r\nNoteNum=62\r\n[#TRACKEND]\r\n")
+        out = build_imports([("voice.ust", ust)])[0]
+        self.assertEqual((out["ppq"], out["tempos"]), (480, [[0, 120.0]]))
+        tr = out["tracks"][0]
+        self.assertEqual(tr["role"], "vocal")
+        self.assertEqual([(n["pos"], n["dur"], n["tone"], n["lyric"]) for n in tr["notes"]],
+                         [(0, 480, 60, "la"), (720, 480, 62, "li")])
 
 
 class ServerAuthTests(AioHTTPTestCase):
@@ -434,6 +463,16 @@ class ServerAuthTests(AioHTTPTestCase):
         registry.create(43, 1, 111)                              # kenh khac co session rieng, khong thay ban luu cua kenh 42
         r = await self.client.get("/api/save/latest", headers={"Authorization": "Bearer good-token-xx", "X-Channel-Id": "43"})
         self.assertEqual(r.status, 404)
+
+    async def test_import_file_from_computer(self):
+        registry.create(42, 1, 111)
+        good = {"Authorization": "Bearer good-token-xx", "X-Channel-Id": "42"}
+        r = await self.client.post("/api/import", data=USTX, headers={
+            **good, "Content-Type": "application/octet-stream", "X-File-Name": "song.ustx"})
+        self.assertEqual(r.status, 200)
+        body = await r.json()
+        self.assertEqual(body["projects"][0]["tracks"][0]["role"], "vocal")
+        self.assertEqual(len(body["projects"][0]["tracks"][0]["notes"]), 2)
 
     async def test_token_endpoint_needs_no_session(self):
         r = await self.client.post("/api/token", json={"code": "x"})
