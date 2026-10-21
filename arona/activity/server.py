@@ -2,7 +2,7 @@
 
 Auth cho moi /api/* (tru /api/token, /api/config, /api/session/check): header `Authorization: Bearer <discord access token>` + `X-Channel-Id: <channel id>`.
   - token khong hop le                              -> 401
-  - kenh khong co session (chua ai bam nut Open DAW) -> 403
+  - kenh khong co session (chua ai bam nut Open Editor) -> 403
   - kenh voice: nguoi goi khong o trong kenh do     -> 403   (ACTIVITY_REQUIRE_VOICE=0 de tat)
   - kenh text:  nguoi goi phai la member cua guild   -> 403
 Env: ACTIVITY_CLIENT_ID, ACTIVITY_CLIENT_SECRET (Developer Portal), ACTIVITY_PORT (8787), ACTIVITY_STATIC_DIR, ACTIVITY_REQUIRE_VOICE, ACTIVITY_COI.
@@ -110,7 +110,7 @@ def _member_ok(uid: int, guild_id: int | None) -> bool:
 async def h_session_check(request):
     """Kiem tra kenh da co session chua (Activity mo truc tiep thi chua co).
 
-    KHONG tao session: chi bam nut Open DAW moi tao. Khong co -> {"exists": false} de
+    KHONG tao session: chi bam nut Open Editor moi tao. Khong co -> {"exists": false} de
     client hien trang Blue Archive wiki thay vi man hinh trong.
     """
     try:
@@ -142,7 +142,7 @@ async def auth_mw(request: web.Request, handler):
         return _deny(401, "invalid token")
     sess = registry.get(channel_id)
     if sess is None:
-        return _deny(403, "no active session for this channel; open the DAW from the !arona synth menu")
+        return _deny(403, "no active session for this channel; press Open Editor in the !arona synth menu")
     if not _in_voice(uid, sess.guild_id, channel_id):
         launched_from_text = sess.text_channel_id is not None and channel_id == sess.text_channel_id
         if not (launched_from_text and _member_ok(uid, sess.guild_id)):
@@ -440,7 +440,7 @@ async def h_export(request):
         return _deny(429, "slow down; wait a few seconds between exports")
     channel = _bot.get_channel(s.text_channel_id) if (_bot is not None and s.text_channel_id) else None
     if channel is None:
-        return _deny(409, "no text channel for this session; press Open DAW again from the !arona synth panel")
+        return _deny(409, "no text channel for this session; press Open Editor again from the !arona synth panel")
     try:
         form = await request.post()
     except Exception:

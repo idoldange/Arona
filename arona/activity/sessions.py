@@ -1,5 +1,5 @@
 """Session cua Activity, quan ly THEO KENH MO ACTIVITY (voice hoac text): chi co session khi ai do bam nut
-"Open DAW" trong menu `!arona synth`. Khong co session cho kenh do -> API tra 403 (xem server.py)."""
+"Open Editor" trong menu `!arona synth`. Khong co session cho kenh do -> API tra 403 (xem server.py)."""
 from __future__ import annotations
 
 import time
@@ -16,7 +16,7 @@ class Session:
     created: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     users: set = field(default_factory=set)   # user id da goi API thanh cong
-    text_channel_id: int | None = None        # kenh text noi bam Open DAW -> noi bot dang file export
+    text_channel_id: int | None = None        # kenh text noi bam Open Editor -> noi bot dang file export
     imports: list = field(default_factory=list)   # project da parse tu file ustx/mid trong panel (xem imports.py)
     fonts: list = field(default_factory=list)     # [(stem, path)] soundfont nguoi dung upload trong panel (Activity tai ve)
     last_export: float = 0.0
