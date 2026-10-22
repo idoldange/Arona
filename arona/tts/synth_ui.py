@@ -98,7 +98,7 @@ class SynthSession:
         self.run_cb = run_cb
         self.files: list = []     # [(name, bytes)]  .ust/.ustx/.mid
         self.projects: list = []  # [(name, UProject)] ban parse day du, dung lai import JSON khi doi nhac cu
-        self.imports: list = []   # project JSON cho Activity, parse san luc upload (tranh block 3s khi bam Open Editor)
+        self.imports: list = []   # project JSON cho Activity, parse san luc upload (tranh block 3s khi bam Open DAW)
         self.media: list = []     # [(name, kind, bytes)]
         self.infos: list = []     # [TrackInfo]
         self.fonts: list = []     # [(stem, path)] soundfont nguoi dung upload (thu muc tam, xoa khi panel dong / job xong)
@@ -426,7 +426,7 @@ class SynthView(discord.ui.View):
         self.btn_cfg.callback = self._on_config
         self.btn_run = discord.ui.Button(label="Run", emoji="▶️", style=discord.ButtonStyle.success, row=3)
         self.btn_run.callback = self._on_run
-        self.btn_daw = discord.ui.Button(label="Open Editor", emoji="🎹", style=discord.ButtonStyle.secondary, row=3)
+        self.btn_daw = discord.ui.Button(label="Open DAW", emoji="🎹", style=discord.ButtonStyle.secondary, row=3)
         self.btn_daw.callback = self._on_daw
         self.btn_cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.danger, row=3)
         self.btn_cancel.callback = self._on_cancel
@@ -440,7 +440,7 @@ class SynthView(discord.ui.View):
         return True
 
     async def _on_daw(self, interaction: discord.Interaction):
-        """Tao session cho kenh noi bam Open Editor (text hoac voice), roi launch.
+        """Tao session cho kenh noi bam Open DAW (text hoac voice), roi launch.
 
         Activity co the mo o text channel hoac voice channel; session duoc dang ky theo ca 2
         id nen API van tim thay du Discord chon kenh nao. Khong bat buoc phai o trong voice.
@@ -462,10 +462,10 @@ class SynthView(discord.ui.View):
         try:
             await interaction.response.launch_activity()
         except discord.NotFound:
-            console.log("Open Editor: interaction expired before launch (10062)", "WARN")
+            console.log("Open DAW: interaction expired before launch (10062)", "WARN")
             registry.end(primary)
         except Exception as e:
-            console.log(f"Open Editor failed: {e}", "ERROR")
+            console.log(f"Open DAW failed: {e}", "ERROR")
             registry.end(primary)
             try:
                 await interaction.response.send_message(f"Couldn't launch the DAW: `{e}`", ephemeral=True)

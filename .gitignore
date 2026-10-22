@@ -314,8 +314,6 @@ comments_dump.txt
 activity/cache/
 activity/openutau/
 activity/*.log
-activity/edge-log.txt
-activity/edge-dom.html
 activity/web/
 activity/saves/
 games/assets/engine/stockfish.exe

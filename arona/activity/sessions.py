@@ -1,5 +1,5 @@
 """Session cua Activity, quan ly THEO KENH MO ACTIVITY (voice hoac text): chi co session khi ai do bam nut
-"Open Editor" trong menu `!arona synth`. Khong co session cho kenh do -> API tra 403 (xem server.py)."""
+"Open DAW" trong menu `!arona synth`. Khong co session cho kenh do -> API tra 403 (xem server.py)."""
 from __future__ import annotations
 
 import time
@@ -13,11 +13,10 @@ class Session:
     channel_id: int
     guild_id: int | None
     owner_id: int                       # nguoi bam nut mo Activity
-    kind: str = "daw"                   # "daw" (Open Editor) loac "chess" (Interactive board)
     created: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     users: set = field(default_factory=set)   # user id da goi API thanh cong
-    text_channel_id: int | None = None        # kenh text noi bam Open Editor -> noi bot dang file export
+    text_channel_id: int | None = None        # kenh text noi bam Open DAW -> noi bot dang file export
     imports: list = field(default_factory=list)   # project da parse tu file ustx/mid trong panel (xem imports.py)
     fonts: list = field(default_factory=list)     # [(stem, path)] soundfont nguoi dung upload trong panel (Activity tai ve)
     last_export: float = 0.0
@@ -37,17 +36,16 @@ class SessionRegistry:
 
     def create(self, channel_id: int, guild_id: int | None, owner_id: int,
                text_channel_id: int | None = None, imports: list | None = None,
-               fonts: list | None = None, kind: str = "daw") -> Session:
+               fonts: list | None = None) -> Session:
         """Moi kenh 1 session; bam nut lan nua thi gia han, giu session cu va cap nhat kenh text / file nhap moi."""
         self.purge()
         s = self._by_channel.get(channel_id)
         if s and s.alive():
             s.touch(owner_id)
         else:
-            s = Session(channel_id, guild_id, owner_id, kind=kind)
+            s = Session(channel_id, guild_id, owner_id)
             s.users.add(owner_id)
             self._by_channel[channel_id] = s
-        s.kind = kind
         if text_channel_id is not None:
             # Activity co the duoc mo tu text channel (sdk.channelId = text id) trong khi
             # session duoc tao tu voice channel -> don session cu cua text id neu co.

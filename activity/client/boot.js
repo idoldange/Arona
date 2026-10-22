@@ -1,60 +1,42 @@
-﻿// Chay som trong Activity: goi sdk.ready() de Discord tat man hinh loading, roi dang nhap de app co token goi API cua bot.
+// Chay som trong Activity: goi sdk.ready() de Discord tat man hinh loading, roi dang nhap de app co token goi API cua bot.
 // Ket qua: window.__arona = {auth: {baseUrl, token, channelId} | null, ready: Promise}; sau khi dang nhap xong phat su kien "arona-auth".
 import {DiscordSDK} from "@discord/embedded-app-sdk"
 
 const query = new URLSearchParams(location.search)
-const state = {auth: null, user: null, error: null, ready: Promise.resolve(null), trace: [], build: "boot-5"}
-window.__aronaRuns = (window.__aronaRuns || 0) + 1      // >1 means this script executed twice on the page
-state.run = window.__aronaRuns
+const state = {auth: null, user: null, error: null, ready: Promise.resolve(null)}
 window.__arona = state
-
-// Ghi tung buoc login len panel debug cua early.js: luc dang "Loading..." tuong
-// khong con roi vao trang xam hoac treo o buoc nao, man hinh luon ke lai story.
-function push(msg) {
-    state.trace.push(msg)
-    const panel = window.__aronaPanel
-    if (panel) {panel.note(`boot-5 run#${state.run}: ${msg}`)}
-}
-push("boot init")
 const WIKI_URL = "https://bluearchive.wiki/wiki/Main_Page"
 
 // Activity mo truc tiep (App Launcher/Entry Point) khong qua nut Open DAW -> khong co
-// session, nen hien trang Blue Archive wiki thay vi mot DAW trong. Nen den chu trang,
-// it nhat css: wiki khong nhung duoc iframe (X-Frame-Options: SAMEORIGIN) nen chi de link.
-function showWiki() {
-    if (document.getElementById("board")) {return}      // trang ban co tu hien ly do tren gate, khong de wiki che
+// session, nen hien trang Blue Archive wiki thay vi mot DAW trong.
+function showWiki(sdk) {
     const cover = document.createElement("div")
-    cover.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:#000;color:#fff;" +
-        "display:grid;place-items:center"
+    cover.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;" +
+        "align-items:center;justify-content:center;gap:18px;background:#0b1220;color:#e8ecf4;" +
+        "font:16px/1.5 system-ui,Segoe UI,sans-serif;text-align:center;padding:24px"
+    const title = document.createElement("div")
+    title.textContent = "Blue Archive Wiki"
+    title.style.cssText = "font-size:28px;font-weight:700;letter-spacing:.5px"
+    const hint = document.createElement("div")
+    hint.textContent = "Open the DAW from the !arona synth menu to use the editor."
+    hint.style.cssText = "opacity:.65;max-width:420px"
     const link = document.createElement("a")
     link.href = WIKI_URL
     link.target = "_blank"
     link.rel = "noreferrer"
-    link.textContent = WIKI_URL
-    link.style.color = "#fff"
-    cover.appendChild(link)
+    link.textContent = "Open bluearchive.wiki"
+    link.style.cssText = "color:#7cc4ff;font-weight:600;text-decoration:none;border:1px solid #2b4a6f;" +
+        "border-radius:10px;padding:10px 18px;background:#12233a"
+    cover.append(title, hint, link)
     ;(document.body || document.documentElement).appendChild(cover)
-}
-
-// Lop phu "Loading..." (cung mau nen ban co) tu luc mo Activity den khi biet se vao DAW / ban co / wiki,
-// de DAW khong lo ra trong luc dang nhap + kiem tra session. Ban co: giu nguyen cho den khi chuyen trang.
-function showLoading() {
-    const cover = document.createElement("div")
-    cover.id = "arona-loading"
-    cover.style.cssText = "position:fixed;inset:0;z-index:2147483646;background:#262421;color:#9c9a97;" +
-        "display:grid;place-items:center;font:14px 'Segoe UI',system-ui,sans-serif"
-    cover.textContent = "Loading..."
-    ;(document.body || document.documentElement).appendChild(cover)
-}
-
-function hideLoading() {
-    const cover = document.getElementById("arona-loading")
-    if (cover) {cover.remove()}
+    // Thu mo bang trinh duyet cua Discord; neu bi chan thi nut tren van dung duoc.
+    if (sdk && sdk.commands && sdk.commands.openExternalLink) {
+        sdk.commands.openExternalLink({url: WIKI_URL}).catch(() => {})
+    }
 }
 
 // Trong Discord: neu app bi trang man hinh thi hien loi ngay tren man hinh (loi JS, bi CSP chan, luu tru khong dung duoc).
-// early.js da tao panel (window.__aronaPanel) neu tag board.html nam moi -> bo qua; block nay chi phuc trang cu.
-if (query.has("frame_id") && !window.__aronaPanel) {
+if (query.has("frame_id")) {
     const panel = document.createElement("pre")
     panel.id = "arona-debug"
     panel.style.cssText = "position:fixed;left:0;right:0;bottom:0;max-height:45vh;overflow:auto;margin:0;padding:6px 8px;" +
@@ -77,31 +59,21 @@ if (query.has("frame_id") && !window.__aronaPanel) {
 }
 
 if (query.has("frame_id")) {
-    showLoading()
     state.ready = (async () => {
         const config = await fetch("/api/config").then(response => response.json())
         const sdk = new DiscordSDK(config.client_id)
         await sdk.ready()
-        push("sdk.ready")
         const {code} = await sdk.commands.authorize({
             client_id: config.client_id, response_type: "code", state: "", prompt: "none", scope: ["identify"]
         })
-        push("authorized")
         const tokenResponse = await fetch("/api/token", {
             method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({code})
         })
-        if (!tokenResponse.ok) {
-            const detail = await tokenResponse.json().then(body => body && body.error || "", () => "")
-            throw new Error(`Token exchange failed (${tokenResponse.status})${detail ? `: ${detail}` : ""}`)
-        }
+        if (!tokenResponse.ok) {throw new Error(`Token exchange failed (${tokenResponse.status})`)}
         const {access_token} = await tokenResponse.json()
-        push("token ok")
         const authenticated = await sdk.commands.authenticate({access_token})
-        push(`authenticated, channel=${sdk.channelId}`)
         if (sdk.channelId === null) {
-            state.reason = "sdk.channelId is null (activity not started from a channel)"
-            hideLoading()
-            showWiki()
+            showWiki(sdk)
             return null
         }
         // Chi vao DAW khi kenh da co session (bam Open DAW). Mo tu App Launcher/Entry Point
@@ -111,38 +83,18 @@ if (query.has("frame_id")) {
                 headers: {"X-Channel-Id": sdk.channelId},
                 signal: AbortSignal.timeout(2000)
             })
-            if (check.ok) {
-                const session = await check.json()
-                push(`session=${JSON.stringify(session)}`)
-                if (session.exists === false) {
-                    state.reason = `no active session for channel ${sdk.channelId} (press the Interactive board button again)`
-                    hideLoading()
-                    showWiki()
-                    return null
-                }
-                // Chess session (Interactive board button on a chess game) -> route to
-                // the chess board page instead of the DAW. The query string is kept so
-                // the Discord Embedded App SDK login still works on the new page.
-                // (Already on the board page, e.g. served straight for "/" or after the redirect: stay, or it reloads forever.)
-                if (session.kind === "chess" && !document.getElementById("board")) {
-                    location.replace("/board.html" + location.search)
-                    return null
-                }
+            if (check.ok && (await check.json()).exists === false) {
+                showWiki(sdk)
+                return null
             }
         } catch (error) {
             console.warn("[arona] session check failed", error)
         }
-        hideLoading()
-        push("auth set")
         state.user = authenticated.user ?? null      // {id, username, global_name, avatar}: tai khoan Discord thay cho he thong tai khoan cua Signal
         state.auth = {baseUrl: "", token: access_token, channelId: sdk.channelId}
-        if (window.__aronaPanel) {setTimeout(() => {window.__aronaPanel.close()}, 1500)}      // thanh cong -> an panel (chip de mo lai)
         window.dispatchEvent(new CustomEvent("arona-auth", {detail: state.auth}))
         return state.auth
     })().catch(error => {
-        push(`failed: ${error && error.message || error}`)
-        if (window.__aronaPanel) {window.__aronaPanel.note(`boot-5 error: ${error && error.message || error}`, true)}
-        hideLoading()
         state.error = error
         console.warn("[arona] Discord login failed", error)
         window.dispatchEvent(new CustomEvent("arona-auth-error", {detail: error}))

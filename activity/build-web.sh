@@ -40,13 +40,4 @@ fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@6959f35/public/A320U_drums.sf2"
 "$ESBUILD" client/boot.js --bundle --format=esm --minify --outfile=web/arona-boot.js
 "$ESBUILD" diag/main.js --bundle --format=esm --minify --outfile=web/arona-diag.js
 cp diag/index.html web/diag.html
-
-# Chess interactive board (separate page, router sits in arona-boot.js via /api/session/check kind)
-"$ESBUILD" board/main.js --bundle --format=esm --minify --outfile=web/arona-board.js
-cp board/early.js web/arona-early.js      # panel debug chay TRUOC module: loi JSP/CSP/module deu hien len man hinh thay vi man xam
-mkdir -p web/sfx && cp sfx/*.mp3 web/sfx/     # SFX di quan / an quan / chieu het cua ban co
-cp board/index.html web/board.html
-[ -s ../arona.png ] && cp ../arona.png web/arona.png
-mkdir -p web/chess-pieces
-cp ../games/assets/chess-pieces/*.png web/chess-pieces/
 echo "web/ ready: $(du -sh web | cut -f1)"
