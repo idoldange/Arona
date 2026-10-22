@@ -176,7 +176,9 @@ async def h_token(request):
                 "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code}) as r:
             data = await r.json()
             if r.status != 200:
-                return _deny(400, "token exchange failed")
+                reason = (data.get("error_description") or data.get("error") or "unknown") if isinstance(data, dict) else "unknown"
+                print(f"[ActivityToken] Discord oauth2/token returned {r.status}: {data}", flush=True)
+                return _deny(400, f"token exchange failed: {reason}")
     return web.json_response({"access_token": data["access_token"]})
 
 
@@ -858,7 +860,10 @@ async def h_static(request):
         full = os.path.join(full, "index.html")
     if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
         raise web.HTTPNotFound()          # ke ca path traversal (../) va symlink thoat ra ngoai
-    return web.FileResponse(full)
+    resp = web.FileResponse(full)
+    if full.endswith((".html", ".js")):
+        resp.headers["Cache-Control"] = "no-cache"      # Discord's iframe otherwise keeps serving stale arona-boot/board scripts
+    return resp
 
 
 def make_app() -> web.Application:

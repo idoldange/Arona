@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -33,6 +33,7 @@
             color: var(--text-dim);
             text-align: center;
             padding: 24px;
+            white-space: pre-wrap;
         }
         .layout {
             height: 100%;
@@ -56,6 +57,8 @@
             flex: none;
         }
         .avatar.letter { display: grid; place-items: center; font-weight: 700; color: #fff; font-size: 15px; }
+        /* [hidden] khong tac dung khi rule khac dat display -> phai ep tay */
+        .avatar.letter[hidden] { display: none; }
         .who { min-width: 0; flex: 1; }
         .clock {
             flex: none;
@@ -81,7 +84,11 @@
         .captured img:first-child { margin-left: 0; }
         .mat-diff { color: var(--text-dim); font-size: 12px; margin-left: 6px; }
         .board-wrap {
-            width: min(76vmin, 640px, calc(100% - 8px));
+            /* khong dung calc(100% - x): cha (board-side) co theo content -> % giai quyet vong cho gia tri rac lam ban co be xiu */
+            width: min(76vmin, 640px);
+            max-width: 100%;
+            align-self: center;
+            margin: 0 auto;
             aspect-ratio: 1;
             position: relative;
             user-select: none;
@@ -232,6 +239,7 @@
             max-width: 80%;
         }
     </style>
+    <script src="/arona-early.js?v=7"></script>
 </head>
 <body>
 <div id="root">
@@ -271,7 +279,7 @@
     </div>
 </div>
 <div id="gate"></div>
-<script type="module" src="/arona-boot.js"></script>
-<script type="module" src="/arona-board.js"></script>
+<script type="module" src="/arona-boot.js?v=7"></script>
+<script type="module" src="/arona-board.js?v=7"></script>
 </body>
 </html>

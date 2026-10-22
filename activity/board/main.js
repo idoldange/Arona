@@ -20,10 +20,14 @@ let state = null            // latest /api/chess/state payload
 let sel = null              // selected square index (python-chess indexing)
 let hint = null             // {from, to} currently displayed hint
 let busy = false            // a mutating request is in flight
+let optimistic = null       // {from, to} square idx of OUR move while its POST is in flight -> piece snaps instantly
+let lastAnimatedUci = ""    // last move already slid on screen; skip re-animating the same one (server echo, self echo)
 let stopPoll = false
 let clockSnap = null        // latest clock snapshot + receipt time; the countdown runs locally between polls
 let slotColor = { top: "black", bottom: "white" }   // which side's clock each player bar shows
 let lastZeroPoll = 0
+let pollError = ""          // last /api/chess/state failure, shown on the gate so a blank board explains itself
+const BUILD = "chess-clock-5"
 
 // ── game clock (timed games only: blitz / bullet / any time limit) ──
 function syncClock(next) {
@@ -222,13 +226,23 @@ function render() {
     if (!state || !state.active) {
         $("root").style.display = "none"
         gate.style.display = "grid"
-        gate.textContent = state ? "No chess game is running in this channel." : "Connecting to the board..."
+        gate.textContent = state
+            ? "No chess game is running in this channel." + (pollError ? `\n\n${pollError}` : "")
+            : "Connecting to the board..."
         return
     }
     gate.style.display = "none"
-    $("root").style.display = ""
+    // DUNG dung style.display = "": xoa inline thi computed fallback ve rule
+    // "#root { display: none }" trong board.html -> ban co (root) an cam mai mai.
+    $("root").style.display = "block"
 
     const map = parseFen(state.fen)
+    // Optimistic: khi nuoc cua ta chua duoc server xac nhan, tu di chuyen quan trong ban co tam thoi.
+    const ourUci = optimistic ? squareName(optimistic.from) + squareName(optimistic.to) : ""
+    if (optimistic && state.last_move !== ourUci) {
+        map[optimistic.to] = map[optimistic.from]
+        map[optimistic.from] = null
+    }
     const flip = myColor() === "black"
     const bottomColor = flip ? "black" : "white"
 
@@ -278,6 +292,14 @@ function render() {
                     : (piece.white === (myColor() === "white"))
             ),
         })
+    }
+    // Slide animation for the newest move (bot/opponent via poll, ours via apiMove commit):
+    // only runs when this uci has not been animated yet. While OUR optimistic move renders,
+    // state.last_move is still the opponent's PREVIOUS move (already animated) -> must skip,
+    // otherwise it replays.
+    if (state.last_move && !optimistic && state.last_move !== lastAnimatedUci) {
+        lastAnimatedUci = state.last_move
+        animateLastMove(state.last_move)
     }
     renderPanel(map)
 }
@@ -375,6 +397,25 @@ function addCoord(div, kind, text, light) {
     div.appendChild(span)
 }
 
+// Slide the piece that now stands on `uci.to` back to `uci.from`, then let a CSS
+// transform transition glide it into place (applies to bot, PvP signs and our own commit).
+function animateLastMove(uci) {
+    const board = $("board")
+    const toCell = board.querySelector(`[data-sq="${parseSquare(uci.slice(2, 4))}"]`)
+    const fromCell = board.querySelector(`[data-sq="${parseSquare(uci.slice(0, 2))}"]`)
+    const pieceEl = toCell && toCell.querySelector(".piece")
+    if (!pieceEl || !fromCell) return
+    const rectFrom = fromCell.getBoundingClientRect()
+    const rectTo = toCell.getBoundingClientRect()
+    const dx = rectFrom.left - rectTo.left
+    const dy = rectFrom.top - rectTo.top
+    pieceEl.style.transition = "none"
+    pieceEl.style.transform = `translate(${dx}px, ${dy}px)`
+    pieceEl.getBoundingClientRect()      // force reflow so the start position takes effect
+    pieceEl.style.transition = "transform 180ms ease-out"
+    pieceEl.style.transform = ""
+}
+
 function renderPanel(map) {
     const isPvp = state.mode === "pvp"
     $("panel-title").textContent = isPvp ? "🚩 PvP Game" : "💻 Play vs Arona"
@@ -439,7 +480,7 @@ function renderPanel(map) {
         if (state.turn === myColor() && !busy && !state.clock) actions.appendChild(actionBtn("↩ Undo", "secondary", apiUndo))
         if (state.turn === myColor() && !busy) actions.appendChild(actionBtn("💡 Hint", "secondary", apiHint))
     }
-    actions.appendChild(actionBtn("🚩 Resign", "danger", apiResign))
+    actions.appendChild(actionBtn("🚩 Resign", "secondary", apiResign))
 }
 
 function actionBtn(label, style, handler) {
@@ -466,7 +507,7 @@ function apiHeaders() {
 }
 
 async function apiGet(path) {
-    const res = await fetch(path, { headers: apiHeaders() })
+    const res = await fetch(path, { headers: apiHeaders(), signal: AbortSignal.timeout(15000) })
     if (!res.ok) throw new Error(await apiError(res))
     return res.json()
 }
@@ -482,6 +523,7 @@ async function apiPostRaw(path, body) {
         method: "POST",
         headers: { "Content-Type": "application/json", ...apiHeaders() },
         body: JSON.stringify(body || {}),
+        signal: AbortSignal.timeout(30000),      // server co the nam lam vi tri cua quan trong "Arona is thinking"
     })
     if (!res.ok) throw new Error(await apiError(res))
     return res.json()
@@ -498,18 +540,26 @@ async function apiError(res) {
 async function apiMove(fromIdx, toIdx, promotion) {
     busy = true
     flipClockLocally()
+    // Di quan NGAY TAI CHO (khong cho bot tra loi): hien truoc, hoi sau.
+    // Promotion tam hien con tuong cho den khi server tra FEN moi.
+    const uci = squareName(fromIdx) + squareName(toIdx)
+    optimistic = { from: fromIdx, to: toIdx }
+    lastAnimatedUci = uci          // echo tu server cung nuoc nay -> khong bi animate lan nua
+    sel = null
+    hint = null
+    render()
+    animateLastMove(uci)
     try {
         state = await apiPost("/api/chess/move", {
             from: squareName(fromIdx),
             to: squareName(toIdx),
             promotion: promotion || "",
         })
-        sel = null
-        hint = null
+        optimistic = null
         render()
     } catch (e) {
+        optimistic = null          // that bai -> quan quay ve o cu (render lai tu FEN that)
         toast(e.message)
-        sel = null
         render()
     } finally {
         busy = false
@@ -607,12 +657,10 @@ function squareFromEvent(ev) {
 }
 
 function onPointerDown(ev) {
-    const dragSq = ev.target && ev.target.dataset ? ev.target.dataset.dragSq : null
-    let sq = dragSq !== undefined ? Number(dragSq) : NaN
-    if (Number.isNaN(sq)) sq = squareFromEvent(ev)
-    if (sq === null || Number.isNaN(sq)) return
     if (!state || !myTurn()) return
-    // Clicking a highlighted destination with a piece selected commits the move.
+    const sq = squareFromEvent(ev)      // lay o tu toa do chu khong tu dataset -> keo ca vung canh quan cung duoc
+    if (sq === null) return
+    // Co quan dang chon: nhan vao o dich hop le -> di luon (giong click-commit cu).
     if (sel !== null && sel !== sq) {
         const legal = legalTargets(sel).find(t => t.to === squareName(sq))
         if (legal) {
@@ -624,15 +672,15 @@ function onPointerDown(ev) {
             return
         }
     }
-    if (!canSelect(sq)) return
-    if (sel === sq) {
-        sel = null
-        render()
+    if (!canSelect(sq)) {
+        // Khong phai quan cua ta co nuoc di: bo chon quan cu (neu co) thay vi giu nguyen.
+        if (sel !== null) { sel = null; render() }
         return
     }
+    const wasSelected = sel === sq
     sel = sq
     render()
-    if (dragSq !== undefined) startDrag(ev, sq)
+    startDrag(ev, sq, wasSelected)      // luon cho keo: deselect khi tap nhe, di nuoc khi keo nhu thuong
     ev.preventDefault()
     ev.stopPropagation()
 }
@@ -647,7 +695,7 @@ function canSelect(sq) {
     return state.legal_moves.some(uci => uci.slice(0, 2) === alg)
 }
 
-function startDrag(ev, sq) {
+function startDrag(ev, sq, wasSelected) {
     const pieceEl = $("board").querySelector(`[data-sq="${sq}"] .piece`)
     if (!pieceEl) return
     const rect = $("board").getBoundingClientRect()
@@ -655,13 +703,18 @@ function startDrag(ev, sq) {
     drag = { sq, pieceEl, size }
     pieceEl.classList.add("dragging")
     applyDrag(ev, sq, pieceEl, size)
-    const move = (e) => applyDrag(e, sq, pieceEl, size)
+    let moved = false
+    const move = (e) => { moved = true; applyDrag(e, sq, pieceEl, size) }
     window.addEventListener("pointermove", move)
     window.addEventListener("pointerup", (up) => {
         window.removeEventListener("pointermove", move)
         drag = null
         const target = squareFromEvent(up)
-        if (target !== null && target !== sq) {
+        if (!moved) {
+            // Tap (khong keo): lan dau chon moi = giu selection; nhan tiep vao quan
+            // da chon = bo chon.
+            if (wasSelected) { sel = null }
+        } else if (target !== null && target !== sq) {
             const legal = legalTargets(sq).find(t => t.to === squareName(target))
             if (legal) {
                 if (legal.promotion) {
@@ -717,16 +770,32 @@ function boardSubRect(sq) {
 }
 
 // ── polling ────────────────────────────────────────────────────────
+let polledOnceOk = false
+
 async function pollOnce() {
     if (busy || stopPoll) return
     try {
         const fresh = await apiGet("/api/chess/state")
+        pollError = ""
         syncClock(fresh)
         if (!state || stateKey(fresh) !== stateKey(state)) {
             state = fresh
             render()
         }
+        if (!polledOnceOk) {
+            polledOnceOk = true
+            const root = $("root"), gate = $("gate"), boardEl = $("board")
+            const cs = getComputedStyle(root)
+            const check = `render check: active=${state.active}, mode=${state.mode}, root=${cs.display} h=${root.offsetHeight}, gate=${getComputedStyle(gate).display} h=${gate.offsetHeight}, squares=${boardEl ? boardEl.childElementCount : 0}, fen=${state.fen ? state.fen.split(" ")[0].slice(0, 15) : "-"}`
+            const broken = !(root.offsetHeight > 0 && boardEl && boardEl.childElementCount === 64)
+            if (window.__aronaPanel) {
+                window.__aronaPanel.note(check)
+                if (broken) {window.__aronaPanel.note("BOARD NOT VISIBLE — root hidden/empty although state ok", true)}
+                else {setTimeout(() => {window.__aronaPanel.close()}, 1200)}      // board that su hien roi: an panel (chip "e" mo lai)
+            }
+        }
     } catch (e) {
+        pollError = e && e.message ? e.message : String(e)
         if (state) {
             render()          // keep serving the last known board while retries continue
         } else {
@@ -745,17 +814,36 @@ async function waitAuth() {
         // Not inside Discord (or login failed): explain how to reach the board.
         const gate = $("gate")
         gate.style.display = "grid"
-        gate.textContent = "Open this board from the Interactive board button on a chess game in Discord."
+        const why = []
+        if (!location.search.includes("frame_id")) why.push("not inside Discord (no frame_id in the URL)")
+        if (window.__arona && window.__arona.error) why.push(`login error: ${window.__arona.error.message || window.__arona.error}`)
+        if (!window.__arona) why.push("arona-boot.js did not run")
+        if (window.__arona && window.__arona.reason) why.push(window.__arona.reason)
+        if (window.__arona && !window.__arona.reason && !window.__arona.error && location.search.includes("frame_id")) why.push("login finished without a token (no reason recorded)")
+        if (window.__arona && window.__arona.trace) why.push(`boot ${window.__arona.build} run#${window.__arona.run}: ${window.__arona.trace.join(" > ") || "(no steps ran)"}`)
+        gate.textContent = "Open this board from the Interactive board button on a chess game in Discord." +
+            `\n\n${why.join("\n")}\n[${BUILD}]`
+        if (window.__aronaPanel) {window.__aronaPanel.note(`gate: ${why.join(" | ")}`, true)}
         return false
     }
     return true
 }
 
 (async () => {
-    if (await waitAuth()) {
-        await pollOnce()
-        setInterval(pollOnce, POLL_MS)
-        setInterval(updateClocks, 100)
+    try {
+        if (window.__aronaPanel) {window.__aronaPanel.note(`board.js loaded, auth=${window.__arona && window.__arona.auth ? "ready" : "waiting"}`)}
+        if (await waitAuth()) {
+            await pollOnce()
+            setInterval(pollOnce, POLL_MS)
+            setInterval(updateClocks, 100)
+            if (window.__aronaPanel) {setTimeout(() => {window.__aronaPanel.close()}, 1200)}      // board chay: an panel, chip "e" mo lai
+        }
+    } catch (e) {
+        // Init bi vang (vi du DOM bi trang khac nghem): gate phai noi thay vi de man xam.
+        const gate = $("gate")
+        gate.style.display = "grid"
+        gate.textContent = `Board failed to start: ${e && e.message || e}\n[${BUILD}]`
+        if (window.__aronaPanel) {window.__aronaPanel.note(`board init failed: ${e && e.message || e}`, true)}
     }
 })()
 

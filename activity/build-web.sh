@@ -43,6 +43,7 @@ cp diag/index.html web/diag.html
 
 # Chess interactive board (separate page, router sits in arona-boot.js via /api/session/check kind)
 "$ESBUILD" board/main.js --bundle --format=esm --minify --outfile=web/arona-board.js
+cp board/early.js web/arona-early.js      # panel debug chay TRUOC module: loi JSP/CSP/module deu hien len man hinh thay vi man xam
 cp board/index.html web/board.html
 [ -s ../arona.png ] && cp ../arona.png web/arona.png
 mkdir -p web/chess-pieces
