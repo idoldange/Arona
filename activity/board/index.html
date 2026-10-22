@@ -209,6 +209,14 @@
         }
         .bgm[hidden] { display: none; }
         .bgm-row { display: flex; align-items: center; gap: 5px; min-width: 0; }
+        .elo-row {
+            display: flex; align-items: center; gap: 5px; min-width: 0;
+            padding: 8px 10px 0;
+            font-size: 12px; color: var(--text-dim);
+        }
+        .elo-row[hidden] { display: none; }
+        .elo-row span { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .elo-row input[type="range"] { flex: 1; min-width: 0; height: 18px; accent-color: #779556; }
         .bgm-row select, .bgm-row input[type="text"] {
             flex: 1;
             min-width: 0;
@@ -310,6 +318,11 @@
             <div class="panel-status"><span id="status"></span><span class="badge" id="room"></span></div>
             <div class="moves" id="moves"></div>
             <div class="actions" id="actions"></div>
+            <div class="elo-row" id="elo" hidden>
+                <span id="elo-label">⚡ Arona ~1500 elo</span>
+                <input id="elo-slider" type="range" min="400" max="3190" step="10" value="1500"
+                       title="Độ mạnh của Arona — áp dụng từ lần New game tới">
+            </div>
             <div class="bgm" id="bgm" hidden>
                 <div class="bgm-row head">
                     <span title="Nhạc nền ván cờ">🎵 BGM</span>

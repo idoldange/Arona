@@ -243,6 +243,43 @@ function maybeJingle(prev) {
     if (volSlider) { volSlider.value = String(bgmPrefs().vol); bgmVolume = bgmPrefs().vol }
 })()
 
+// ── thanh trượt Elo cho PvE: keo thay do manh cua Arona, gui len server luc nhan New game ──
+const ELO_MIN = 400, ELO_MAX = 3190
+let eloShown = null          // gia tri slider hien tai (null = chua keo lay, theo state.elo)
+
+function eloSaved() {
+    const v = parseInt(localStorage.getItem("arona-elo") || "", 10)
+    return Number.isFinite(v) ? Math.max(ELO_MIN, Math.min(ELO_MAX, v)) : null
+}
+
+function syncEloRow() {
+    const row = $("elo")
+    if (!row) return
+    row.hidden = !(state && state.active && state.mode === "engine")
+    if (row.hidden) return
+    if (!eloShown) { eloShown = eloSaved() || Number(state && state.elo) || 1500 }
+    const val = Math.max(ELO_MIN, Math.min(ELO_MAX, Math.round(eloShown / 10) * 10))
+    eloShown = val
+    const slider = $("elo-slider")
+    slider.min = String(ELO_MIN)
+    slider.max = String(ELO_MAX)
+    slider.step = "10"
+    slider.value = String(val)
+    $("elo-label").textContent = `⚡ Arona ~${val} elo`
+}
+
+;(function initElo() {
+    const slider = $("elo-slider")
+    let lastUIClick = 0
+    slider.addEventListener("input", (ev) => {
+        const now = performance.now()
+        if (now - lastUIClick > 120) { lastUIClick = now; sfx("ui") }
+        eloShown = Math.max(ELO_MIN, Math.min(ELO_MAX, Number(ev.target.value) || 1500))
+        $("elo-label").textContent = `⚡ Arona ~${eloShown} elo`
+        localStorage.setItem("arona-elo", String(eloShown))
+    })
+})()
+
 // ── game clock (timed games only: blitz / bullet / any time limit) ──
 function syncClock(next) {
     const c = next && next.clock
@@ -687,6 +724,7 @@ function renderPanel(map) {
     const actions = $("actions")
     actions.innerHTML = ""
     appendBgmToggle(actions)
+    syncEloRow()
     if (state.over) {
         if (state.you.role !== "spectator" || state.mode === "engine") {
             actions.appendChild(actionBtn("↻ New game", "secondary", apiNewGame))
@@ -828,7 +866,7 @@ async function apiNewGame() {
     busy = true
     try {
         const before = state
-        state = await apiPost("/api/chess/newgame")
+        state = await apiPost("/api/chess/newgame", { elo: eloShown || undefined })
         render()
         if (before && before.over) {
             jinglePlayedKey = ""

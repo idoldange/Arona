@@ -671,6 +671,7 @@ async def _chess_state(channel_id: int, uid: int, guild_id: int | None) -> dict:
         "over": over,
         "result": chess_manager.get_game_result_text(channel_id),
         "winner": chess_manager.get_winner_color(channel_id) if over else None,
+        "elo": elo,
         "moves": chess_manager.get_move_history(channel_id),
         "last_move": board.peek().uci() if board.move_stack else None,
         "legal_moves": sorted(m.uci() for m in board.legal_moves) if not over else [],
@@ -774,11 +775,19 @@ async def h_chess_newgame(request):
         _ensure_player(channel_id, uid)
     except ChessAccessError as e:
         return _deny(403, str(e))
+    # Activity co the gui {"elo": N} de doi suc manh engine tu thanh truot; bo trong -> giu elo cu.
+    elo_val = None
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and body.get("elo") is not None:
+            elo_val = int(body["elo"])
+    except Exception:
+        elo_val = None
     if chess_manager.is_pvp_game(channel_id):
         white_id, black_id = chess_manager.get_pvp_players(channel_id)
         success, msg = chess_manager.start_pvp_game(channel_id, white_id, black_id, time_control=chess_manager.get_time_control(channel_id))
     else:
-        success, msg = chess_manager.restart_engine_game(channel_id)
+        success, msg = chess_manager.restart_engine_game(channel_id, elo=elo_val)
     if not success:
         return _deny(400, msg)
     if not chess_manager.is_pvp_game(channel_id) and chess_manager.get_user_color(channel_id) == "black":
