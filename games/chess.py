@@ -95,6 +95,12 @@ class DiscordChessManager:
         self.pvp_sessions_file = os.path.join(os.path.dirname(__file__), "chess_pvp_sessions.json")
         self.load_pvp_sessions()
 
+        # Game clocks, only present for timed games:
+        # {channel_id: {"white": secs, "black": secs, "inc": secs, "last": epoch, "flagged": None|"white"|"black"}}
+        self.clocks = {}
+        self.clocks_file = os.path.join(os.path.dirname(__file__), "chess_clocks.json")
+        self.load_clocks()
+
     def _load_piece_images(self):
         """Load all piece images into memory."""
         for piece_symbol, piece_name in self.pieces_map.items():
@@ -199,6 +205,12 @@ class DiscordChessManager:
         if resigning_side in ("white", "black"):
             winner = "White" if resigning_side == "black" else "Black"
             return f"{winner} wins by resignation!"
+        flagged = self._flagged_side(channel_id)
+        if flagged:
+            winner_color = chess.BLACK if flagged == "white" else chess.WHITE
+            if board.has_insufficient_material(winner_color):
+                return "Draw — timeout vs insufficient material."
+            return f"{'Black' if flagged == 'white' else 'White'} wins on time!"
         if board.is_checkmate():
             winner = "White" if board.turn == chess.BLACK else "Black"
             return f"{winner} wins by checkmate!"
@@ -300,19 +312,24 @@ class DiscordChessManager:
         white_id, black_id = self.get_pvp_players(channel_id)
         return white_id if board.turn == chess.WHITE else black_id
 
-    def start_pvp_game(self, channel_id, white_id: int, black_id: int) -> Tuple[bool, str]:
+    def start_pvp_game(self, channel_id, white_id: int, black_id: int, time_control=None) -> Tuple[bool, str]:
         """Start a fresh PvP game between two Discord users. Clears engine mode for this channel."""
         if channel_id in self.engine_sessions:
             del self.engine_sessions[channel_id]
             self.save_engine_sessions()
         self.games[channel_id] = chess.Board()
         self.resigned[channel_id] = False
-        self.pvp_sessions[channel_id] = {"white": white_id, "black": black_id}
+        session = {"white": white_id, "black": black_id}
+        if time_control:
+            session["tc"] = [time_control[0], time_control[1]]
+        self.pvp_sessions[channel_id] = session
+        self._init_clock(channel_id)
         self.save_games()
         self.save_pvp_sessions()
         return True, (
             f"PvP game started! <@{white_id}> plays as **White**, <@{black_id}> plays as **Black**.\n"
             f"Use the board below to make your move, or `!arona chess move <move>` when it's your turn."
+            f"{self._time_control_note(channel_id)}"
         )
 
     def stop_pvp_game(self, channel_id) -> Tuple[bool, str]:
@@ -321,7 +338,158 @@ class DiscordChessManager:
             return False, "No PvP game is running in this channel."
         del self.pvp_sessions[channel_id]
         self.save_pvp_sessions()
+        self._clear_clock(channel_id)
         return True, "PvP game stopped. The board position is still saved."
+
+    # ── Time control (game clock) ──────────────────────────────
+    # A time control is (base_minutes, increment_seconds), e.g. (3.0, 2) = "3+2".
+    # Both clocks only start ticking once each side has made its first move.
+    @staticmethod
+    def parse_time_control(text) -> Optional[Tuple[float, int]]:
+        """'3+2' -> (3.0, 2); '10' -> (10.0, 0). None when invalid or out of range."""
+        m = re.match(r"^(\d+(?:[.,]\d+)?)(?:\+(\d+))?$", str(text).strip())
+        if not m:
+            return None
+        base = float(m.group(1).replace(",", "."))
+        inc = int(m.group(2) or 0)
+        if not (0.25 <= base <= 180) or inc > 60:
+            return None
+        return base, inc
+
+    @staticmethod
+    def format_time_control(tc) -> str:
+        return f"{tc[0]:g}+{int(tc[1])}"
+
+    @staticmethod
+    def time_control_category(tc) -> str:
+        """Lichess-style speed bucket from estimated game length (base + 40 moves of increment)."""
+        est = tc[0] * 60 + tc[1] * 40
+        if est < 30:
+            return "UltraBullet"
+        if est < 180:
+            return "Bullet"
+        if est < 480:
+            return "Blitz"
+        if est < 1500:
+            return "Rapid"
+        return "Classical"
+
+    def get_time_control(self, channel_id):
+        """(base_minutes, increment_seconds) for this channel's game, or None when untimed."""
+        session = self.pvp_sessions.get(channel_id) or self.engine_sessions.get(channel_id) or {}
+        tc = session.get("tc")
+        return (float(tc[0]), int(tc[1])) if tc else None
+
+    def _time_control_note(self, channel_id) -> str:
+        tc = self.get_time_control(channel_id)
+        if not tc:
+            return ""
+        return (
+            f"\n⏱️ Time control: **{self.format_time_control(tc)}** ({self.time_control_category(tc)}). "
+            f"Clocks start once both sides have made their first move."
+        )
+
+    def load_clocks(self):
+        try:
+            if os.path.exists(self.clocks_file):
+                with open(self.clocks_file, 'r') as f:
+                    data = json.load(f)
+                for k, v in data.items():
+                    channel_id = int(k)
+                    if self.get_time_control(channel_id):
+                        self.clocks[channel_id] = v
+        except Exception as e:
+            console.log(f"Error loading chess clocks: {e}", "ERROR")
+
+    def save_clocks(self):
+        try:
+            data = {str(k): v for k, v in self.clocks.items()}
+            os.makedirs(os.path.dirname(self.clocks_file), exist_ok=True)
+            with open(self.clocks_file, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            console.log(f"Error saving chess clocks: {e}", "ERROR")
+
+    def _init_clock(self, channel_id):
+        """(Re)create the clock from the session's time control; drops it for untimed games."""
+        tc = self.get_time_control(channel_id)
+        if tc:
+            secs = tc[0] * 60.0
+            self.clocks[channel_id] = {"white": secs, "black": secs, "inc": tc[1], "last": time.time(), "flagged": None}
+        else:
+            self.clocks.pop(channel_id, None)
+        self.save_clocks()
+
+    def _clear_clock(self, channel_id):
+        if self.clocks.pop(channel_id, None) is not None:
+            self.save_clocks()
+
+    def _flagged_side(self, channel_id) -> Optional[str]:
+        clk = self.clocks.get(channel_id)
+        return clk.get("flagged") if clk else None
+
+    def _clock_running(self, channel_id) -> bool:
+        clk = self.clocks.get(channel_id)
+        if not clk or clk.get("flagged"):
+            return False
+        return len(self._get_game(channel_id).move_stack) >= 2
+
+    def _clock_remaining(self, channel_id, color: str) -> Optional[float]:
+        """Seconds left for `color` right now (live for the side to move), None when untimed."""
+        clk = self.clocks.get(channel_id)
+        if not clk:
+            return None
+        remaining = float(clk[color])
+        board = self._get_game(channel_id)
+        if self._clock_running(channel_id) and not board.is_game_over() and not self.resigned.get(channel_id):
+            turn = "white" if board.turn == chess.WHITE else "black"
+            if turn == color:
+                remaining -= time.time() - clk["last"]
+        return max(0.0, remaining)
+
+    def _check_flag(self, channel_id):
+        """Mark the side to move as flagged when its clock has run out."""
+        clk = self.clocks.get(channel_id)
+        if not clk or clk.get("flagged") or self.resigned.get(channel_id):
+            return
+        board = self._get_game(channel_id)
+        if board.is_game_over() or not self._clock_running(channel_id):
+            return
+        turn = "white" if board.turn == chess.WHITE else "black"
+        if self._clock_remaining(channel_id, turn) <= 0:
+            clk[turn] = 0.0
+            clk["flagged"] = turn
+            self.save_clocks()
+
+    def _clock_on_move(self, channel_id, mover: str, plies_before: int):
+        """Settle the mover's clock after a move was pushed: subtract think time, add increment."""
+        clk = self.clocks.get(channel_id)
+        if not clk or clk.get("flagged"):
+            return
+        now = time.time()
+        if plies_before >= 2:
+            clk[mover] = max(0.0, float(clk[mover]) - (now - clk["last"])) + clk["inc"]
+        clk["last"] = now
+        self.save_clocks()
+
+    def get_clock_state(self, channel_id) -> Optional[dict]:
+        """Snapshot for the Activity: remaining ms per side + whether the clock is ticking. None when untimed."""
+        tc = self.get_time_control(channel_id)
+        clk = self.clocks.get(channel_id)
+        if not tc or not clk:
+            return None
+        over = self.is_game_over(channel_id)      # also settles a fallen flag
+        board = self._get_game(channel_id)
+        return {
+            "label": self.format_time_control(tc),
+            "category": self.time_control_category(tc),
+            "increment": int(tc[1]),
+            "white_ms": int(self._clock_remaining(channel_id, "white") * 1000),
+            "black_ms": int(self._clock_remaining(channel_id, "black") * 1000),
+            "running": bool(self._clock_running(channel_id) and not over),
+            "started": len(board.move_stack) >= 2,
+            "flagged": clk.get("flagged"),
+        }
 
     def _clamp_elo(self, elo) -> int:
         try:
@@ -330,7 +498,7 @@ class DiscordChessManager:
             return CHESS_ENGINE_DEFAULT_ELO
         return max(CHESS_ENGINE_MIN_ELO, min(CHESS_ENGINE_MAX_ELO, elo))
 
-    def start_engine_game(self, channel_id, elo=None, user_color: str = "white") -> Tuple[bool, str]:
+    def start_engine_game(self, channel_id, elo=None, user_color: str = "white", time_control=None) -> Tuple[bool, str]:
         """Start a fresh local-engine game in this channel. Player can be White or Black."""
         if not self.has_engine():
             return False, (
@@ -346,13 +514,18 @@ class DiscordChessManager:
         final_elo = self._clamp_elo(elo) if elo is not None else CHESS_ENGINE_DEFAULT_ELO
         self.games[channel_id] = chess.Board()
         self.resigned[channel_id] = False
-        self.engine_sessions[channel_id] = {"elo": final_elo, "user_color": user_color}
+        session = {"elo": final_elo, "user_color": user_color}
+        if time_control:
+            session["tc"] = [time_control[0], time_control[1]]
+        self.engine_sessions[channel_id] = session
+        self._init_clock(channel_id)
         self.save_games()
         self.save_engine_sessions()
         return True, (
             f"Game started! You're **{'White' if user_color == 'white' else 'Black'}**, "
             f"Arona is **{engine_color}** at ~**{final_elo} ELO**.\n"
             f"Use the dropdowns on the board below to move, or type `!arona chess move <move>` (UCI or SAN, e.g. `e2e4` or `Nf3`)."
+            f"{self._time_control_note(channel_id)}"
         )
 
     def stop_engine_game(self, channel_id) -> Tuple[bool, str]:
@@ -361,9 +534,10 @@ class DiscordChessManager:
             return False, "There's no active game in this channel."
         del self.engine_sessions[channel_id]
         self.save_engine_sessions()
+        self._clear_clock(channel_id)
         return True, "Game stopped. The board position is still saved."
 
-    def restart_engine_game(self, channel_id, elo=None, user_color: str = None) -> Tuple[bool, str]:
+    def restart_engine_game(self, channel_id, elo=None, user_color: str = None, time_control="keep") -> Tuple[bool, str]:
         """Reset the board and (re)start engine mode, keeping the previous elo/color unless a new one is given."""
         if not self.has_engine():
             return False, (
@@ -383,12 +557,19 @@ class DiscordChessManager:
         final_elo = self._clamp_elo(elo) if elo is not None else previous_elo
         self.games[channel_id] = chess.Board()
         self.resigned[channel_id] = False
-        self.engine_sessions[channel_id] = {"elo": final_elo, "user_color": previous_color}
+        # "keep" = reuse the previous game's time control, None = untimed, tuple = new one.
+        tc = self.get_time_control(channel_id) if time_control == "keep" else time_control
+        session = {"elo": final_elo, "user_color": previous_color}
+        if tc:
+            session["tc"] = [tc[0], tc[1]]
+        self.engine_sessions[channel_id] = session
+        self._init_clock(channel_id)
         self.save_games()
         self.save_engine_sessions()
         return True, (
             f"Chess game restarted! You're **{'White' if previous_color == 'white' else 'Black'}**, "
             f"Arona is **{'Black' if previous_color == 'white' else 'White'}** at ~**{final_elo} ELO**."
+            f"{self._time_control_note(channel_id)}"
         )
 
     def resign_game(self, channel_id, resigning_side: str = None) -> Tuple[bool, str]:
@@ -414,7 +595,8 @@ class DiscordChessManager:
     def is_game_over(self, channel_id) -> bool:
         """Board-level game over, or the human already resigned."""
         board = self._get_game(channel_id)
-        return board.is_game_over() or self.resigned.get(channel_id, False)
+        self._check_flag(channel_id)
+        return board.is_game_over() or self.resigned.get(channel_id, False) or self._flagged_side(channel_id) is not None
 
     def _get_engine_lock(self, channel_id) -> asyncio.Lock:
         lock = self._engine_locks.get(channel_id)
@@ -432,6 +614,9 @@ class DiscordChessManager:
         board = self._get_game(channel_id)
         if board.is_game_over():
             return False, "The game is already over. Use `!arona chess restart` to play again.", None
+        self._check_flag(channel_id)
+        if self._flagged_side(channel_id):
+            return False, "Time's up — the game is already over.", None
 
         clean_move = move_str.strip()
         if not clean_move:
@@ -450,8 +635,11 @@ class DiscordChessManager:
             extra = f" {reason}" if reason else ""
             return False, f"`{clean_move}` is illegal.{extra}", None
 
+        mover = "white" if board.turn == chess.WHITE else "black"
+        plies_before = len(board.move_stack)
         board.push(move)
         self.save_games()
+        self._clock_on_move(channel_id, mover, plies_before)
         self._last_user_move_time[channel_id] = time.monotonic()
 
         status = f"You played: {clean_move}"
@@ -509,6 +697,9 @@ class DiscordChessManager:
         board = self._get_game(channel_id)
         if board.is_game_over():
             return False, "Game is already over.", None
+        self._check_flag(channel_id)
+        if self._flagged_side(channel_id):
+            return False, "Time's up — the game is already over.", None
 
         elo = self.get_engine_elo(channel_id) or CHESS_ENGINE_DEFAULT_ELO
         lock = self._get_engine_lock(channel_id)
@@ -542,14 +733,25 @@ class DiscordChessManager:
                 # almost instantly, tricky positions get more thinking room, and
                 # CHESS_ENGINE_THINK_TIME is a safety ceiling.
                 think = self._dynamic_think_time(board)
+                engine_color = "white" if board.turn == chess.WHITE else "black"
+                clock_left = self._clock_remaining(channel_id, engine_color)
+                if clock_left is not None:
+                    # Never burn more than a small slice of the remaining clock on one move.
+                    think = max(0.05, min(think, clock_left * 0.08))
                 result = await engine.play(board, chess.engine.Limit(time=think))
                 move = result.move
                 if move is None:
                     return False, "Engine returned no move (game likely over).", None
 
+                self._check_flag(channel_id)
+                if self._flagged_side(channel_id):
+                    return True, "Arona ran out of time!", None
+                plies_before = len(board.move_stack)
+
                 board.push(move)
                 self.save_games()
 
+                self._clock_on_move(channel_id, engine_color, plies_before)
                 status = f"Arona played: {move.uci()}"
                 if board.is_checkmate():
                     status += " — Checkmate! Arona wins."

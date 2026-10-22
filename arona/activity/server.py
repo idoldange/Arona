@@ -674,6 +674,7 @@ async def _chess_state(channel_id: int, uid: int, guild_id: int | None) -> dict:
         "you": {"id": str(uid), "role": _chess_role(channel_id, uid)},
         "white": white,
         "black": black,
+        "clock": chess_manager.get_clock_state(channel_id),
     }
 
 
@@ -694,9 +695,22 @@ def _human_repop_count(chess, chess_manager, channel_id, board) -> int:
     return 1                      # human just moved, Arona has not replied yet
 
 
+_chess_flag_announced: set = set()      # (channel_id, plies) whose time-out was already pushed to Discord
+
+
 async def h_chess_state(request):
     s, uid = request["session"], request["user_id"]
-    return web.json_response(await _chess_state(_chess_board_channel(s), uid, s.guild_id))
+    channel_id = _chess_board_channel(s)
+    state = await _chess_state(channel_id, uid, s.guild_id)
+    clock = state.get("clock")
+    if clock and clock.get("flagged"):
+        # A flag can fall while nobody moves, so the Discord board only learns about it here.
+        key = (channel_id, len(state["moves"]))
+        if key not in _chess_flag_announced:
+            _chess_flag_announced.add(key)
+            _, _, refresh_channel_board = _chess_deps()
+            await refresh_channel_board(channel_id)
+    return web.json_response(state)
 
 
 async def h_chess_move(request):
@@ -759,7 +773,7 @@ async def h_chess_newgame(request):
         return _deny(403, str(e))
     if chess_manager.is_pvp_game(channel_id):
         white_id, black_id = chess_manager.get_pvp_players(channel_id)
-        success, msg = chess_manager.start_pvp_game(channel_id, white_id, black_id)
+        success, msg = chess_manager.start_pvp_game(channel_id, white_id, black_id, time_control=chess_manager.get_time_control(channel_id))
     else:
         success, msg = chess_manager.restart_engine_game(channel_id)
     if not success:
@@ -778,6 +792,8 @@ async def h_chess_undo(request):
     chess_package, chess_manager, refresh_channel_board = _chess_deps()
     if not chess_manager.is_engine_game(channel_id):
         return _deny(403, "Take-backs are only available in games against Arona.")
+    if chess_manager.get_time_control(channel_id):
+        return _deny(403, "Take-backs are disabled in timed games.")
     if chess_manager.is_game_over(channel_id):
         return _deny(400, "The game is over — start a new game instead.")
     lock = chess_manager._get_engine_lock(channel_id)

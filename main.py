@@ -8654,7 +8654,12 @@ async def on_message(message):
     args = chess_start_match.group(1).strip().split()
     elo_arg = next((a for a in args if a.isdigit()), None)
     color_arg = next((a.lower() for a in args if a.lower() in ("white", "black")), None)
-    success, msg = chess_manager.start_engine_game(message.channel.id, int(elo_arg) if elo_arg else None, user_color=color_arg)
+    tc_arg = next((a for a in args if "+" in a), None)
+    time_control = chess_manager.parse_time_control(tc_arg) if tc_arg else None
+    if tc_arg and time_control is None:
+      await send_with_retry(message.channel, "Invalid time control. Use `minutes+increment`, e.g. `3+2` or `10+0` (base 0.25-180 min, increment 0-60 s).")
+      return
+    success, msg = chess_manager.start_engine_game(message.channel.id, int(elo_arg) if elo_arg else None, user_color=color_arg, time_control=time_control)
     if success:
       engine_started_lines = [msg]
       if chess_manager.get_user_color(message.channel.id) == "black":
@@ -8680,7 +8685,17 @@ async def on_message(message):
     args = chess_restart_match.group(1).strip().split()
     elo_arg = next((a for a in args if a.isdigit()), None)
     color_arg = next((a.lower() for a in args if a.lower() in ("white", "black")), None)
-    success, msg = chess_manager.restart_engine_game(message.channel.id, int(elo_arg) if elo_arg else None, user_color=color_arg)
+    tc_arg = next((a for a in args if "+" in a), None)
+    if any(a.lower() in ("untimed", "notime") for a in args):
+      time_control = None
+    elif tc_arg:
+      time_control = chess_manager.parse_time_control(tc_arg)
+      if time_control is None:
+        await send_with_retry(message.channel, "Invalid time control. Use `minutes+increment`, e.g. `3+2` or `10+0` (base 0.25-180 min, increment 0-60 s).")
+        return
+    else:
+      time_control = "keep"
+    success, msg = chess_manager.restart_engine_game(message.channel.id, int(elo_arg) if elo_arg else None, user_color=color_arg, time_control=time_control)
     if success:
       engine_started_lines = [msg]
       if chess_manager.get_user_color(message.channel.id) == "black":
@@ -8772,12 +8787,21 @@ async def on_message(message):
     await message.channel.send(file=file)
     return
 
-  chess_challenge_match = re.match(r"^!arona\s+chess\s+challenge\s+<@!?(\d+)>(?:\s+(\S+))?\s*$", message.content, re.IGNORECASE)
+  chess_challenge_match = re.match(r"^!arona\s+chess\s+challenge\s+<@!?(\d+)>((?:\s+\S+)*)\s*$", message.content, re.IGNORECASE)
   if chess_challenge_match:
     console.log(f"User {message.author.display_name} used !arona chess challenge", "INFO")
     challenged_id = int(chess_challenge_match.group(1))
     challenger_id = message.author.id
-    color_arg = (chess_challenge_match.group(2) or "white").lower()
+    color_arg = "white"
+    time_control = None
+    for extra in (chess_challenge_match.group(2) or "").split():
+      if extra.lower() in ("w", "white", "trang", "b", "black", "den"):
+        color_arg = extra.lower()
+      else:
+        time_control = chess_manager.parse_time_control(extra)
+        if time_control is None:
+          await send_with_retry(message.channel, f"Invalid option `{extra}`. Use `!arona chess challenge @user [white|black] [minutes+increment]`, e.g. `3+2`.")
+          return
     if color_arg in ("w", "white", "trang"):
       challenger_color = "white"
     elif color_arg in ("b", "black", "den"):
@@ -8798,7 +8822,7 @@ async def on_message(message):
     if chess_manager.is_engine_game(message.channel.id) or chess_manager.is_pvp_game(message.channel.id):
       await send_with_retry(message.channel, "Another chess game is already running in this channel. Use `!arona chess stop` first.")
       return
-    view = ChessChallengeView(message.channel.id, challenger_id, challenged_id, challenger_color)
+    view = ChessChallengeView(message.channel.id, challenger_id, challenged_id, challenger_color, time_control=time_control)
     view.message = await message.channel.send(
       content=view.challenge_text(),
       view=view,
@@ -8809,9 +8833,9 @@ async def on_message(message):
     await send_with_retry(
       message.channel,
       "Usage:\n"
-      "`!arona chess start [elo] [white|black]` — start a game vs the engine (default White)\n"
-      "`!arona chess restart [elo] [white|black]` — reset the board, keep or replace elo/color\n"
-      "`!arona chess challenge @user [white|black]` — challenge another member to PvP (you pick your side)\n"
+      "`!arona chess start [elo] [white|black] [min+sec]` — start a game vs the engine (default White, e.g. `3+2` for a 3 min + 2 s blitz clock)\n"
+      "`!arona chess restart [elo] [white|black] [min+sec|untimed]` — reset the board, keep or replace elo/color/clock\n"
+      "`!arona chess challenge @user [white|black] [min+sec]` — challenge another member to PvP (you pick your side, optional clock)\n"
       "`!arona chess board` — show the interactive click-to-move board for the current game\n"
       "`!arona chess move <move>` — play a move (UCI or SAN, e.g. `e2e4` or `Nf3`)\n"
       "`!arona chess resign` — resign the current game\n"

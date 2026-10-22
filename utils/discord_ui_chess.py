@@ -295,11 +295,11 @@ class ChessNewGameButton(discord.ui.Button):
         reply_lines = []
         if self.parent_view.mode == "pvp":
             white_id, black_id = chess_manager.get_pvp_players(channel_id)
-            success, msg = chess_manager.start_pvp_game(channel_id, white_id, black_id)
+            success, msg = chess_manager.start_pvp_game(channel_id, white_id, black_id, time_control=chess_manager.get_time_control(channel_id))
             reply_lines.append(msg)
         else:
             user_color = chess_manager.get_user_color(channel_id)
-            success, msg = chess_manager.start_engine_game(channel_id, user_color=user_color)
+            success, msg = chess_manager.start_engine_game(channel_id, user_color=user_color, time_control=chess_manager.get_time_control(channel_id))
             reply_lines.append(msg)
             if success and user_color == "black":
                 # Arona is White, so Arona opens before the board shows.
@@ -472,7 +472,7 @@ class ChessChallengeView(discord.ui.View):
     gets the other side.
     """
     def __init__(self, channel_id: int, challenger_id: int, challenged_id: int,
-                 challenger_color: str = "white", timeout: float = 120):
+                 challenger_color: str = "white", timeout: float = 120, time_control=None):
         super().__init__(timeout=timeout)
         self.channel_id = channel_id
         self.challenger_id = challenger_id
@@ -484,13 +484,22 @@ class ChessChallengeView(discord.ui.View):
             self.white_id, self.black_id = challenged_id, challenger_id
         self.message: discord.Message = None
         self.responded = False
+        self.time_control = time_control        # (base_minutes, increment_seconds) or None
+
+    def _tc_text(self) -> str:
+        if not self.time_control:
+            return ""
+        return (
+            f"⏱️ **{chess_manager.format_time_control(self.time_control)}** "
+            f"({chess_manager.time_control_category(self.time_control)}). "
+        )
 
     def challenge_text(self) -> str:
         """Announcement line naming who plays White and who plays Black."""
         return (
             f"<@{self.challenged_id}>, <@{self.challenger_id}> challenged you to a chess game! "
             f"<@{self.challenger_id}> plays as **White**, <@{self.challenged_id}> plays as **Black**. "
-            f"Click to respond."
+            f"{self._tc_text()}Click to respond."
         )
 
     async def _check_challenged(self, interaction: discord.Interaction) -> bool:
@@ -505,7 +514,7 @@ class ChessChallengeView(discord.ui.View):
             return
         self.responded = True
         self.stop()
-        success, msg = chess_manager.start_pvp_game(self.channel_id, self.white_id, self.black_id)
+        success, msg = chess_manager.start_pvp_game(self.channel_id, self.white_id, self.black_id, time_control=self.time_control)
         await interaction.response.edit_message(content=msg, view=None)
         board_view = ChessBoardView(self.channel_id, mode="pvp")
         file = _board_file(self.channel_id)

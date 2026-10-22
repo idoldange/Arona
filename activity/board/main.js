@@ -21,6 +21,88 @@ let sel = null              // selected square index (python-chess indexing)
 let hint = null             // {from, to} currently displayed hint
 let busy = false            // a mutating request is in flight
 let stopPoll = false
+let clockSnap = null        // latest clock snapshot + receipt time; the countdown runs locally between polls
+let slotColor = { top: "black", bottom: "white" }   // which side's clock each player bar shows
+let lastZeroPoll = 0
+
+// ── game clock (timed games only: blitz / bullet / any time limit) ──
+function syncClock(next) {
+    const c = next && next.clock
+    clockSnap = c ? {
+        at: performance.now(),
+        white_ms: c.white_ms,
+        black_ms: c.black_ms,
+        running: c.running,
+        turn: next.turn,
+        flagged: c.flagged,
+        inc: c.increment || 0,
+    } : null
+}
+
+function liveMs(color) {
+    let ms = color === "white" ? clockSnap.white_ms : clockSnap.black_ms
+    if (clockSnap.running && clockSnap.turn === color) ms -= performance.now() - clockSnap.at
+    return Math.max(0, ms)
+}
+
+function formatClock(ms) {
+    const pad = (n) => String(n).padStart(2, "0")
+    if (ms < 10000) {
+        return `0:${pad(Math.floor(ms / 1000))}.${Math.floor((ms % 1000) / 100)}`
+    }
+    const secs = Math.floor(ms / 1000)
+    const h = Math.floor(secs / 3600)
+    const m = Math.floor((secs % 3600) / 60)
+    const s = secs % 60
+    return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`
+}
+
+// Compare states without the ever-changing remaining-ms, so a ticking clock
+// does not force a full board re-render on every poll.
+function stateKey(s) {
+    if (!s || !s.clock) return JSON.stringify(s)
+    const { clock, ...rest } = s
+    const { white_ms, black_ms, ...steady } = clock
+    return JSON.stringify({ ...rest, clock: steady })
+}
+
+// While our own move is in flight (the server may sit on it while Arona thinks)
+// pretend the turn already passed, so the right clock keeps running on screen.
+function flipClockLocally() {
+    if (!clockSnap || !clockSnap.running) return
+    const mover = clockSnap.turn
+    const left = liveMs(mover) + clockSnap.inc * 1000
+    clockSnap = {
+        ...clockSnap,
+        white_ms: mover === "white" ? left : clockSnap.white_ms,
+        black_ms: mover === "black" ? left : clockSnap.black_ms,
+        turn: mover === "white" ? "black" : "white",
+        at: performance.now(),
+    }
+}
+
+function updateClocks() {
+    for (const slot of ["top", "bottom"]) {
+        const el = $(`${slot}-clock`)
+        if (!el) continue
+        if (!clockSnap || !state || !state.active) {
+            el.hidden = true
+            continue
+        }
+        const color = slotColor[slot]
+        const ms = liveMs(color)
+        const ticking = clockSnap.running && clockSnap.turn === color
+        el.hidden = false
+        el.textContent = formatClock(ms)
+        el.classList.toggle("active", ticking)
+        el.classList.toggle("low", ms < 20000)
+        el.classList.toggle("flagged", clockSnap.flagged === color)
+        if (ticking && ms <= 0 && performance.now() - lastZeroPoll > 800) {
+            lastZeroPoll = performance.now()
+            pollOnce()      // flag fell: ask the server now instead of waiting for the next poll
+        }
+    }
+}
 
 function myColor() {
     const role = state.you.role
@@ -156,6 +238,8 @@ function render() {
     const topSeat = bottomSeatProfile(state, topColor, state.mode)
     fillBar("top", topSeat, topColor)
     fillBar("bottom", bottomSeat, bottomColor)
+    slotColor = { top: topColor, bottom: bottomColor }
+    updateClocks()
 
     let checkSq = null
     if (state.check && !state.over) {
@@ -309,6 +393,7 @@ function renderPanel(map) {
     $("status").textContent = status
     let badge = isPvp ? (state.you.role === "spectator" ? "SPECTATOR" : "PvP") : "vs Arona"
     if (state.you.role === "spectator" && state.mode === "engine") badge = "SPECTATOR"
+    if (state.clock) badge += ` · ${state.clock.category} ${state.clock.label}`
     $("room").textContent = badge
 
     // Move list in 1. white black rows; highlight the cell of the last move.
@@ -350,7 +435,8 @@ function renderPanel(map) {
     }
     if (state.you.role === "spectator" && isPvp) return
     if (state.mode === "engine") {
-        if (state.turn === myColor() && !busy) actions.appendChild(actionBtn("↩ Undo", "secondary", apiUndo))
+        // No take-backs in timed games (the server refuses them too).
+        if (state.turn === myColor() && !busy && !state.clock) actions.appendChild(actionBtn("↩ Undo", "secondary", apiUndo))
         if (state.turn === myColor() && !busy) actions.appendChild(actionBtn("💡 Hint", "secondary", apiHint))
     }
     actions.appendChild(actionBtn("🚩 Resign", "danger", apiResign))
@@ -386,6 +472,12 @@ async function apiGet(path) {
 }
 
 async function apiPost(path, body) {
+    const data = await apiPostRaw(path, body)
+    if (data && "clock" in data) syncClock(data)      // keep the countdown in step with every state reply
+    return data
+}
+
+async function apiPostRaw(path, body) {
     const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...apiHeaders() },
@@ -405,6 +497,7 @@ async function apiError(res) {
 
 async function apiMove(fromIdx, toIdx, promotion) {
     busy = true
+    flipClockLocally()
     try {
         state = await apiPost("/api/chess/move", {
             from: squareName(fromIdx),
@@ -628,7 +721,8 @@ async function pollOnce() {
     if (busy || stopPoll) return
     try {
         const fresh = await apiGet("/api/chess/state")
-        if (!state || JSON.stringify(fresh) !== JSON.stringify(state)) {
+        syncClock(fresh)
+        if (!state || stateKey(fresh) !== stateKey(state)) {
             state = fresh
             render()
         }
@@ -661,6 +755,7 @@ async function waitAuth() {
     if (await waitAuth()) {
         await pollOnce()
         setInterval(pollOnce, POLL_MS)
+        setInterval(updateClocks, 100)
     }
 })()
 

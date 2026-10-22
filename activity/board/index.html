@@ -56,7 +56,24 @@
             flex: none;
         }
         .avatar.letter { display: grid; place-items: center; font-weight: 700; color: #fff; font-size: 15px; }
-        .who { min-width: 0; }
+        .who { min-width: 0; flex: 1; }
+        .clock {
+            flex: none;
+            margin-left: 8px;
+            min-width: 84px;
+            padding: 6px 10px;
+            border-radius: 5px;
+            text-align: center;
+            font: 700 19px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+            font-variant-numeric: tabular-nums;
+            background: #3d3b38;
+            color: #9c9a97;
+        }
+        .clock[hidden] { display: none; }
+        .clock.active { background: #fff; color: #262421; }
+        .clock.low { color: #ff6b6b; }
+        .clock.active.low { background: #cf4040; color: #fff; }
+        .clock.flagged { background: #cf4040; color: #fff; }
         .who .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .who .sub { color: var(--text-dim); font-size: 12px; }
         .captured { display: inline-flex; align-items: center; margin-left: auto; padding-left: 8px; }
@@ -227,6 +244,7 @@
                     <div class="name" id="top-name"></div>
                     <div class="sub" id="top-sub"></div>
                 </div>
+                <span class="clock" id="top-clock" hidden></span>
             </div>
             <div class="board-wrap">
                 <div id="board"></div>
@@ -241,6 +259,7 @@
                     <div class="sub" id="bottom-sub"></div>
                 </div>
                 <span class="captured" id="captured"></span>
+                <span class="clock" id="bottom-clock" hidden></span>
             </div>
         </div>
         <aside class="panel" id="panel">
