@@ -842,6 +842,16 @@ async def coi_mw(request, handler):
 
 async def h_static(request):
     rel = request.match_info.get("path", "") or START_PAGE
+    if not request.match_info.get("path", ""):
+        # Discord puts channel_id in the iframe URL: a channel with a chess game gets the board
+        # page straight away, so the DAW (and its big soundfont) never loads for it.
+        try:
+            chess_channel = int(request.query.get("channel_id", ""))
+        except ValueError:
+            chess_channel = None
+        sess = registry.get(chess_channel) if chess_channel else None
+        if sess is not None and sess.kind == "chess":
+            rel = "board.html"
     root = os.path.realpath(STATIC_DIR)
     full = os.path.realpath(os.path.join(root, rel))
     if os.path.isdir(full):

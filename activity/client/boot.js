@@ -24,6 +24,22 @@ function showWiki() {
     ;(document.body || document.documentElement).appendChild(cover)
 }
 
+// Lop phu "Loading..." (cung mau nen ban co) tu luc mo Activity den khi biet se vao DAW / ban co / wiki,
+// de DAW khong lo ra trong luc dang nhap + kiem tra session. Ban co: giu nguyen cho den khi chuyen trang.
+function showLoading() {
+    const cover = document.createElement("div")
+    cover.id = "arona-loading"
+    cover.style.cssText = "position:fixed;inset:0;z-index:2147483646;background:#262421;color:#9c9a97;" +
+        "display:grid;place-items:center;font:14px 'Segoe UI',system-ui,sans-serif"
+    cover.textContent = "Loading..."
+    ;(document.body || document.documentElement).appendChild(cover)
+}
+
+function hideLoading() {
+    const cover = document.getElementById("arona-loading")
+    if (cover) {cover.remove()}
+}
+
 // Trong Discord: neu app bi trang man hinh thi hien loi ngay tren man hinh (loi JS, bi CSP chan, luu tru khong dung duoc).
 if (query.has("frame_id")) {
     const panel = document.createElement("pre")
@@ -48,6 +64,7 @@ if (query.has("frame_id")) {
 }
 
 if (query.has("frame_id")) {
+    showLoading()
     state.ready = (async () => {
         const config = await fetch("/api/config").then(response => response.json())
         const sdk = new DiscordSDK(config.client_id)
@@ -62,6 +79,7 @@ if (query.has("frame_id")) {
         const {access_token} = await tokenResponse.json()
         const authenticated = await sdk.commands.authenticate({access_token})
         if (sdk.channelId === null) {
+            hideLoading()
             showWiki()
             return null
         }
@@ -75,13 +93,15 @@ if (query.has("frame_id")) {
             if (check.ok) {
                 const session = await check.json()
                 if (session.exists === false) {
+                    hideLoading()
                     showWiki()
                     return null
                 }
                 // Chess session (Interactive board button on a chess game) -> route to
                 // the chess board page instead of the DAW. The query string is kept so
                 // the Discord Embedded App SDK login still works on the new page.
-                if (session.kind === "chess") {
+                // (Already on the board page, e.g. served straight for "/" or after the redirect: stay, or it reloads forever.)
+                if (session.kind === "chess" && !document.getElementById("board")) {
                     location.replace("/board.html" + location.search)
                     return null
                 }
@@ -89,11 +109,13 @@ if (query.has("frame_id")) {
         } catch (error) {
             console.warn("[arona] session check failed", error)
         }
+        hideLoading()
         state.user = authenticated.user ?? null      // {id, username, global_name, avatar}: tai khoan Discord thay cho he thong tai khoan cua Signal
         state.auth = {baseUrl: "", token: access_token, channelId: sdk.channelId}
         window.dispatchEvent(new CustomEvent("arona-auth", {detail: state.auth}))
         return state.auth
     })().catch(error => {
+        hideLoading()
         state.error = error
         console.warn("[arona] Discord login failed", error)
         window.dispatchEvent(new CustomEvent("arona-auth-error", {detail: error}))
