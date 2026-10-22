@@ -670,6 +670,7 @@ async def _chess_state(channel_id: int, uid: int, guild_id: int | None) -> dict:
         "check": board.is_check(),
         "over": over,
         "result": chess_manager.get_game_result_text(channel_id),
+        "winner": chess_manager.get_winner_color(channel_id) if over else None,
         "moves": chess_manager.get_move_history(channel_id),
         "last_move": board.peek().uci() if board.move_stack else None,
         "legal_moves": sorted(m.uci() for m in board.legal_moves) if not over else [],
@@ -866,6 +867,128 @@ async def h_static(request):
     return resp
 
 
+# ------------------------------------------------------------------ nhac nen & tieng thang/thua (trich tu YouTube bang yt-dlp)
+# Client (board) goi /api/chess/bgm/resolve?url=<link youtube> -> server tai audio-only ve CACHE_BGM_DIR
+# roi phuc vu file tinh tu /bgm-audio/<ten>; file co the bo qua header <audio> ma khong can CORS.
+CACHE_BGM_DIR = os.path.join(ROOT, "activity", "cache", "bgm")
+BGM_PLAYLIST_URL = "https://www.youtube.com/playlist?list=PLh6Ws4Fpphfqr7VL72Q6HK5Ole9YI54hv"
+BGM_MAX_BYTES = 64 * 1024 * 1024         # gioi han 1 ban nhac, chong nguoi pham bom file nhac dai
+BGM_LIST_TTL = 6 * 3600                  # ten list playlist cache 6 gio
+BGM_MAX_ENTRIES = 80
+
+
+def _bgm_worker(url: str, mode: str):
+    """Chay yt-dlp trong thread (bay controller event loop): mode audio|video_flat|list_flat."""
+    import yt_dlp
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": mode != "list_flat",
+        "output_na_placeholder": "_",
+    }
+    if mode == "audio":
+        fmt = os.environ.get("ACTIVITY_YTDLP_FORMAT", "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio")
+        opts.update({"format": fmt, "outtmpl": os.path.join(CACHE_BGM_DIR, "%(id)s.%(ext)s")})
+    elif mode == "list_flat":
+        opts.update({"extract_flat": "in_playlist", "playlist_items": f"1:{BGM_MAX_ENTRIES}"})
+    else:
+        opts.update({"extract_flat": True})
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=mode == "audio")
+        return ydl.sanitize_info(info)
+
+
+async def h_bgm_resolve(request):
+    """GET /api/chess/bgm/resolve?url=... -> {title, src} hoac {playlist, entries}."""
+    url = (request.query.get("url") or "").strip()
+    if not re.match(r"^https?://", url):
+        return _deny(400, "paste a YouTube link")
+    try:
+        flat = await asyncio.to_thread(_bgm_worker, url, "video_flat")
+    except Exception as e:
+        console.log(f"BGM resolve failed: {e}", "WARN")
+        return _deny(502, f"YouTube extraction failed: {e}")
+    if flat.get("_type") == "playlist":
+        entries = [
+            {"id": item.get("id"), "title": item.get("title") or item.get("id")}
+            for item in (flat.get("entries") or [])
+            if item.get("id")
+        ][:BGM_MAX_ENTRIES]
+        return web.json_response({"playlist": True, "title": flat.get("title") or "", "entries": entries})
+    vid = flat.get("id")
+    if not vid:
+        return _deny(400, "no playable video id (private/age-restricted?)")
+    return web.json_response(await _bgm_ready(url, vid, flat))
+
+
+async def _bgm_ready(url: str, vid: str, flat: dict) -> dict:
+    """Download file audio cua video (neu chua co trong cache) va tra ve duong dan phuc vu."""
+    os.makedirs(CACHE_BGM_DIR, exist_ok=True)
+    files = [f for f in os.listdir(CACHE_BGM_DIR) if f.startswith(vid + ".") and not f.startswith(vid + ".part")]
+    if not files:
+        try:
+            await asyncio.to_thread(_bgm_worker, url, "audio")
+        except Exception as e:
+            console.log(f"BGM download failed: {e}", "WARN")
+            return {"error": f"YouTube download failed: {e}"}
+        files = [f for f in os.listdir(CACHE_BGM_DIR) if f.startswith(vid + ".") and not f.startswith(vid + ".part")]
+    if not files:
+        return {"error": "download produced nothing playable"}
+    old = [f for f in files if os.path.getsize(os.path.join(CACHE_BGM_DIR, f)) > BGM_MAX_BYTES]
+    for o in old:
+        try:
+            os.remove(os.path.join(CACHE_BGM_DIR, o))
+        except OSError:
+            pass
+    good = [f for f in files if f not in old]
+    if not good:
+        return {"error": "track too large (>64MB)"}
+    good.sort(key=lambda f: os.path.getsize(os.path.join(CACHE_BGM_DIR, f)), reverse=True)
+    return {"id": vid, "title": flat.get("title") or vid, "src": f"/bgm-audio/{good[0]}"}
+
+
+async def h_bgm_list(request):
+    """GET /api/chess/bgm/list[?url=...] -> danh sach bai trong playlist mac dinh (cache 6 gio)."""
+    url = (request.query.get("url") or "").strip() or BGM_PLAYLIST_URL
+    os.makedirs(CACHE_BGM_DIR, exist_ok=True)
+    cache_file = os.path.join(CACHE_BGM_DIR, ".list.json")
+    try:
+        if os.path.isfile(cache_file):
+            cached = json.load(open(cache_file, encoding="utf-8"))
+            if cached.get("url") == url and time.time() - cached.get("at", 0) < BGM_LIST_TTL:
+                return web.json_response(cached.get("payload"))
+    except Exception:
+        pass
+    try:
+        flat = await asyncio.to_thread(_bgm_worker, url, "list_flat")
+    except Exception as e:
+        console.log(f"BGM list failed: {e}", "WARN")
+        return _deny(502, f"YouTube playlist extraction failed: {e}")
+    payload = {
+        "title": flat.get("title") or "BGM playlist",
+        "entries": [
+            {"id": item.get("id"), "title": item.get("title") or item.get("id")}
+            for item in (flat.get("entries") or [])
+            if item.get("id")
+        ][:BGM_MAX_ENTRIES],
+    }
+    try:
+        json.dump({"url": url, "at": time.time(), "payload": payload}, open(cache_file, "w", encoding="utf-8"))
+    except Exception:
+        pass
+    return web.json_response(payload)
+
+
+async def h_bgm_audio(request):
+    """GET /bgm-audio/<file>: file tinh da cache (khong qua auth de the <audio> dung duoc)."""
+    name = request.match_info.get("name", "")
+    if os.path.basename(name) != name or not os.path.isfile(os.path.join(CACHE_BGM_DIR, name)):
+        raise web.HTTPNotFound()
+    resp = web.FileResponse(os.path.join(CACHE_BGM_DIR, name))
+    resp.headers["Cache-Control"] = "public, max-age=604800"
+    return resp
+
+
 def make_app() -> web.Application:
     app = web.Application(middlewares=[coi_mw, auth_mw], client_max_size=EXPORT_MAX_AUDIO_BYTES + EXPORT_MAX_USTX_BYTES + (1 << 20))
     app.add_routes([
@@ -887,7 +1010,11 @@ def make_app() -> web.Application:
         web.post("/api/chess/newgame", h_chess_newgame),
         web.post("/api/chess/undo", h_chess_undo),
         web.post("/api/chess/hint", h_chess_hint),
+        web.get("/api/chess/bgm/list", h_bgm_list),
+        web.get("/api/chess/bgm/resolve", h_bgm_resolve),
     ])
+    # file nhac da cache: khong qua auth (the <audio> dat header khong duoc)
+    app.router.add_get("/bgm-audio/{name:.*}", h_bgm_audio)
     app.router.add_get("/{path:.*}", h_static)      # dang ky sau cac route /api; doc thu muc web theo tung request (build lai khong can restart)
     return app
 

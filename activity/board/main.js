@@ -22,12 +22,201 @@ let hint = null             // {from, to} currently displayed hint
 let busy = false            // a mutating request is in flight
 let optimistic = null       // {from, to} square idx of OUR move while its POST is in flight -> piece snaps instantly
 let lastAnimatedUci = ""    // last move already slid on screen; skip re-animating the same one (server echo, self echo)
+let prevFen = null          // FEN before the latest state replace: used to detect captures by the moving side
 let stopPoll = false
 let clockSnap = null        // latest clock snapshot + receipt time; the countdown runs locally between polls
 let slotColor = { top: "black", bottom: "white" }   // which side's clock each player bar shows
 let lastZeroPoll = 0
 let pollError = ""          // last /api/chess/state failure, shown on the gate so a blank board explains itself
 const BUILD = "chess-clock-5"
+
+// ── âm lượng di chuyển (SE_Chess cua Blue Archive wiki) ──
+// 01 tram (di buon), 02 trung (an quan), 03 cao (chieu het / tran ket thuc), ui (bam nut / chon quan UI)
+const SFX_URL = { move: "/sfx/chess-01.mp3", capture: "/sfx/chess-02.mp3", mate: "/sfx/chess-03.mp3", ui: "/sfx/ui.mp3" }
+const sfxEls = {}
+function sfx(kind) {
+    try {
+        const el = sfxEls[kind] || (sfxEls[kind] = new Audio(SFX_URL[kind]))
+        el.currentTime = 0
+        el.play().catch(() => {})      // autoplay bi chan thi im lang, khong vang loi
+    } catch (ignored) { /* khong co Audio */ }
+}
+
+// ── nhạc nền (BGM) + jingle thang/thua ──
+// Server trich YouTube bang yt-dlp va phuc vu file tinh: /api/chess/bgm/resolve -> /bgm-audio/<id>.<ext>
+// Giao dien o panel: dropdown playlist de tinh, paste link YouTube bat ky, volume slider; luu localStorage.
+const WIN_URL = "https://youtu.be/XC0UwqE13U8"
+const DEFEAT_URL = "https://youtu.be/v6Zw9m89CS8"
+const JINGLE_URLS = { win: WIN_URL, defeat: DEFEAT_URL }
+const jingleSrc = {}             // win/defeat -> src file dai cache tren server, trich lan dau roi dung ngay
+let bgmAudio = null              // the <audio> shuffle BGM (loop)
+let bgmOpening = false
+let bgmPlayingKey = ""
+let bgmVolume = 35
+let jinglePlayedKey = ""         // so nuoc cua tran da phat jingle -> choi dung 1 lan moi tran
+
+function bgmPrefs() {
+    const defaults = { key: "", label: "", custom: "", vol: 35 }
+    try { return { ...defaults, ...(JSON.parse(localStorage.getItem("arona-bgm") || "{}")) } }
+    catch (ignored) { /* private mode -> khong luu */ return defaults }
+}
+function bgmSave(p) { try { localStorage.setItem("arona-bgm", JSON.stringify(p)) } catch (ignored) { /* private mode */ } }
+
+function updateBgmToggle() {
+    const btn = $("bgm-toggle")
+    if (btn) { btn.textContent = `🎵 ${bgmPrefs().label || "none"}` }
+}
+
+function applyVolume(vol) {
+    bgmVolume = vol
+    if (bgmAudio) { bgmAudio.volume = vol / 100 }
+    for (const el of Object.values(sfxEls)) { el.volume = vol / 100 }
+    updateBgmStatus(`volume ${vol}%`)
+    bgmSave({ ...bgmPrefs(), vol })
+}
+
+function updateBgmStatus(text) { $("bgm-status").textContent = text }
+
+function stopBgm() {
+    if (bgmAudio) { try { bgmAudio.pause() } catch (ignored) { /* */ } }
+    bgmAudio = null
+    bgmPlayingKey = ""
+    updateBgmStatus("stopped")
+    bgmSave({ ...bgmPrefs(), key: "", label: "" })
+    updateBgmToggle()
+}
+
+async function bgmPlay(entry) {
+    const url = entry.custom || (entry.key ? `https://www.youtube.com/watch?v=${entry.key}` : "")
+    if (!url) { stopBgm(); return }
+    updateBgmStatus("loading...")
+    try {
+        const res = await apiGet(`/api/chess/bgm/resolve?url=${encodeURIComponent(url)}`)
+        if (res.error) { updateBgmStatus(res.error); return }
+        if (res.playlist) {
+            fillPlaylist(res.entries || [])
+            updateBgmStatus("playlist loaded")
+            return
+        }
+        if (bgmAudio) { try { bgmAudio.pause() } catch (ignored) { /* */ } }
+        bgmAudio = new Audio(res.src)
+        bgmAudio.loop = true
+        bgmAudio.volume = bgmVolume / 100
+        await bgmAudio.play()
+        bgmPlayingKey = entry.key || "custom"
+        const title = res.title || entry.label || "playing"
+        $(`bgm-status`).textContent = `▶ ${title}`
+        const p = bgmPrefs()
+        p.label = title
+        if (entry.key) { p.key = entry.key } else { p.key = ""; p.custom = entry.custom || p.custom }
+        bgmSave(p)
+        updateBgmToggle()
+    } catch (e) {
+        updateBgmStatus((e && e.message) || "load failed")
+    }
+}
+
+function fillPlaylist(entries) {
+    const select = $("bgm-select")
+    const prefs = bgmPrefs()
+    select.innerHTML = ""
+    const none = document.createElement("option")
+    none.value = ""
+    none.textContent = "music: none"
+    select.appendChild(none)
+    const custom = document.createElement("option")
+    custom.value = "__custom"
+    custom.textContent = prefs.custom ? `custom: ${prefs.custom}` : "paste a link below..."
+    select.appendChild(custom)
+    for (const entry of entries) {
+        const opt = document.createElement("option")
+        opt.value = entry.id
+        opt.textContent = (entry.title || entry.id).slice(0, 64)
+        select.appendChild(opt)
+    }
+    if (prefs.key && entries.some(e => e.id === prefs.key)) { select.value = prefs.key }
+    else if (prefs.custom) { select.value = "__custom" }
+}
+
+async function loadBgmList() {
+    if (bgmOpening) return
+    bgmOpening = true
+    updateBgmStatus("loading playlist...")
+    try {
+        const payload = await apiGet("/api/chess/bgm/list")
+        if (payload.error) { updateBgmStatus(payload.error) }
+        else { fillPlaylist(payload.entries || []); updateBgmStatus("ready") }
+    } catch (e) {
+        updateBgmStatus((e && e.message) || "playlist failed")
+    }
+    bgmOpening = false
+}
+
+function ensureJingleResolved() {
+    // Cho phat hien tran bat dau -> tai ngam 2 bang nhac: lan dau server chay yt-dlp (may chut), lan sau nhat file av.
+    for (const [kind, url] of Object.entries(JINGLE_URLS)) {
+        if (jingleSrc[kind]) continue
+        apiGet(`/api/chess/bgm/resolve?url=${encodeURIComponent(url)}`)
+            .then(r => { if (r && r.src) jingleSrc[kind] = r.src; else if (r && r.error) updateBgmStatus(`jingle: ${r.error}`) })
+            .catch(() => {})
+    }
+}
+
+function playJingle(kind) {
+    const start = () => {
+        const el = new Audio(jingleSrc[kind])
+        el.volume = bgmVolume / 100
+        el.play().catch(() => {})
+    }
+    if (jingleSrc[kind]) { start(); return }
+    ensureJingleResolved()
+    let tries = 0
+    const wait = setInterval(() => {
+        if (jingleSrc[kind]) { clearInterval(wait); start(); return }
+        if (++tries > 60) { clearInterval(wait); updateBgmStatus("jingle not ready") }
+    }, 500)
+}
+
+// Gọi sau khi state moi ve (poll hoac POST); phat 1 lan khi tran vua chot ket qua cho nguoi xem.
+function maybeJingle(prev) {
+    if (!state || !state.over || !prev || prev.over) return
+    if (!state.winner || state.you.role === "spectator") return
+    const key = String(state.moves.length || "?")
+    if (jinglePlayedKey === key) return
+    jinglePlayedKey = key
+    if (state.winner === myColor()) { playJingle("win") }
+    else { playJingle("defeat") }
+}
+
+// BGM UI (phan tu dem trong board.html): listeners dem bam mot lan khi module chay (dom co san roi).
+(function initBgm() {
+    const select = $("bgm-select")
+    select.addEventListener("change", () => {
+        const v = select.value
+        if (v === "") { stopBgm(); return }
+        if (v === "__custom") { $("bgm-custom").focus(); return }
+        bgmPlay({ key: v })
+    })
+    $("bgm-custom-btn").addEventListener("click", () => {
+        const url = $("bgm-custom").value.trim()
+        if (!url) return
+        bgmPlay({ custom: url, label: "custom" })
+    })
+    $("bgm-custom").addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { $("bgm-custom-btn").click(); ev.preventDefault() }
+    })
+    $("bgm-stop").addEventListener("click", stopBgm)
+    $("bgm-vol").addEventListener("input", (ev) => applyVolume(Number(ev.target.value || 0)))
+    // Reload trang + da co BGM luu truoc -> bat sau lan tuong tac dau (autoplay chinh sach cua trinh duyet).
+    document.addEventListener("pointerdown", () => {
+        if (bgmAudio) return
+        const p = bgmPrefs()
+        if (p.key) { bgmPlay({ key: p.key, label: p.label }) }
+        else if (p.custom) { bgmPlay({ custom: p.custom, label: p.label }) }
+    }, { once: true })
+    const volSlider = $("bgm-vol")
+    if (volSlider) { volSlider.value = String(bgmPrefs().vol); bgmVolume = bgmPrefs().vol }
+})()
 
 // ── game clock (timed games only: blitz / bullet / any time limit) ──
 function syncClock(next) {
@@ -300,6 +489,13 @@ function render() {
     if (state.last_move && !optimistic && state.last_move !== lastAnimatedUci) {
         lastAnimatedUci = state.last_move
         animateLastMove(state.last_move)
+        // Quan doi thu/kenh khac vua dat xuong: chi co tran ket thuc them SFX mate, con neu an quan thi SFX capture.
+        if (state.over) {
+            sfx("mate")
+        } else {
+            const captured = Boolean(prevFen && parseFen(prevFen)[parseSquare(state.last_move.slice(2, 4))])
+            sfx(captured ? "capture" : "move")
+        }
     }
     renderPanel(map)
 }
@@ -465,6 +661,7 @@ function renderPanel(map) {
     // Action row: no undo/hint in PvP, rematch once the game is over.
     const actions = $("actions")
     actions.innerHTML = ""
+    appendBgmToggle(actions)
     if (state.over) {
         if (state.you.role !== "spectator" || state.mode === "engine") {
             actions.appendChild(actionBtn("↻ New game", "secondary", apiNewGame))
@@ -485,8 +682,23 @@ function actionBtn(label, style, handler) {
     btn.className = "btn"
     btn.textContent = label
     if (style === "danger") btn.style.background = "var(--danger)"
-    btn.addEventListener("click", () => handler(btn))
+    btn.addEventListener("click", () => { sfx("ui"); handler(btn) })      // SFX bam nut UI
     return btn
+}
+
+// Nut mo/đong kho nhạc nền; giữ selection label mới cập nhật sau mỗi lần render panel.
+function appendBgmToggle(actions) {
+    const btn = document.createElement("button")
+    btn.id = "bgm-toggle"
+    btn.className = "btn"
+    btn.style.fontSize = "12px"
+    btn.textContent = `🎵 ${bgmPrefs().label || "none"}`
+    btn.addEventListener("click", () => {
+        const box = $("bgm")
+        box.hidden = !box.hidden
+        if (!box.hidden) { loadBgmList() }
+    })
+    actions.appendChild(btn)
 }
 
 function toast(text, ms = 2600) {
@@ -542,11 +754,16 @@ async function apiMove(fromIdx, toIdx, promotion) {
     const uci = squareName(fromIdx) + squareName(toIdx)
     optimistic = { from: fromIdx, to: toIdx }
     lastAnimatedUci = uci          // echo tu server cung nuoc nay -> khong bi animate lan nua
+    const capturedNow = Boolean(parseFen(state.fen)[toIdx])      // oversquare co quan truoc khi dat = nuoc an quan (khong tinh en passant)
     sel = null
     hint = null
     render()
     animateLastMove(uci)
+    // Am "cam quan" (01) da phat luc NHAN quan o o xuat phat; tai day chi phat tiep 02 neu la nuoc an quan.
+    if (capturedNow) { sfx("capture") }
     try {
+        const beforeMove = state            // state truoc khi server xac nhan nuoc di
+        prevFen = state.fen
         state = await apiPost("/api/chess/move", {
             from: squareName(fromIdx),
             to: squareName(toIdx),
@@ -554,6 +771,8 @@ async function apiMove(fromIdx, toIdx, promotion) {
         })
         optimistic = null
         render()
+        maybeJingle(beforeMove)
+        if (lastAnimatedUci === uci && state.over) {sfx("mate")}      // tran ket thuc do nuoc cua ta ->
     } catch (e) {
         optimistic = null          // that bai -> quan quay ve o cu (render lai tu FEN that)
         toast(e.message)
@@ -675,6 +894,7 @@ function onPointerDown(ev) {
         return
     }
     const wasSelected = sel === sq
+    sfx("move")      // SFX phat khi NHAN (cam quan len), khong phai khi tha; an quan thi 01 da phat o day
     sel = sq
     render()
     startDrag(ev, sq, wasSelected)      // luon cho keo: deselect khi tap nhe, di nuoc khi keo nhu thuong
@@ -776,8 +996,12 @@ async function pollOnce() {
         pollError = ""
         syncClock(fresh)
         if (!state || stateKey(fresh) !== stateKey(state)) {
+            prevFen = state && state.fen ? state.fen : null      // cho biet nuoc moi co an quan khong
+            const before = state
             state = fresh
             render()
+            if (state.active && before && !before.active) ensureJingleResolved()
+            maybeJingle(before)
         }
         if (!polledOnceOk) {
             polledOnceOk = true

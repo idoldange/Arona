@@ -198,6 +198,29 @@
         .mv.last { background: #474644; border-radius: 6px; margin: 0 4px; padding: 6px 0; }
         .mv-empty { flex: 1; }
         .actions { display: grid; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+        .bgm {
+            display: grid;
+            gap: 7px;
+            padding: 10px 12px;
+            border-top: 1px solid var(--line);
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        .bgm[hidden] { display: none; }
+        .bgm-row { display: flex; align-items: center; gap: 6px; }
+        .bgm-row select, .bgm-row input[type="text"] {
+            flex: 1;
+            min-width: 0;
+            height: 28px;
+            border: 1px solid var(--line);
+            border-radius: 5px;
+            background: #262421;
+            color: var(--text);
+            font: inherit;
+            font-size: 12px;
+        }
+        .bgm-mini { width: 34px; height: 28px; padding: 0; font-size: 12px; flex: none; }
+        .bgm-status { min-height: 14px; color: var(--text-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .btn {
             height: 34px;
             border-radius: 6px;
@@ -239,7 +262,7 @@
             max-width: 80%;
         }
     </style>
-    <script src="/arona-early.js?v=8"></script>
+    <script src="/arona-early.js?v=9"></script>
 </head>
 <body>
 <div id="root">
@@ -276,11 +299,26 @@
             <div class="panel-status"><span id="status"></span><span class="badge" id="room"></span></div>
             <div class="moves" id="moves"></div>
             <div class="actions" id="actions"></div>
+            <div class="bgm" id="bgm" hidden>
+                <div class="bgm-row head">
+                    <span title="Nhạc nền ván cờ">🎵 BGM</span>
+                    <select id="bgm-select"></select>
+                </div>
+                <div class="bgm-row">
+                    <input id="bgm-custom" type="text" placeholder="Paste a YouTube link..." spellcheck="false">
+                    <button class="btn bgm-mini" id="bgm-custom-btn">▶</button>
+                </div>
+                <div class="bgm-row">
+                    🔊 <input id="bgm-vol" type="range" min="0" max="100" value="35">
+                    <button class="btn bgm-mini" id="bgm-stop" title="Stop">⏹</button>
+                </div>
+                <div class="bgm-status" id="bgm-status"></div>
+            </div>
         </aside>
     </div>
 </div>
 <div id="gate"></div>
-<script type="module" src="/arona-boot.js?v=8"></script>
-<script type="module" src="/arona-board.js?v=8"></script>
+<script type="module" src="/arona-boot.js?v=9"></script>
+<script type="module" src="/arona-board.js?v=9"></script>
 </body>
 </html>

@@ -44,6 +44,7 @@ cp diag/index.html web/diag.html
 # Chess interactive board (separate page, router sits in arona-boot.js via /api/session/check kind)
 "$ESBUILD" board/main.js --bundle --format=esm --minify --outfile=web/arona-board.js
 cp board/early.js web/arona-early.js      # panel debug chay TRUOC module: loi JSP/CSP/module deu hien len man hinh thay vi man xam
+mkdir -p web/sfx && cp sfx/*.mp3 web/sfx/     # SFX di quan / an quan / chieu het cua ban co
 cp board/index.html web/board.html
 [ -s ../arona.png ] && cp ../arona.png web/arona.png
 mkdir -p web/chess-pieces

@@ -374,6 +374,30 @@ class DiscordChessManager:
             return "Rapid"
         return "Classical"
 
+    def get_winner_color(self, channel_id):
+        """'white' | 'black' | None (draw / game still running). Mirrors get_game_result_text.
+
+        The Activity board uses this to play win/defeat music for the local viewer.
+        """
+        if not self.is_engine_game(channel_id) and not self.is_pvp_game(channel_id):
+            return None
+        board = self._get_game(channel_id)
+        resigning_side = self.resigned.get(channel_id)
+        if resigning_side is True:
+            # Engine game: the human resigned, Arona (the bot color) wins.
+            return "black" if self.get_user_color(channel_id) == "white" else "white"
+        if resigning_side in ("white", "black"):
+            return "black" if resigning_side == "white" else "white"
+        flagged = self._flagged_side(channel_id)
+        if flagged:
+            winner_color = chess.BLACK if flagged == "white" else chess.WHITE
+            if board.has_insufficient_material(winner_color):
+                return None                       # timeout vs insufficient material = draw
+            return "white" if winner_color == chess.WHITE else "black"
+        if board.is_checkmate():
+            return "white" if board.turn == chess.BLACK else "black"
+        return None                               # stalemate / insufficient material / fifty-move / repetition
+
     def get_time_control(self, channel_id):
         """(base_minutes, increment_seconds) for this channel's game, or None when untimed."""
         session = self.pvp_sessions.get(channel_id) or self.engine_sessions.get(channel_id) or {}
