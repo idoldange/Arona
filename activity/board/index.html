@@ -217,6 +217,16 @@
         .elo-row[hidden] { display: none; }
         .elo-row span { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .elo-row input[type="range"] { flex: 1; min-width: 0; height: 18px; accent-color: #779556; }
+        #overlay {
+            position: fixed; inset: 0; z-index: 60; background: #000;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #overlay[hidden] { display: none; }
+        #overlay-frame { width: 100vw; height: 100vh; border: none; display: block; }
+        #overlay-skip {
+            position: absolute; bottom: 46px; right: 64px; z-index: 61;
+            font-size: 12px; padding: 6px 14px; display: none;
+        }
         .bgm-row select, .bgm-row input[type="text"] {
             flex: 1;
             min-width: 0;
@@ -341,8 +351,12 @@
         </aside>
     </div>
 </div>
+<div id="overlay" hidden>
+    <iframe id="overlay-frame" src="about:blank"></iframe>
+    <button id="overlay-skip" class="btn">Tiếp tục</button>
+</div>
 <div id="gate"></div>
-<script type="module" src="/arona-boot.js?v=9"></script>
-<script type="module" src="/arona-board.js?v=9"></script>
+<script type="module" src="/arona-boot.js?v=10"></script>
+<script type="module" src="/arona-board.js?v=10"></script>
 </body>
 </html>

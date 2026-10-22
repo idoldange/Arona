@@ -201,8 +201,8 @@ function maybeJingle(prev) {
     if (jinglePlayedKey === key) return
     jinglePlayedKey = key
     stopBgm()                                                // coi BGM de nghe ro jingle ket qua
-    if (state.winner === myColor()) { playJingle("win") }
-    else { playJingle("defeat") }
+    if (state.winner === myColor()) { showOverlay("/overlay/victory.html"); playJingle("win") }
+    else { showOverlay("/overlay/defeat.html"); playJingle("defeat") }
 }
 
 // BGM UI (phan tu dem trong board.html): listeners dem bam mot lan khi module chay (dom co san roi).
@@ -279,6 +279,57 @@ function syncEloRow() {
         localStorage.setItem("arona-elo", String(eloShown))
     })
 })()
+
+// ── overlay cinematic (start / victory / defeat) ─────────────────────────
+let overlayShown = false
+
+function showOverlay(src) {
+    if (overlayShown) return
+    const ov = $("overlay"), frame = $("overlay-frame"), skip = $("overlay-skip")
+    if (!ov) return
+    frame.src = src
+    ov.hidden = false
+    overlayShown = true
+    try {
+        frame.onload = () => {
+            try {
+                const d = frame.contentDocument
+                const c = d && d.getElementById("confirm")
+                if (c) { c.onclick = () => { hideOverlay() } }
+            } catch (e) {}
+        }
+    } catch (e) {}
+    skip.style.display = ""
+    skip.onclick = () => hideOverlay()
+    // tu dong an overlay sau 12s (victory tu dong fade, defeat co the khong bam confirm)
+    setTimeout(() => { if (overlayShown) { hideOverlay() } }, 12000)
+}
+
+function hideOverlay() {
+    const ov = $("overlay"), frame = $("overlay-frame"), skip = $("overlay-skip")
+    if (!ov) return
+    ov.hidden = true
+    frame.src = "about:blank"
+    overlayShown = false
+    skip.style.display = "none"
+}
+
+// ── chuyen UI giua Classic va Blue Archive (light/dak con placeholder) ────
+const THEMES = ["classic", "ba-light", "ba-dark"]
+let theme = localStorage.getItem("arona-theme")
+if (!THEMES.includes(theme)) theme = "classic"
+
+function applyTheme() {
+    const root = $("root")
+    if (root) { root.dataset.theme = theme }
+}
+
+function toggleTheme() {
+    theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]
+    localStorage.setItem("arona-theme", theme)
+    applyTheme()
+    sfx("ui")
+}
 
 // ── game clock (timed games only: blitz / bullet / any time limit) ──
 function syncClock(next) {
@@ -725,6 +776,7 @@ function renderPanel(map) {
     actions.innerHTML = ""
     appendBgmToggle(actions)
     syncEloRow()
+    applyTheme()
     if (state.over) {
         if (state.you.role !== "spectator" || state.mode === "engine") {
             actions.appendChild(actionBtn("↻ New game", "secondary", apiNewGame))
@@ -738,6 +790,7 @@ function renderPanel(map) {
         if (state.turn === myColor() && !busy) actions.appendChild(actionBtn("💡 Hint", "secondary", apiHint))
     }
     actions.appendChild(actionBtn("🚩 Resign", "secondary", apiResign))
+    actions.appendChild(actionBtn("🎨 Giao diện", "secondary", toggleTheme))
 }
 
 function actionBtn(label, style, handler) {
@@ -1073,7 +1126,10 @@ async function pollOnce() {
             const before = state
             state = fresh
             render()
-            if (state.active && (!before || !before.active)) ensureJingleResolved()
+            if (state.active && (!before || !before.active)) {
+                ensureJingleResolved()
+                showOverlay("/overlay/start.html")       // tran bat dau: overlay phim mo dau
+            }
             maybeJingle(before)
         }
         if (!polledOnceOk) {
