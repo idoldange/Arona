@@ -320,30 +320,27 @@ function fillBar(slot, { seat, isYou }, color) {
     else if (isYou) sub = ""
     else if (state.mode !== "pvp") sub = ""
     $(`${slot}-sub`).textContent = sub
-    // Captured pieces are only shown for your own bar, never for the opponent's.
-    const cap = $("captured")
-    if (slot === "bottom") {
-        const map = parseFen(state.fen)
-        const opposite = color === "white" ? "black" : "white"
-        const mine = capturedList(map, opposite)      // pieces you captured
-        const theirs = capturedList(map, color)       // pieces you lost
-        const diff = mine.advantage - theirs.advantage
-        cap.innerHTML = ""
-        for (const lost of mine.list) {
-            const img = document.createElement("img")
-            img.src = pieceImg(lost.color, lost.symbol)
-            cap.appendChild(img)
-        }
-        if (diff > 0) {
-            const badge = document.createElement("span")
-            badge.className = "mat-diff"
-            badge.textContent = `+${diff}`
-            cap.appendChild(badge)
-        }
-        cap.style.display = "inline-flex"
-    } else {
-        cap.style.display = "none"
+    // Ca HAI bar deu hien quan da an (cua seat do): ben trai lay cac quan mau doi
+    // thieu mat tren ban. Badge +n la chenh lech dai cua seat nay so voi doi thu.
+    const cap = $(slot === "bottom" ? "captured" : "captured-top")
+    const map = parseFen(state.fen)
+    const opposite = color === "white" ? "black" : "white"
+    const mine = capturedList(map, opposite)      // pieces this seat captured
+    const theirs = capturedList(map, color)       // pieces this seat lost
+    const diff = mine.advantage - theirs.advantage
+    cap.innerHTML = ""
+    for (const capturedPiece of mine.list) {
+        const img = document.createElement("img")
+        img.src = pieceImg(capturedPiece.color, capturedPiece.symbol)
+        cap.appendChild(img)
     }
+    if (diff > 0) {
+        const badge = document.createElement("span")
+        badge.className = "mat-diff"
+        badge.textContent = `+${diff}`
+        cap.appendChild(badge)
+    }
+    cap.style.display = "inline-flex"
 }
 
 function renderSquare(cell, info) {
