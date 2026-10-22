@@ -200,27 +200,38 @@
         .actions { display: grid; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
         .bgm {
             display: grid;
-            gap: 7px;
-            padding: 10px 12px;
+            grid-template-columns: minmax(0, 1fr);      /* khong cho dong status nowrap ep track giãn qua rong */
+            gap: 6px;
+            padding: 8px 10px;
             border-top: 1px solid var(--line);
             font-size: 12px;
             color: var(--text-dim);
         }
         .bgm[hidden] { display: none; }
-        .bgm-row { display: flex; align-items: center; gap: 6px; }
+        .bgm-row { display: flex; align-items: center; gap: 5px; min-width: 0; }
         .bgm-row select, .bgm-row input[type="text"] {
             flex: 1;
             min-width: 0;
-            height: 28px;
+            height: 26px;
             border: 1px solid var(--line);
             border-radius: 5px;
-            background: #262421;
+            background-color: #262421;
             color: var(--text);
             font: inherit;
-            font-size: 12px;
+            font-size: 11px;
         }
-        .bgm-mini { width: 34px; height: 28px; padding: 0; font-size: 12px; flex: none; }
-        .bgm-status { min-height: 14px; color: var(--text-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .bgm-row select {
+            appearance: none;
+            -webkit-appearance: none;
+            padding-right: 22px;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' stroke='%239c9a97' stroke-width='1.5' fill='none'/></svg>");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            cursor: pointer;
+        }
+        .bgm-row input[type="range"] { flex: 1; min-width: 0; height: 18px; accent-color: #779556; }
+        .bgm-mini { width: 28px; height: 26px; padding: 0; font-size: 11px; flex: none; border-radius: 5px; }
+        .bgm-status { min-height: 12px; color: var(--text-dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .btn {
             height: 34px;
             border-radius: 6px;

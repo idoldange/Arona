@@ -114,36 +114,41 @@ def _board_file(channel_id, **kwargs) -> discord.File:
     return discord.File(BytesIO(png), filename="chess_board.png")
 
 
+# Cache of the live board message object per channel. The view attached to it
+# dies on game over, but the message mustsurvive so the next game can be pushed
+# onto the very same message instead of silently dropping all updates.
+_board_message_cache: dict = {}
+
+
 async def refresh_channel_board(channel_id: int, content: str = None) -> bool:
     """
     Push the current board state to the live interactive board message for this
     channel. Called by the Activity backend (arona/activity/server.py) every time
     a move/resign/undo happens on the web board, so the Discord and web boards
     never diverge.
-    - Game still running: re-attach a rebuilt ChessBoardView with a fresh PNG and
-      (optional) status text.
+    - Game still running: attach a live ChessBoardView with a fresh PNG and
+      (optional) status text. If the previous view was stopped (game ended the
+      last time around), a brand-new view is built and re-attached to the same
+      message — reusing a stopped view would leave buttons dead.
     - Game over: drop the components and show the result line instead, so the
-      finished board stops offering moves.
+      finished board stops offering moves. The message stays remembered so a
+      later refresh (new game started from the Activity) can revive it.
     Returns True when the Discord message was actually updated (best effort).
     """
     existing = _channel_views.get(channel_id)
     message = getattr(existing, "message", None)
-    if message is None:
-        return False
     file = _board_file(channel_id)
-    if not chess_manager.is_game_over(channel_id):
-        if existing is not None:
-            existing.current_targets = []
-            existing._build_from_stage()
-            try:
-                await message.edit(content=content, attachments=[file], view=existing)
-                return True
-            except Exception as e:
-                console.log(f"[ChessBoard] Web-driven board refresh failed in {channel_id}: {e}", "WARN")
-                return False
-    else:
+    over = chess_manager.is_game_over(channel_id)
+
+    if over:
         if existing is not None:
             existing.stop()
+            _channel_views.pop(channel_id, None)
+        if message is None:
+            message = _board_message_cache.get(channel_id)
+        if message is None:
+            return False
+        _board_message_cache[channel_id] = message
         result = chess_manager.get_game_result_text(channel_id)
         lines = [line for line in (content, result) if line]
         try:
@@ -151,7 +156,36 @@ async def refresh_channel_board(channel_id: int, content: str = None) -> bool:
             return True
         except Exception as e:
             console.log(f"[ChessBoard] Web-driven final board refresh failed in {channel_id}: {e}", "WARN")
+            _board_message_cache.pop(channel_id, None)
             return False
+
+    # Game running: the previous view may be None (no board message yet) or a
+    # stopped one (game ended, then a new game was started from the Activity).
+    if message is None:
+        message = _board_message_cache.get(channel_id)
+    if message is None:
+        return False
+    if existing is None or existing.is_finished():
+        mode = "pvp" if chess_manager.is_pvp_game(channel_id) else "engine"
+        existing = ChessBoardView(channel_id, mode=mode)
+        existing.current_targets = []
+        existing._build_from_stage()
+        try:
+            await message.edit(content=content, attachments=[file], view=existing)
+        except Exception as e:
+            console.log(f"[ChessBoard] Web-driven board refresh failed in {channel_id}: {e}", "WARN")
+            return False
+        existing.message = message
+        remember_board_message(channel_id, message.id)
+        return True
+    existing.current_targets = []
+    existing._build_from_stage()
+    try:
+        await message.edit(content=content, attachments=[file], view=existing)
+        return True
+    except Exception as e:
+        console.log(f"[ChessBoard] Web-driven board refresh failed in {channel_id}: {e}", "WARN")
+        return False
 
 
 class ChessPromoSelect(discord.ui.Select):

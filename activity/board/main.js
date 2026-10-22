@@ -31,8 +31,9 @@ let pollError = ""          // last /api/chess/state failure, shown on the gate 
 const BUILD = "chess-clock-5"
 
 // ── âm lượng di chuyển (SE_Chess cua Blue Archive wiki) ──
-// 01 tram (di buon), 02 trung (an quan), 03 cao (chieu het / tran ket thuc), ui (bam nut / chon quan UI)
-const SFX_URL = { move: "/sfx/chess-01.mp3", capture: "/sfx/chess-02.mp3", mate: "/sfx/chess-03.mp3", ui: "/sfx/ui.mp3" }
+// 01 tram (di buon), 02 trung (an quan), 03 cao (chieu het / tran ket thuc), ui-select (bam nut / grab quan).
+// -v2 & ui-select: da cat am im o dau de "dat quan la nghe ngay".
+const SFX_URL = { move: "/sfx/chess-01-v2.mp3", capture: "/sfx/chess-02-v2.mp3", mate: "/sfx/chess-03-v2.mp3", ui: "/sfx/ui-select.mp3" }
 const sfxEls = {}
 function sfx(kind) {
     try {
@@ -162,11 +163,20 @@ function ensureJingleResolved() {
     }
 }
 
+let jingleAudio = null          // bang sau ket qua (win/defeat), loop de tiep tuc phat khi tran da ket thuc
+
+function stopJingle() {
+    if (jingleAudio) { try { jingleAudio.pause() } catch (ignored) { /* */ } }
+    jingleAudio = null
+}
+
 function playJingle(kind) {
     const start = () => {
-        const el = new Audio(jingleSrc[kind])
-        el.volume = bgmVolume / 100
-        el.play().catch(() => {})
+        stopJingle()
+        jingleAudio = new Audio(jingleSrc[kind])
+        jingleAudio.loop = true           // ca win & defeat vong lap cho den khi bat tran moi
+        jingleAudio.volume = bgmVolume / 100
+        jingleAudio.play().catch(() => {})
     }
     if (jingleSrc[kind]) { start(); return }
     ensureJingleResolved()
@@ -179,11 +189,18 @@ function playJingle(kind) {
 
 // Gọi sau khi state moi ve (poll hoac POST); phat 1 lan khi tran vua chot ket qua cho nguoi xem.
 function maybeJingle(prev) {
-    if (!state || !state.over || !prev || prev.over) return
-    if (!state.winner || state.you.role === "spectator") return
-    const key = String(state.moves.length || "?")
+    if (!state || !state.over) {
+        if (prev && prev.over) {
+            jinglePlayedKey = ""      // tran moi chay lai sau khi vua ket thuc -> cho phep jingle lan sau
+            stopJingle()              // tat bang jingle ket qua va chuyen ve BGM binh thuong
+        }
+        return
+    }
+    if (!prev || prev.over || !state.winner || state.you.role === "spectator") return
+    const key = `${state.winner}:${state.moves.length}`
     if (jinglePlayedKey === key) return
     jinglePlayedKey = key
+    stopBgm()                                                // coi BGM de nghe ro jingle ket qua
     if (state.winner === myColor()) { playJingle("win") }
     else { playJingle("defeat") }
 }
@@ -192,12 +209,14 @@ function maybeJingle(prev) {
 (function initBgm() {
     const select = $("bgm-select")
     select.addEventListener("change", () => {
+        sfx("ui")                                     // mo/doi bai trong dropdown -> click loi
         const v = select.value
         if (v === "") { stopBgm(); return }
         if (v === "__custom") { $("bgm-custom").focus(); return }
         bgmPlay({ key: v })
     })
     $("bgm-custom-btn").addEventListener("click", () => {
+        sfx("ui")                                     // nut play link paste -> click loi
         const url = $("bgm-custom").value.trim()
         if (!url) return
         bgmPlay({ custom: url, label: "custom" })
@@ -205,8 +224,14 @@ function maybeJingle(prev) {
     $("bgm-custom").addEventListener("keydown", (ev) => {
         if (ev.key === "Enter") { $("bgm-custom-btn").click(); ev.preventDefault() }
     })
-    $("bgm-stop").addEventListener("click", stopBgm)
-    $("bgm-vol").addEventListener("input", (ev) => applyVolume(Number(ev.target.value || 0)))
+    $("bgm-stop").addEventListener("click", () => { sfx("ui"); stopBgm() })
+    // Keo anh volng: chot "ui" theo nhip 120ms de khong spam SFX lint tuc luc keo.
+    let lastVolClick = 0
+    $("bgm-vol").addEventListener("input", (ev) => {
+        const now = performance.now()
+        if (now - lastVolClick > 120) { lastVolClick = now; sfx("ui") }
+        applyVolume(Number(ev.target.value || 0))
+    })
     // Reload trang + da co BGM luu truoc -> bat sau lan tuong tac dau (autoplay chinh sach cua trinh duyet).
     document.addEventListener("pointerdown", () => {
         if (bgmAudio) return
@@ -694,6 +719,7 @@ function appendBgmToggle(actions) {
     btn.style.fontSize = "12px"
     btn.textContent = `🎵 ${bgmPrefs().label || "none"}`
     btn.addEventListener("click", () => {
+        sfx("ui")                                     // bam nut mo/đong BGM -> click loi
         const box = $("bgm")
         box.hidden = !box.hidden
         if (!box.hidden) { loadBgmList() }
@@ -759,8 +785,9 @@ async function apiMove(fromIdx, toIdx, promotion) {
     hint = null
     render()
     animateLastMove(uci)
-    // Am "cam quan" (01) da phat luc NHAN quan o o xuat phat; tai day chi phat tiep 02 neu la nuoc an quan.
-    if (capturedNow) { sfx("capture") }
+    // SFX nuoc do PHAT LUC DOI DA THA XUONG (drag-drop: pointerup; diem dau-diem cuoi: nhan o dich):
+    // thuong di -> 01 tram, an quan -> 02 trung. (Con 03 chi cho tran ket thuc.)
+    sfx(capturedNow ? "capture" : "move")
     try {
         const beforeMove = state            // state truoc khi server xac nhan nuoc di
         prevFen = state.fen
@@ -786,8 +813,10 @@ async function apiResign(btn) {
     if (!confirmOnce(btn, "Resign?")) return
     busy = true
     try {
+        const before = state
         state = await apiPost("/api/chess/resign")
         render()
+        maybeJingle(before)          // resign -> thua ngay: phat jingle defeat nhu cac ket qua khac
     } catch (e) {
         toast(e.message)
     } finally {
@@ -798,8 +827,14 @@ async function apiResign(btn) {
 async function apiNewGame() {
     busy = true
     try {
+        const before = state
         state = await apiPost("/api/chess/newgame")
         render()
+        if (before && before.over) {
+            jinglePlayedKey = ""
+            stopJingle()          // New gameanime khi van cu da ket thuc -> tat jingle ngay, khong cho poll
+        }
+        maybeJingle(before)
     } catch (e) {
         toast(e.message)
         busy = false
@@ -894,7 +929,7 @@ function onPointerDown(ev) {
         return
     }
     const wasSelected = sel === sq
-    sfx("move")      // SFX phat khi NHAN (cam quan len), khong phai khi tha; an quan thi 01 da phat o day
+    sfx("ui")      // AM KHI GRAB = cam quan len: giong y het sfx click cac nut UI
     sel = sq
     render()
     startDrag(ev, sq, wasSelected)      // luon cho keo: deselect khi tap nhe, di nuoc khi keo nhu thuong
@@ -1000,7 +1035,7 @@ async function pollOnce() {
             const before = state
             state = fresh
             render()
-            if (state.active && before && !before.active) ensureJingleResolved()
+            if (state.active && (!before || !before.active)) ensureJingleResolved()
             maybeJingle(before)
         }
         if (!polledOnceOk) {

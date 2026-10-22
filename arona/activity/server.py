@@ -883,6 +883,7 @@ def _bgm_worker(url: str, mode: str):
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,          # khong xep cot [download] x% vao console cua bot
         "noplaylist": mode != "list_flat",
         "output_na_placeholder": "_",
     }
