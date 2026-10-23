@@ -308,6 +308,51 @@
             display: none;
             max-width: 80%;
         }
+        @media (max-width: 760px), (max-aspect-ratio: 4/5) {
+            html, body { height: auto; min-height: 100%; }
+            body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+            #root { height: auto; min-height: 100%; }
+            .layout {
+                height: auto;
+                min-height: 100%;
+                flex-direction: column;
+                justify-content: flex-start;
+                gap: 8px;
+                padding: 8px;
+            }
+            .board-side { width: 100%; }
+            .board-wrap { width: min(100%, calc(100vw - 20px), 640px); }
+            .player-bar { padding: 4px 2px; }
+            .avatar { width: 30px; height: 30px; }
+            .clock { min-width: 72px; padding: 5px 8px; font-size: 17px; }
+            #bar-top { padding-right: 96px; }
+            #theme-toggle { top: 8px; right: 8px; height: 26px; padding: 0 8px; font-size: 10px; }
+            .panel {
+                width: 100%;
+                max-width: none;
+                min-width: 0;
+                height: auto;
+                overflow: visible;
+            }
+            .panel-title { padding: 8px 10px; }
+            .panel-status { padding: 7px 10px; }
+            .actions {
+                order: 2;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                padding: 10px;
+                border-bottom: 1px solid var(--line);
+            }
+            .elo-row { order: 3; }
+            .bgm { order: 4; }
+            .moves {
+                order: 5;
+                flex: none;
+                max-height: none;
+                overflow: visible;
+                touch-action: auto;
+            }
+            .fx-credit { order: 6; margin-top: 0; }
+        }
     </style>
     <script src="/arona-early.js?v=11"></script>
 </head>
