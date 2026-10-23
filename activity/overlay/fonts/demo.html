@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aronauti Timer - font specimen</title>
+<style>
+@font-face{
+  font-family:"Aronauti Timer";
+  src:url("aronauti-timer.woff2") format("woff2"),
+      url("aronauti-timer.ttf") format("truetype");
+  font-display:block;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0b0d12;color:#dfe6f2;font:15px/1.6 ui-monospace,Consolas,monospace;padding:36px}
+h1{font-size:20px;margin-bottom:4px;color:#fff}
+h2{font-size:13px;margin:28px 0 10px;color:#7f8ca3;letter-spacing:.12em;text-transform:uppercase}
+.t{font-family:"Aronauti Timer",monospace;color:#e8f4fd;text-shadow:0 1px 0 rgba(0,0,0,.6),0 0 8px rgba(120,190,255,.25)}
+.glyphs .t{font-size:96px;line-height:1.1}
+.row{display:flex;flex-wrap:wrap;gap:18px;align-items:baseline}
+.box{background:#141922;border:1px solid #232b38;border-radius:10px;padding:18px 22px}
+pre{background:#0e1219;border:1px solid #232b38;border-radius:10px;padding:16px 18px;overflow:auto;color:#9fb0c8}
+code{color:#7fd1ff}
+table{border-collapse:collapse;font-size:13px;color:#8e9cb3}
+td,th{border:1px solid #232b38;padding:4px 12px;text-align:left}
+th{color:#c9d6e8}
+.small{color:#6f7d94;font-size:13px}
+</style>
+</head>
+<body>
+<h1>Aronauti Timer</h1>
+<div class="small">Trích trực tiếp từ HUD timer trong video.mp4 &rarr; vector outline (TrueType), 0-9 + dấu &ldquo;:&rdquo;</div>
+
+<h2>Bộ ký tự</h2>
+<div class="box glyphs"><div class="t">0123456789:</div></div>
+
+<h2>Ví dụ</h2>
+<div class="box"><div class="t" style="font-size:48px">02:57</div></div>
+<div class="box" style="margin-top:12px">
+  <div class="t" style="font-size:32px">00:00</div>
+  <div class="t" style="font-size:64px">12:34</div>
+  <div class="t" style="font-size:96px">09:59</div>
+</div>
+
+<h2>Cách dùng</h2>
+<pre><code>&lt;style&gt;
+@font-face{
+  font-family:"Aronauti Timer";
+  src:url("aronauti-timer.woff2") format("woff2"),
+      url("aronauti-timer.ttf") format("truetype");
+  font-display:block;
+}
+.timer{
+  font-family:"Aronauti Timer", monospace;
+  font-size:48px;          /* = kích thước đúng trong video 1920x1080 */
+  line-height:1;
+  color:#e8f4fd;
+}
+&lt;/style&gt;
+&lt;div class="timer"&gt;02:57&lt;/div&gt;</code></pre>
+
+<h2>Metrics (units/em = 1000, font-size 48px = đúng pixel trong video)</h2>
+<table id="metrics"><tbody></tbody></table>
+
+<h2>File</h2>
+<table>
+<tr><th>aronauti-timer.ttf</th><td>TrueType, dùng cho desktop / Figma / ImageMagick</td></tr>
+<tr><th>aronauti-timer.woff2</th><td>Webfont, dùng cho web (@font-face)</td></tr>
+</table>
+<script>
+const M={"colon": {"ch": ":", "w": 8, "rw": 8, "h": 19, "adv": 683, "lsb": 0, "x0": 58, "x1": 66, "top": 19}, "digit0": {"ch": "0", "w": 17, "rw": 17, "h": 25, "adv": 1536, "lsb": 0, "x0": 21, "x1": 38, "top": 13}, "digit2": {"ch": "2", "w": 20, "rw": 20, "h": 25, "adv": 1792, "lsb": 0, "x0": 37, "x1": 57, "top": 13}, "digit3": {"ch": "3", "w": 19, "rw": 19, "h": 25, "adv": 1707, "lsb": 0, "x0": 66, "x1": 85, "top": 13}, "digit4": {"ch": "4", "w": 19, "rw": 19, "h": 25, "adv": 1707, "lsb": 0, "x0": 66, "x1": 85, "top": 13}, "digit5": {"ch": "5", "w": 18, "rw": 18, "h": 25, "adv": 1621, "lsb": 0, "x0": 67, "x1": 85, "top": 13}, "digit1": {"ch": "1", "w": 10, "rw": 10, "h": 25, "adv": 939, "lsb": 0, "x0": 91, "x1": 101, "top": 13}, "digit6": {"ch": "6", "w": 18, "rw": 18, "h": 25, "adv": 1621, "lsb": 0, "x0": 87, "x1": 105, "top": 13}, "digit7": {"ch": "7", "w": 18, "rw": 18, "h": 25, "adv": 1621, "lsb": 0, "x0": 88, "x1": 106, "top": 13}, "digit8": {"ch": "8", "w": 18, "rw": 18, "h": 25, "adv": 1621, "lsb": 0, "x0": 86, "x1": 104, "top": 13}, "digit9": {"ch": "9", "w": 17, "rw": 17, "h": 25, "adv": 1536, "lsb": 0, "x0": 87, "x1": 104, "top": 13}};
+const tb=document.querySelector('#metrics tbody');
+tb.innerHTML='<tr><th>glyph</th><th>width(px)</th><th>advance(px)</th><th>left(px)</th></tr>'+
+  Object.keys(M).sort().map(k=>{const g=M[k];return '<tr><td>'+g.ch+'</td><td>'+(g.rw||g.w)+'</td><td>'+(g.adv/4096*48).toFixed(1)+'</td><td>'+g.x0+'</td></tr>';}).join('');
+</script>
+</body>
+</html>

@@ -229,7 +229,7 @@ async function loadAnalysisText() {
         const lines = (data && data.lines) || []
         return lines.length ? lines.map((line) => line.text || line).join("\n") : "No major mistakes found."
     } catch (e) {
-        return "Analysis is not available on this server yet."
+        return "Analysis unavailable: " + (e && e.message ? e.message : "request failed")
     }
 }
 
@@ -246,7 +246,6 @@ function pushAnalysisToOverlay(text) {
             if (!box) return false
             box.textContent = text
         }
-        if (view && typeof view.openReport === "function") view.openReport()
         return true
     } catch (e) {
         return false
@@ -1033,6 +1032,10 @@ async function apiNewGame() {
             stopJingle()          // New gameanime khi van cu da ket thuc -> tat jingle ngay, khong cho poll
         }
         maybeJingle(before)
+        if (state && state.active && !state.over) {
+            if (overlayShown) hideOverlay()
+            showOverlay("/overlay/start/start.html", { autoHideMs: 3200 })      // opening title card on New Game
+        }
     } catch (e) {
         toast(e.message)
         busy = false
@@ -1236,7 +1239,7 @@ async function pollOnce() {
             render()
             if (state.active && (!before || !before.active)) {
                 ensureJingleResolved()
-                showOverlay("/overlay/start/start.html")       // tran bat dau: overlay phim mo dau
+                showOverlay("/overlay/start/start.html", { autoHideMs: 3200 })      // opening title card
             }
             maybeJingle(before)
         }

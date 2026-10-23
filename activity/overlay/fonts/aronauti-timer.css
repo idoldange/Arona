@@ -1,0 +1,12 @@
+/* Aronauti Timer - font trích từ HUD timer của video.mp4
+   Dùng:  <link rel="stylesheet" href="fonts/aronauti-timer.css">
+           .timer{font-family:"Aronauti Timer",monospace;font-size:48px;line-height:1;color:#e8f4fd}
+   font-size 48px = đúng kích thước trong video 1920x1080 */
+@font-face {
+  font-family: "Aronauti Timer";
+  src: url("aronauti-timer.woff2") format("woff2"),
+       url("aronauti-timer.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}

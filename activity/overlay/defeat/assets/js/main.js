@@ -139,7 +139,7 @@ window.openReport=openRep; window.closeReport=closeRep;
 document.getElementById('repClose').addEventListener('click',function(e){e.stopPropagation();closeRep();});
 repBack.addEventListener('click',closeRep);
 btn.addEventListener('click',function(e){ e.stopPropagation(); openRep(); });
-if(Q.get('report')==='1' || Q.has('analysis')) openRep();
+if(Q.get('report')==='1') openRep();
 // ---- Game analysis text ----
 const repBody = document.getElementById('repBody');
 function setAnalysis(text){

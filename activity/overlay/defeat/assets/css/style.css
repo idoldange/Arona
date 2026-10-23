@@ -18,10 +18,10 @@
   #barG{background:rgba(54,56,59,1.0)}
   .tl{position:absolute;will-change:transform,opacity}
   .tl img{position:absolute;display:block}
-  @font-face{font-family:NSB;src:url(assets/fonts/asset_d2a14fec.woff2) format(woff2);font-weight:700;font-style:normal;font-display:block}
-  @font-face{font-family:NSR;src:url(assets/fonts/asset_bfeacf65.woff2) format(woff2);font-weight:400;font-style:normal;font-display:block}
-  @font-face{font-family:NSI;src:url(assets/fonts/asset_b8dff5be.woff2) format(woff2);font-weight:400;font-style:italic;font-display:block}
-  @font-face{font-family:NSIC;src:url(assets/fonts/asset_39acb2d2.woff2) format(woff2);font-weight:400;font-style:italic;font-display:block}
+  @font-face{font-family:NSB;src:url(../fonts/asset_d2a14fec.woff2) format(woff2);font-weight:700;font-style:normal;font-display:block}
+  @font-face{font-family:NSR;src:url(../fonts/asset_bfeacf65.woff2) format(woff2);font-weight:400;font-style:normal;font-display:block}
+  @font-face{font-family:NSI;src:url(../fonts/asset_b8dff5be.woff2) format(woff2);font-weight:400;font-style:italic;font-display:block}
+  @font-face{font-family:NSIC;src:url(../fonts/asset_39acb2d2.woff2) format(woff2);font-weight:400;font-style:italic;font-display:block}
   #tlabelTxt{position:absolute;left:862px;top:447px;font-family:NSI;font-style:italic;
            font-size:33px;line-height:1;color:rgb(60,168,238);opacity:.78;white-space:pre}
   #timeTxt{position:absolute;left:1014px;top:446px;font-family:NSI;font-style:italic;
