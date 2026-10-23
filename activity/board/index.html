@@ -1,5 +1,5 @@
 ﻿<!DOCTYPE html>
-<html lang="en" data-fx-touch="pan-y" data-fx-skip=".moves">
+<html lang="en" data-fx-touch="pan-y">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -305,7 +305,7 @@
             display: none;
             max-width: 80%;
         }
-        @media (max-width: 760px), (max-aspect-ratio: 4/5) {
+        @media (max-width: 760px) {
             /* rule goc dat touch-action:none tren html/body -> chan keo cuon tren mobile; o day cho phep cuon doc */
             html, body { height: auto; min-height: 100%; touch-action: pan-y; }
             body { overflow-y: auto; -webkit-overflow-scrolling: touch; }

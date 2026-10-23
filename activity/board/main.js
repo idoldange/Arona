@@ -362,6 +362,7 @@ function syncEloRow() {
     slider.step = "10"
     slider.value = String(val)
     $("elo-label").textContent = `⚡ Arona ~${val} elo`
+    updateBotEloLabel()
 }
 
 ;(function initElo() {

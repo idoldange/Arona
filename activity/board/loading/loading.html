@@ -14,12 +14,16 @@
   }
   /* Ảnh lớn: nằm giữa, tự co/giãn theo mọi tỉ lệ màn hình, không méo, không bị cắt */
   #art {
-    /* Phu het khung nhin o moi ti le (doc/ngang/ultrawide): contain giu nguyen ti le anh, khong meo, khong cat */
+    /* Phu het khung nhin o moi ti le: contain giu nguyen ti le, khong meo, khong cat. Ngay lan dien thoai xin bo qua */
     width: 100vw; height: 100vh; height: 100dvh;
     object-fit: contain;
     margin: 0;
     opacity: 0; transition: opacity .35s ease;
     user-select: none; -webkit-user-drag: none;
+  }
+  /* Man nam ngang (dien thoai xoay ngang): anh loading o giua qua lon -> chieu cao toi da */
+  @media (orientation: landscape) {
+    #art { max-height: 50dvh; }
   }
   #art.ready { opacity: 1; }
   /* Hien ngay khi trang vua mo, an di khi webp dong da tai xong */
