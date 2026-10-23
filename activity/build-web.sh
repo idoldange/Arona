@@ -40,4 +40,14 @@ fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@6959f35/public/A320U_drums.sf2"
 "$ESBUILD" client/boot.js --bundle --format=esm --minify --outfile=web/arona-boot.js
 "$ESBUILD" diag/main.js --bundle --format=esm --minify --outfile=web/arona-diag.js
 cp diag/index.html web/diag.html
+
+# Interactive chess board (separate page; boot.js routes chess sessions here via /api/session/check)
+"$ESBUILD" board/main.js --bundle --format=esm --minify --outfile=web/arona-board.js
+cp board/early.js web/arona-early.js
+mkdir -p web/sfx && cp sfx/*.mp3 web/sfx/
+cp board/index.html web/board.html
+cp board/index.html web/index.html
+
+# Editable cinematic overlay pages (start / victory / defeat) with separate assets
+if [ -d overlay ]; then mkdir -p web/overlay && cp -r overlay/. web/overlay/; fi
 echo "web/ ready: $(du -sh web | cut -f1)"

@@ -218,7 +218,7 @@
         .elo-row span { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .elo-row input[type="range"] { flex: 1; min-width: 0; height: 18px; accent-color: #779556; }
         #overlay {
-            position: fixed; inset: 0; z-index: 60; background: #000;
+            position: fixed; inset: 0; z-index: 60; background: transparent;
             display: flex; align-items: center; justify-content: center;
         }
         #overlay[hidden] { display: none; }
@@ -262,6 +262,11 @@
         }
         .btn:hover { background: #3d3b38; }
         .btn[disabled] { opacity: .5; cursor: default; }
+        #theme-toggle {
+            position: fixed; top: 14px; right: 16px; z-index: 55;
+            height: 30px; padding: 0 12px; font-size: 11px;
+            border: 1px solid var(--line); background: rgba(38,36,33,.92);
+        }
         .promote {
             position: absolute;
             z-index: 90;
@@ -291,7 +296,7 @@
             max-width: 80%;
         }
     </style>
-    <script src="/arona-early.js?v=9"></script>
+    <script src="/arona-early.js?v=11"></script>
 </head>
 <body>
 <div id="root">
@@ -351,12 +356,13 @@
         </aside>
     </div>
 </div>
+<button id="theme-toggle" class="btn">Theme: Classic</button>
 <div id="overlay" hidden>
     <iframe id="overlay-frame" src="about:blank"></iframe>
-    <button id="overlay-skip" class="btn">Tiếp tục</button>
+    <button id="overlay-skip" class="btn">Continue</button>
 </div>
 <div id="gate"></div>
-<script type="module" src="/arona-boot.js?v=10"></script>
-<script type="module" src="/arona-board.js?v=10"></script>
+<script type="module" src="/arona-boot.js?v=11"></script>
+<script type="module" src="/arona-board.js?v=11"></script>
 </body>
 </html>

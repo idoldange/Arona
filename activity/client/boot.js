@@ -10,6 +10,7 @@ const WIKI_URL = "https://bluearchive.wiki/wiki/Main_Page"
 // Activity mo truc tiep (App Launcher/Entry Point) khong qua nut Open DAW -> khong co
 // session, nen hien trang Blue Archive wiki thay vi mot DAW trong.
 function showWiki(sdk) {
+    if (document.getElementById("board")) {return}      // chess page explains itself on the gate
     const cover = document.createElement("div")
     cover.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:flex;flex-direction:column;" +
         "align-items:center;justify-content:center;gap:18px;background:#0b1220;color:#e8ecf4;" +
@@ -83,9 +84,17 @@ if (query.has("frame_id")) {
                 headers: {"X-Channel-Id": sdk.channelId},
                 signal: AbortSignal.timeout(2000)
             })
-            if (check.ok && (await check.json()).exists === false) {
-                showWiki(sdk)
-                return null
+            if (check.ok) {
+                const session = await check.json()
+                if (session.exists === false) {
+                    showWiki(sdk)
+                    return null
+                }
+                // Chess session (Interactive board button) -> route to the board page.
+                if (session.kind === "chess" && !document.getElementById("board")) {
+                    location.replace("/board.html" + location.search)
+                    return null
+                }
             }
         } catch (error) {
             console.warn("[arona] session check failed", error)

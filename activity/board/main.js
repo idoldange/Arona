@@ -187,6 +187,94 @@ function playJingle(kind) {
     }, 500)
 }
 
+// Real match duration and result overlays (name/time/analysis are passed to the iframe pages).
+let matchStartedAt = 0
+let pendingAnalysis = ""
+
+function noteMatchStart() {
+    if (!state) return
+    if (!state.active) { matchStartedAt = 0; return }
+    if (!state.over && !matchStartedAt) matchStartedAt = Date.now()
+}
+
+function gameDurationText() {
+    if (!state) return ""
+    let secs = null
+    const clk = state.clock
+    if (clk && clk.started) {
+        const base = parseFloat(String(clk.label || "").split("+")[0])
+        const inc = Number(clk.increment || 0)
+        const added = (state.moves ? state.moves.length : 0) * inc
+        const left = (Number(clk.white_ms || 0) + Number(clk.black_ms || 0)) / 1000
+        if (isFinite(base)) secs = base * 120 + added - left
+    } else if (matchStartedAt) {
+        secs = (Date.now() - matchStartedAt) / 1000
+    }
+    if (secs === null || !isFinite(secs) || secs < 0) return ""
+    secs = Math.round(secs)
+    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`
+}
+
+function seatName(color) {
+    if (!state) return ""
+    const seat = color === "white" ? state.white : state.black
+    return (seat && seat.name) || ""
+}
+
+async function loadAnalysisText() {
+    try {
+        const data = await apiGet("/api/chess/analysis", 60000)
+        if (data && data.error) return `Analysis unavailable: ${data.error}`
+        if (data && data.text) return data.text
+        const lines = (data && data.lines) || []
+        return lines.length ? lines.map((line) => line.text || line).join("\n") : "No major mistakes found."
+    } catch (e) {
+        return "Analysis is not available on this server yet."
+    }
+}
+
+function pushAnalysisToOverlay(text) {
+    const frame = $("overlay-frame")
+    if (!frame) return false
+    try {
+        const doc = frame.contentDocument
+        if (!doc || !doc.body) return false
+        const view = doc.defaultView
+        if (view && typeof view.setAnalysis === "function") view.setAnalysis(text)
+        else {
+            const box = doc.getElementById("repBody")
+            if (!box) return false
+            box.textContent = text
+        }
+        if (view && typeof view.openReport === "function") view.openReport()
+        return true
+    } catch (e) {
+        return false
+    }
+}
+
+function showResultOverlay(kind) {
+    if (kind === "victory") {
+        showOverlay("/overlay/victory/victory.html", {
+            name: seatName(state.winner),
+            time: gameDurationText(),
+            autoHideMs: 12000,
+        })
+        return
+    }
+    const loser = state.winner === "white" ? "black" : "white"
+    showOverlay("/overlay/defeat/defeat.html", {
+        name: seatName(loser),
+        time: gameDurationText(),
+        autoHideMs: 0,
+    })
+    loadAnalysisText().then((text) => {
+        if (!overlayShown) return
+        pendingAnalysis = text
+        if (pushAnalysisToOverlay(text)) pendingAnalysis = ""
+    })
+}
+
 // Gọi sau khi state moi ve (poll hoac POST); phat 1 lan khi tran vua chot ket qua cho nguoi xem.
 function maybeJingle(prev) {
     if (!state || !state.over) {
@@ -201,8 +289,8 @@ function maybeJingle(prev) {
     if (jinglePlayedKey === key) return
     jinglePlayedKey = key
     stopBgm()                                                // coi BGM de nghe ro jingle ket qua
-    if (state.winner === myColor()) { showOverlay("/overlay/victory.html"); playJingle("win") }
-    else { showOverlay("/overlay/defeat.html"); playJingle("defeat") }
+    if (state.winner === myColor()) { showResultOverlay("victory"); playJingle("win") }
+    else { showResultOverlay("defeat"); playJingle("defeat") }
 }
 
 // BGM UI (phan tu dem trong board.html): listeners dem bam mot lan khi module chay (dom co san roi).
@@ -282,12 +370,18 @@ function syncEloRow() {
 
 // ── overlay cinematic (start / victory / defeat) ─────────────────────────
 let overlayShown = false
+let overlayTimer = null
 
-function showOverlay(src) {
+function showOverlay(src, opts = {}) {
     if (overlayShown) return
     const ov = $("overlay"), frame = $("overlay-frame"), skip = $("overlay-skip")
     if (!ov) return
-    frame.src = src
+    const params = new URLSearchParams()
+    for (const key of ["name", "time", "analysis"]) {
+        if (opts[key]) params.set(key, opts[key])
+    }
+    if (opts.report) params.set("report", "1")
+    frame.src = params.toString() ? `${src}?${params.toString()}` : src
     ov.hidden = false
     overlayShown = true
     try {
@@ -297,17 +391,23 @@ function showOverlay(src) {
                 const c = d && d.getElementById("confirm")
                 if (c) { c.onclick = () => { hideOverlay() } }
             } catch (e) {}
+            if (pendingAnalysis && pushAnalysisToOverlay(pendingAnalysis)) pendingAnalysis = ""
         }
     } catch (e) {}
     skip.style.display = ""
     skip.onclick = () => hideOverlay()
-    // tu dong an overlay sau 12s (victory tu dong fade, defeat co the khong bam confirm)
-    setTimeout(() => { if (overlayShown) { hideOverlay() } }, 12000)
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
+    // auto-hide only when a duration is given; result screens with analysis stay until dismissed
+    const autoHideMs = opts.autoHideMs === undefined ? 12000 : opts.autoHideMs
+    if (autoHideMs > 0) {
+        overlayTimer = setTimeout(() => { if (overlayShown) { hideOverlay() } }, autoHideMs)
+    }
 }
 
 function hideOverlay() {
     const ov = $("overlay"), frame = $("overlay-frame"), skip = $("overlay-skip")
     if (!ov) return
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
     ov.hidden = true
     frame.src = "about:blank"
     overlayShown = false
@@ -316,12 +416,15 @@ function hideOverlay() {
 
 // ── chuyen UI giua Classic va Blue Archive (light/dak con placeholder) ────
 const THEMES = ["classic", "ba-light", "ba-dark"]
+const THEME_LABELS = { "classic": "Classic", "ba-light": "BA Light", "ba-dark": "BA Dark" }
 let theme = localStorage.getItem("arona-theme")
 if (!THEMES.includes(theme)) theme = "classic"
 
 function applyTheme() {
     const root = $("root")
     if (root) { root.dataset.theme = theme }
+    const btn = $("theme-toggle")
+    if (btn) { btn.textContent = `Theme: ${THEME_LABELS[theme] || theme}` }
 }
 
 function toggleTheme() {
@@ -330,6 +433,10 @@ function toggleTheme() {
     applyTheme()
     sfx("ui")
 }
+
+const themeBtn = $("theme-toggle")
+if (themeBtn) { themeBtn.addEventListener("click", toggleTheme) }
+applyTheme()
 
 // ── game clock (timed games only: blitz / bullet / any time limit) ──
 function syncClock(next) {
@@ -790,7 +897,6 @@ function renderPanel(map) {
         if (state.turn === myColor() && !busy) actions.appendChild(actionBtn("💡 Hint", "secondary", apiHint))
     }
     actions.appendChild(actionBtn("🚩 Resign", "secondary", apiResign))
-    actions.appendChild(actionBtn("🎨 Giao diện", "secondary", toggleTheme))
 }
 
 function actionBtn(label, style, handler) {
@@ -832,8 +938,8 @@ function apiHeaders() {
     return { "Authorization": `Bearer ${auth.token}`, "X-Channel-Id": auth.channelId }
 }
 
-async function apiGet(path) {
-    const res = await fetch(path, { headers: apiHeaders(), signal: AbortSignal.timeout(15000) })
+async function apiGet(path, timeoutMs = 15000) {
+    const res = await fetch(path, { headers: apiHeaders(), signal: AbortSignal.timeout(timeoutMs) })
     if (!res.ok) throw new Error(await apiError(res))
     return res.json()
 }
@@ -920,6 +1026,7 @@ async function apiNewGame() {
     try {
         const before = state
         state = await apiPost("/api/chess/newgame", { elo: eloShown || undefined })
+        noteMatchStart()
         render()
         if (before && before.over) {
             jinglePlayedKey = ""
@@ -1125,10 +1232,11 @@ async function pollOnce() {
             prevFen = state && state.fen ? state.fen : null      // cho biet nuoc moi co an quan khong
             const before = state
             state = fresh
+            noteMatchStart()
             render()
             if (state.active && (!before || !before.active)) {
                 ensureJingleResolved()
-                showOverlay("/overlay/start.html")       // tran bat dau: overlay phim mo dau
+                showOverlay("/overlay/start/start.html")       // tran bat dau: overlay phim mo dau
             }
             maybeJingle(before)
         }
@@ -1198,3 +1306,4 @@ async function waitAuth() {
 })()
 
 window.addEventListener("error", (ev) => { stopPoll = true; })
+
