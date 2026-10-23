@@ -42,6 +42,7 @@ fetch() { [ -s "../soundfonts/$2" ] && { cp "../soundfonts/$2" "web/$2"; return;
 [ -s "../soundfonts/GeneralUser-GS.sf2" ] || { echo "missing ../soundfonts/GeneralUser-GS.sf2" >&2; exit 1; }
 cp "../soundfonts/GeneralUser-GS.sf2" web/GeneralUser-GS.sf2
 fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@6959f35/public/A320U_drums.sf2" A320U_drums.sf2
+fetch "https://cdn.jsdelivr.net/npm/ba-click-fx@1.3.15/dist/ba-click-fx.js" ba-click-fx.js
 
 "$ESBUILD" client/boot.js --bundle --format=esm --minify --outfile=web/arona-boot.js
 "$ESBUILD" diag/main.js --bundle --format=esm --minify --outfile=web/arona-diag.js
@@ -57,4 +58,7 @@ cp board/index.html web/index.html
 
 # Editable cinematic overlay pages (start / victory / defeat) with separate assets
 if [ -d overlay ]; then mkdir -p web/overlay && cp -r overlay/. web/overlay/; fi
+
+# Man hinh Now Loading (board/main.js nhung iframe /loading/loading.html) - truoc day khong duoc copy nen bi 404
+if [ -d board/loading ]; then mkdir -p web/loading && cp -r board/loading/. web/loading/; fi
 echo "web/ ready: $(du -sh web | cut -f1)"

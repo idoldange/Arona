@@ -1,5 +1,6 @@
 /* Click & hold FX: ba-click-fx by CialloKing (MIT) - https://github.com/CialloKing/ba-click-fx */
-const CDN = "https://cdn.jsdelivr.net/npm/ba-click-fx@1.3.15/dist/ba-click-fx.js";
+// Discord CSP chan jsDelivr -> build-web.sh tai ba-click-fx@1.3.15 ve 1 lan va phuc vu tu chinh server.
+const CDN = "/ba-click-fx.js?v=12";
 const root = document.documentElement;
 const touchAction = root.dataset.fxTouch || "none";
 const skipSelector = root.dataset.fxSkip || "";

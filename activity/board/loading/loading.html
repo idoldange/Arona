@@ -14,13 +14,23 @@
   }
   /* Ảnh lớn: nằm giữa, tự co/giãn theo mọi tỉ lệ màn hình, không méo, không bị cắt */
   #art {
-    width: 92vw; height: 70vh; height: 70dvh;
+    /* Phu het khung nhin o moi ti le (doc/ngang/ultrawide): contain giu nguyen ti le anh, khong meo, khong cat */
+    width: 100vw; height: 100vh; height: 100dvh;
     object-fit: contain;
-    margin-top: -3vh;
+    margin: 0;
     opacity: 0; transition: opacity .35s ease;
     user-select: none; -webkit-user-drag: none;
   }
   #art.ready { opacity: 1; }
+  /* Hien ngay khi trang vua mo, an di khi webp dong da tai xong */
+  #fallback {
+    position: absolute;
+    right: max(3.5vw, env(safe-area-inset-right));
+    bottom: max(4vh, env(safe-area-inset-bottom));
+    color: #fff; opacity: .85;
+    font: italic 700 clamp(18px, 4vh, 36px)/1 system-ui, "Segoe UI", sans-serif;
+    letter-spacing: .04em;
+  }
   /* "Now Loading..." (webp động): góc dưới phải */
   #loading {
     position: absolute;
@@ -35,6 +45,7 @@
 <body>
 <div id="stage">
   <img id="art" alt="">
+  <div id="fallback">Now Loading...</div>
   <img id="loading" src="now-loading.webp" alt="Now Loading...">
 </div>
 <script>
@@ -90,6 +101,13 @@
   art.onload = () => art.classList.add('ready');
   art.onerror = () => art.classList.add('ready');
   art.src = src;
+
+  // Chu "Now Loading..." tam chi hien khi webp dong chua tai xong (webp tu co chu Now Loading roi -> tranh hien 2 cai).
+  // Kiem tra ca complete: webp da preload/cache thi su kien load co the xay ra truoc khi gan listener.
+  const nl = document.getElementById('loading'), fb = document.getElementById('fallback');
+  const hideFb = () => { fb.style.display = 'none'; };
+  if (nl.complete && nl.naturalWidth > 0) hideFb();
+  else nl.addEventListener('load', hideFb, { once: true });
 </script>
 </body>
 </html>

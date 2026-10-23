@@ -43,6 +43,10 @@ function sfx(kind) {
     } catch (ignored) { /* khong co Audio */ }
 }
 
+// ui-select phat MOI LAN click/cham bat ky dau tren trang (khong can trung nut nao). Dung capture de van chay
+// khi phan tu ben trong goi stopPropagation (vd o co). Cac sfx("ui") le o tung nut da go bo de khong bi phat doi.
+document.addEventListener("pointerdown", () => sfx("ui"), true)
+
 // ── nhạc nền (BGM) + jingle thang/thua ──
 // Server trich YouTube bang yt-dlp va phuc vu file tinh: /api/chess/bgm/resolve -> /bgm-audio/<id>.<ext>
 // Giao dien o panel: dropdown playlist de tinh, paste link YouTube bat ky, volume slider; luu localStorage.
@@ -296,14 +300,12 @@ function maybeJingle(prev) {
 (function initBgm() {
     const select = $("bgm-select")
     select.addEventListener("change", () => {
-        sfx("ui")                                     // mo/doi bai trong dropdown -> click loi
         const v = select.value
         if (v === "") { stopBgm(); return }
         if (v === "__custom") { $("bgm-custom").focus(); return }
         bgmPlay({ key: v })
     })
     $("bgm-custom-btn").addEventListener("click", () => {
-        sfx("ui")                                     // nut play link paste -> click loi
         const url = $("bgm-custom").value.trim()
         if (!url) return
         bgmPlay({ custom: url, label: "custom" })
@@ -311,12 +313,10 @@ function maybeJingle(prev) {
     $("bgm-custom").addEventListener("keydown", (ev) => {
         if (ev.key === "Enter") { $("bgm-custom-btn").click(); ev.preventDefault() }
     })
-    $("bgm-stop").addEventListener("click", () => { sfx("ui"); stopBgm() })
+    $("bgm-stop").addEventListener("click", () => { stopBgm() })
     // Keo anh volng: chot "ui" theo nhip 120ms de khong spam SFX lint tuc luc keo.
     let lastVolClick = 0
     $("bgm-vol").addEventListener("input", (ev) => {
-        const now = performance.now()
-        if (now - lastVolClick > 120) { lastVolClick = now; sfx("ui") }
         applyVolume(Number(ev.target.value || 0))
     })
     // Reload trang + da co BGM luu truoc -> bat sau lan tuong tac dau (autoplay chinh sach cua trinh duyet).
@@ -339,6 +339,15 @@ function eloSaved() {
     return Number.isFinite(v) ? Math.max(ELO_MIN, Math.min(ELO_MAX, v)) : null
 }
 
+// Keo thanh truot -> dong "Estimated ~N Elo" o thanh ten cua Arona doi theo ngay (khong cho toi lan render sau).
+function updateBotEloLabel() {
+    if (!state || !eloShown) return
+    for (const slot of ["top", "bottom"]) {
+        const sub = $(`${slot}-sub`)
+        if (sub && sub.textContent.startsWith("Estimated")) sub.textContent = `Estimated ~${eloShown} Elo`
+    }
+}
+
 function syncEloRow() {
     const row = $("elo")
     if (!row) return
@@ -359,10 +368,10 @@ function syncEloRow() {
     const slider = $("elo-slider")
     let lastUIClick = 0
     slider.addEventListener("input", (ev) => {
-        const now = performance.now()
-        if (now - lastUIClick > 120) { lastUIClick = now; sfx("ui") }
+        // Chi phat am 1 lan luc nhan chuot xuong (listener pointerdown toan cuc), keo thanh truot thi im lang.
         eloShown = Math.max(ELO_MIN, Math.min(ELO_MAX, Number(ev.target.value) || 1500))
         $("elo-label").textContent = `⚡ Arona ~${eloShown} elo`
+        updateBotEloLabel()
         localStorage.setItem("arona-elo", String(eloShown))
     })
 })()
@@ -380,6 +389,7 @@ function showOverlay(src, opts = {}) {
         if (opts[key]) params.set(key, opts[key])
     }
     if (opts.report) params.set("report", "1")
+    params.set("v", "13")      // cache-bust trang overlay (Discord cache ca ban CSS rong cu)
     frame.src = params.toString() ? `${src}?${params.toString()}` : src
     ov.hidden = false
     overlayShown = true
@@ -430,7 +440,6 @@ function toggleTheme() {
     theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]
     localStorage.setItem("arona-theme", theme)
     applyTheme()
-    sfx("ui")
 }
 
 const themeBtn = $("theme-toggle")
@@ -629,15 +638,28 @@ function displayOrder() {
     return cells
 }
 
+// Hien loading.html trong #gate. Khong dung lai iframe dang co (tranh reload moi lan render khi poll loi).
+function showLoading() {
+    const gate = $("gate")
+    gate.style.display = "grid"
+    gate.style.padding = "0"
+    const themeBtn = $("theme-toggle")
+    if (themeBtn) themeBtn.hidden = true      // nut Theme chi hien khi ban co da len
+    if (!gate.querySelector("iframe")) {
+        gate.innerHTML = '<iframe src="/loading/loading.html?v=13" style="position:absolute;inset:0;width:100%;height:100%;display:block;border:none;background:#000;" allow="autoplay"></iframe>'
+    }
+}
+
 function render() {
     const gate = $("gate")
     if (!state || !state.active) {
         $("root").style.display = "none"
-        gate.style.display = "grid"
-        gate.innerHTML = '<iframe src="/loading/loading.html" style="width:100%;height:100%;display:block;border:none;background:#000;" allow="autoplay"></iframe>'
+        showLoading()
         return
     }
     gate.style.display = "none"
+    const themeToggle = $("theme-toggle")
+    if (themeToggle) themeToggle.hidden = false
     // DUNG dung style.display = "": xoa inline thi computed fallback ve rule
     // "#root { display: none }" trong board.html -> ban co (root) an cam mai mai.
     $("root").style.display = "block"
@@ -729,7 +751,7 @@ function fillBar(slot, { seat, isYou }, color) {
     setAvatar($(`${slot}-avatar`), $(`${slot}-avatar-lg`), seat.avatar_url, seat.name)
     $(`${slot}-name`).textContent = seat.name || "?"
     let sub = ""
-    if (seat.is_bot && seat.elo) sub = `Estimated ~${seat.elo} Elo`
+    if (seat.is_bot && seat.elo) sub = `Estimated ~${eloShown || eloSaved() || seat.elo} Elo`      // theo thanh truot Elo
     else if (isYou) sub = ""
     else if (state.mode !== "pvp") sub = ""
     $(`${slot}-sub`).textContent = sub
@@ -901,7 +923,7 @@ function actionBtn(label, style, handler) {
     btn.className = "btn"
     btn.textContent = label
     if (style === "danger") btn.style.background = "var(--danger)"
-    btn.addEventListener("click", () => { sfx("ui"); handler(btn) })      // SFX bam nut UI
+    btn.addEventListener("click", () => { handler(btn) })
     return btn
 }
 
@@ -913,7 +935,7 @@ function appendBgmToggle(actions) {
     btn.style.fontSize = "12px"
     btn.textContent = `🎵 ${bgmPrefs().label || "none"}`
     btn.addEventListener("click", () => {
-        sfx("ui")                                     // bam nut mo/đong BGM -> click loi
+        // (am click do listener pointerdown toan cuc phat) bam nut mo/đong BGM -> click loi
         const box = $("bgm")
         box.hidden = !box.hidden
         if (!box.hidden) { loadBgmList() }
@@ -1128,7 +1150,6 @@ function onPointerDown(ev) {
         return
     }
     const wasSelected = sel === sq
-    sfx("ui")      // AM KHI GRAB = cam quan len: giong y het sfx click cac nut UI
     sel = sq
     render()
     startDrag(ev, sq, wasSelected)      // luon cho keo: deselect khi tap nhe, di nuoc khi keo nhu thuong
@@ -1273,6 +1294,7 @@ async function waitAuth() {
         // Not inside Discord (or login failed): explain how to reach the board.
         const gate = $("gate")
         gate.style.display = "grid"
+        gate.style.padding = "24px"
         const why = []
         if (!location.search.includes("frame_id")) why.push("not inside Discord (no frame_id in the URL)")
         if (window.__arona && window.__arona.error) why.push(`login error: ${window.__arona.error.message || window.__arona.error}`)
@@ -1301,6 +1323,7 @@ async function waitAuth() {
         // Init bi vang (vi du DOM bi trang khac nghem): gate phai noi thay vi de man xam.
         const gate = $("gate")
         gate.style.display = "grid"
+        gate.style.padding = "24px"
         gate.textContent = `Board failed to start: ${e && e.message || e}\n[${BUILD}]`
         if (window.__aronaPanel) {window.__aronaPanel.note(`board init failed: ${e && e.message || e}`, true)}
     }
