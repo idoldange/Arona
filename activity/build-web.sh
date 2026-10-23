@@ -15,6 +15,7 @@ cp -r signal/app/dist/. web/
 rm -f web/service-worker.js* web/workbox-*
 python - <<'PYEOF'
 import re
+FX_SCRIPT = '<script type="module" src="/arona-fx.js"></script>\n'
 for page in ("web/edit.html", "web/index.html"):
     try:
         html = open(page, encoding="utf-8").read()
@@ -23,8 +24,13 @@ for page in ("web/edit.html", "web/index.html"):
     html = re.sub(r"<!--\s*Global site tag.*?-->\s*<script\s+async.*?</script>\s*<script>.*?</script>", "", html, flags=re.S)
     html = re.sub(r'<link\s+rel="preconnect"[^>]*>', "", html, flags=re.S)
     html = re.sub(r'<link\s+href="https://fonts\.googleapis\.com[^>]*>', "", html, flags=re.S)
+    html = re.sub(r'\n?<!-- Click & hold FX:.*?-->\s*<script type="module">.*?</script>\s*', "\n", html, flags=re.S)
     if "arona-boot.js" not in html and page.endswith("edit.html"):
         html = html.replace("</head>", '  <script type="module" src="/arona-boot.js"></script>\n</head>', 1)
+    if 'data-fx-touch=' not in html:
+        html = re.sub(r'<html\b[^>]*>', lambda m: m.group(0)[:-1] + ' data-fx-touch="pan-y">', html, count=1)
+    if "/arona-fx.js" not in html and "</body>" in html:
+        html = html.replace("</body>", FX_SCRIPT + "</body>", 1)
     open(page, "w", encoding="utf-8").write(html)
 PYEOF
 
@@ -39,6 +45,7 @@ fetch "https://cdn.jsdelivr.net/gh/ryohey/signal@6959f35/public/A320U_drums.sf2"
 
 "$ESBUILD" client/boot.js --bundle --format=esm --minify --outfile=web/arona-boot.js
 "$ESBUILD" diag/main.js --bundle --format=esm --minify --outfile=web/arona-diag.js
+cp client/arona-fx.js web/arona-fx.js
 cp diag/index.html web/diag.html
 
 # Interactive chess board (separate page; boot.js routes chess sessions here via /api/session/check)

@@ -1,5 +1,5 @@
 ﻿<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-fx-touch="pan-y" data-fx-skip=".moves">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -24,6 +24,7 @@
             background: var(--bg);
             color: var(--text);
             font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+            touch-action: none;
         }
         #root { height: 100%; display: none; }
         #gate {
@@ -176,9 +177,21 @@
             background: #4a4845; color: #d6d4d1;
             border-radius: 20px; padding: 2px 8px;
         }
+        .fx-credit {
+            margin-top: auto;
+            padding: 8px 12px;
+            border-top: 1px solid var(--line);
+            font-size: 11px;
+            line-height: 1.4;
+            color: var(--text-dim);
+            text-align: center;
+        }
+        .fx-credit a { color: var(--text-dim); text-decoration: underline; }
+        .fx-credit a:hover { color: var(--text); }
         .moves {
             flex: 1;
             overflow-y: auto;
+            touch-action: pan-y;
             font-variant-numeric: tabular-nums;
         }
         .mv-row { display: flex; align-items: stretch; }
@@ -353,6 +366,9 @@
                 </div>
                 <div class="bgm-status" id="bgm-status"></div>
             </div>
+            <div class="fx-credit">
+                Click FX: <a href="https://github.com/CialloKing/ba-click-fx" target="_blank" rel="noopener noreferrer">ba-click-fx</a> by CialloKing (MIT)
+            </div>
         </aside>
     </div>
 </div>
@@ -364,5 +380,6 @@
 <div id="gate"></div>
 <script type="module" src="/arona-boot.js?v=11"></script>
 <script type="module" src="/arona-board.js?v=11"></script>
+<script type="module" src="/arona-fx.js"></script>
 </body>
 </html>
