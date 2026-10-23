@@ -45,7 +45,7 @@
             height: 100%;
             display: flex;
             gap: 10px;
-            padding: 10px;
+            padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
             justify-content: center;
         }
         .board-side { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
@@ -91,7 +91,9 @@
         .mat-diff { color: var(--text-dim); font-size: 12px; margin-left: 6px; }
         .board-wrap {
             /* khong dung calc(100% - x): cha (board-side) co theo content -> % giai quyet vong cho gia tri rac lam ban co be xiu */
-            width: min(76vmin, 640px);
+            /* vua ca chieu cao (2 thanh ten ~ 124px) lan chieu rong (panel + le ~ 342px): tablet / dien thoai ngang deu nhin du ban co */
+            width: min(calc(100vh - 124px), 640px, calc(100vw - 342px));
+            width: min(calc(100dvh - 124px), 640px, calc(100vw - 342px));
             max-width: 100%;
             align-self: center;
             margin: 0 auto;
@@ -305,7 +307,8 @@
             display: none;
             max-width: 80%;
         }
-        @media (max-width: 760px) {
+        /* Chi dien thoai DOC moi dung giao dien 1 cot. Tablet va dien thoai xoay ngang dung giao dien desktop (ban co + panel canh nhau). */
+        @media (max-width: 600px) and (orientation: portrait) {
             /* rule goc dat touch-action:none tren html/body -> chan keo cuon tren mobile; o day cho phep cuon doc */
             html, body { height: auto; min-height: 100%; touch-action: pan-y; }
             body { overflow-y: auto; -webkit-overflow-scrolling: touch; }

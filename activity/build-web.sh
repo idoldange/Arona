@@ -59,6 +59,9 @@ cp board/index.html web/index.html
 # Editable cinematic overlay pages (start / victory / defeat) with separate assets
 if [ -d overlay ]; then mkdir -p web/overlay && cp -r overlay/. web/overlay/; fi
 
+# Anh quan co (main.js dung /chess-pieces/<mau>-<quan>.png) nam o games/assets, truoc day phai copy tay vao web/ nen bi mat sau moi lan rm -rf web
+if [ -d ../games/assets/chess-pieces ]; then mkdir -p web/chess-pieces && cp ../games/assets/chess-pieces/*.png web/chess-pieces/; fi
+
 # Man hinh Now Loading (board/main.js nhung iframe /loading/loading.html) - truoc day khong duoc copy nen bi 404
 if [ -d board/loading ]; then mkdir -p web/loading && cp -r board/loading/. web/loading/; fi
 echo "web/ ready: $(du -sh web | cut -f1)"

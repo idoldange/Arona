@@ -25,6 +25,10 @@
   @media (orientation: landscape) {
     #art { max-height: 50dvh; }
   }
+  /* Man ngang (dien thoai xoay ngang, desktop): anh nho lai o giua nhu thiet ke goc, khong choan het khung */
+  @media (orientation: landscape) {
+    #art { width: 92vw; height: 70vh; height: 70dvh; margin-top: -3vh; }
+  }
   #art.ready { opacity: 1; }
   /* Hien ngay khi trang vua mo, an di khi webp dong da tai xong */
   #fallback {
