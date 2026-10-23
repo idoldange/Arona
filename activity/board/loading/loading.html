@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Now Loading...</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #stage {
+    position: fixed; inset: 0;
+    height: 100vh; height: 100dvh;
+    background: #000;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* Ảnh lớn: nằm giữa, tự co/giãn theo mọi tỉ lệ màn hình, không méo, không bị cắt */
+  #art {
+    width: 92vw; height: 70vh; height: 70dvh;
+    object-fit: contain;
+    margin-top: -3vh;
+    opacity: 0; transition: opacity .35s ease;
+    user-select: none; -webkit-user-drag: none;
+  }
+  #art.ready { opacity: 1; }
+  /* "Now Loading..." (webp động): góc dưới phải */
+  #loading {
+    position: absolute;
+    right: max(3.5vw, env(safe-area-inset-right));
+    bottom: max(4vh, env(safe-area-inset-bottom));
+    width: clamp(150px, min(28vw, 46vh), 560px);
+    height: auto;
+    user-select: none; -webkit-user-drag: none;
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <img id="art" alt="">
+  <img id="loading" src="now-loading.webp" alt="Now Loading...">
+</div>
+<script>
+  const IMAGES = [
+  "LoadingImage_01_en.png",
+  "LoadingImage_02_en.png",
+  "LoadingImage_03_en.png",
+  "LoadingImage_04_en.png",
+  "LoadingImage_05_en.png",
+  "LoadingImage_06_en.png",
+  "LoadingImage_07_en.png",
+  "LoadingImage_08_en.png",
+  "LoadingImage_09_en.png",
+  "LoadingImage_10_en.png",
+  "LoadingImage_22_en.png",
+  "LoadingImage_23_en.png",
+  "LoadingImage_24_en.png",
+  "LoadingImage_25_en.png",
+  "LoadingImage_26_en.png",
+  "LoadingImage_27_en.png",
+  "LoadingImage_28_en.png",
+  "LoadingImage_29_en.png",
+  "LoadingImage_30_en.png",
+  "LoadingImage_31_en.png",
+  "LoadingImage_32_en.png",
+  "LoadingImage_33_en.png",
+  "LoadingImage_34_en.png",
+  "LoadingImage_35_en.png",
+  "LoadingImage_36_en.png",
+  "LoadingImage_37_en.png",
+  "LoadingImage_38_en.png",
+  "LoadingImage_39_en.png",
+  "LoadingImage_40_en.png",
+  "LoadingImage_41_en.png",
+  "LoadingImage_42_en.png",
+  "LoadingImage_43_en.png",
+  "LoadingImage_44_en.png",
+  "LoadingImage_45_en.png",
+  "LoadingImage_46_en.png",
+  "LoadingImage_48_En.png",
+  "LoadingImage_49_En.png",
+  "LoadingImage_50_En.png",
+  "LoadingImage_51_En.png",
+  "LoadingImage_52_En.png",
+  "LoadingImage_53_En.png",
+  "LoadingImage_54_En.png",
+  "LoadingImage_55_En.png",
+  "LoadingImage_56_En.png",
+  "Loadingimage_47_En.png"
+];
+  const art = document.getElementById('art');
+  const src = 'images/' + IMAGES[Math.floor(Math.random() * IMAGES.length)];
+  art.onload = () => art.classList.add('ready');
+  art.onerror = () => art.classList.add('ready');
+  art.src = src;
+</script>
+</body>
+</html>

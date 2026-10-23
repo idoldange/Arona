@@ -634,9 +634,7 @@ function render() {
     if (!state || !state.active) {
         $("root").style.display = "none"
         gate.style.display = "grid"
-        gate.textContent = state
-            ? "No chess game is running in this channel." + (pollError ? `\n\n${pollError}` : "")
-            : "Connecting to the board..."
+        gate.innerHTML = '<iframe src="/loading/loading.html" style="width:100%;height:100%;display:block;border:none;background:#000;" allow="autoplay"></iframe>'
         return
     }
     gate.style.display = "none"
