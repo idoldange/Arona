@@ -357,8 +357,9 @@
             filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .35));
         }
         html[data-theme^="ba"] .plate .avatar {
-            position: absolute; inset: 10% 12%;
-            width: auto; height: auto;
+            position: absolute; left: 10%; top: 12%;
+            width: 80%; height: 76%;        /* kich thuoc ro rang: <img> co kich thuoc goc thi width/height:auto + inset KHONG co gian ra -> avatar tran khoi khung */
+            object-fit: cover;
             border-radius: 0; background-color: #dfe6ee;
             -webkit-mask: url("/ba-theme/avatar-frame.png") center / 100% 100% no-repeat;
             mask: url("/ba-theme/avatar-frame.png") center / 100% 100% no-repeat;
@@ -478,13 +479,13 @@
            Bang Options la 1 "stage" 1356x705 co dinh, JS chi scale deu (--s) cho vua man hinh -> khong doi ti le o bat ky man hinh nao. */
         #options-btn {
             position: fixed; top: 0; right: 0; z-index: 55;
-            width: 93px; height: 45px; padding: 0; border: 0; background: none; cursor: pointer;
+            width: 66px; height: 32px; padding: 0; border: 0; background: none; cursor: pointer;
             filter: drop-shadow(0 2px 4px rgba(0, 30, 80, .32));
             -webkit-tap-highlight-color: transparent;
         }
         #options-btn::before { content: ""; position: absolute; inset: 0; background: #fff; clip-path: polygon(0 0, 100% 0, 100% 100%, 24% 100%); }
         #options-btn:hover::before { background: #eaf4ff; }
-        #options-btn img { position: absolute; left: 28px; top: 0; width: 51px; height: 45px; display: block; pointer-events: none; }
+        #options-btn img { position: absolute; left: 20px; top: 0; width: 36px; height: 32px; display: block; pointer-events: none; }
         #options-btn[hidden] { display: none; }
         #options { position: fixed; inset: 0; z-index: 70; touch-action: none; }
         #options[hidden] { display: none; }
@@ -551,7 +552,7 @@
             .player-bar { padding: 4px 2px; }
             .avatar { width: 30px; height: 30px; }
             .clock { min-width: 72px; padding: 5px 8px; font-size: 17px; }
-            #bar-top { padding-right: 96px; }
+            #bar-top { padding-right: 72px; }
             .panel {
                 width: 100%;
                 max-width: none;
