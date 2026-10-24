@@ -3,6 +3,7 @@
     try {
         const t = localStorage.getItem("arona-theme")
         document.documentElement.dataset.theme = t === "ba-light" || t === "ba-dark" ? t : "classic"
+        document.documentElement.dataset.board = localStorage.getItem("arona-board") === "wood" ? "wood" : "green"
     } catch (e) {}
 })();
 

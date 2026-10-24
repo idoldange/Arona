@@ -365,11 +365,19 @@
             mask: url("/ba-theme/avatar-frame.png") center / 100% 100% no-repeat;
         }
         html[data-theme^="ba"] .plate .avatar.letter { font-size: 16px; }
+        /* ten: chu trang vien xanh navy (kieu chu trong game) -> doc duoc tren ca nen sang lan toi; elo: nhan nho nen navy mo */
         html[data-theme^="ba"] .player-bar .name {
-            color: #fff; font-weight: 700; font-size: 20px;
-            text-shadow: 0 1px 4px rgba(0, 20, 60, .65);
+            color: #fff; font-weight: 700; font-size: 20px; letter-spacing: .2px;
+            text-shadow: -1.5px 0 #1b3b78, 1.5px 0 #1b3b78, 0 -1.5px #1b3b78, 0 1.5px #1b3b78,
+                         -1.1px -1.1px #1b3b78, 1.1px -1.1px #1b3b78, -1.1px 1.1px #1b3b78, 1.1px 1.1px #1b3b78,
+                         0 3px 8px rgba(0, 20, 60, .45);
         }
-        html[data-theme^="ba"] .player-bar .sub { color: rgba(255, 255, 255, .88); text-shadow: 0 1px 3px rgba(0, 20, 60, .6); }
+        html[data-theme^="ba"] .player-bar .sub {
+            display: inline-block; margin-top: 2px; padding: 1px 9px; border-radius: 99px;
+            background: rgba(14, 38, 86, .62); color: #e4f3ff; font-size: 12px; font-weight: 600; line-height: 1.5;
+            text-shadow: none;
+        }
+        html[data-theme^="ba"] .player-bar .sub:empty { display: none; }
         html[data-theme^="ba"] .mat-diff { color: #fff; text-shadow: 0 1px 3px rgba(0, 20, 60, .6); }
         html[data-theme^="ba"] .clock { background: rgba(8, 24, 64, .55); color: #e6f0ff; }
         html[data-theme^="ba"] .clock.active { background: #fff; color: #1c2b4a; }
@@ -416,9 +424,9 @@
             background-color: var(--ba-btn); color: var(--ba-btn-text); border-color: transparent;
         }
 
-        /* --- lich su nuoc di dang khung chat Blue Archive (bubble: doi thu trai, sensei phai) --- */
+        /* --- lich su nuoc di dang khung chat Blue Archive (giong anh mau: avatar tron + ten dam, bubble bo du 4 goc, duoi nho o canh ben) --- */
         .moves.chat {
-            display: flex; flex-direction: column; gap: 10px;
+            display: flex; flex-direction: column; gap: 14px;
             padding: 12px 14px 18px;
             font-family: "Noto Sans", "Segoe UI", system-ui, sans-serif;
         }
@@ -426,43 +434,41 @@
             content: "No moves yet";
             color: var(--text-dim); font-size: 13px; text-align: center; padding: 18px 0;
         }
-        .moves.chat .msg { display: flex; align-items: flex-start; gap: 10px; flex: none; }
+        .moves.chat .msg { display: flex; align-items: flex-start; gap: 12px; flex: none; }
         .moves.chat .msg.right { justify-content: flex-end; }
         .moves.chat .msg-avatar {
-            flex: none; width: 40px; height: 40px;
-            width: clamp(36px, 12cqw, 56px); height: clamp(36px, 12cqw, 56px);
+            flex: none; width: 44px; height: 44px;
+            width: clamp(40px, 13.4cqw, 64px); height: clamp(40px, 13.4cqw, 64px);
             border-radius: 50%; object-fit: cover; background: #cfd6df;
         }
         .moves.chat .msg-avatar.letter {
             display: grid; place-items: center;
-            color: #fff; font-weight: 700; font-size: 18px;
+            color: #fff; font-weight: 700; font-size: 20px;
         }
-        .moves.chat .msg-col { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; max-width: 80%; }
+        .moves.chat .msg-col { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; max-width: 78%; }
         .moves.chat .msg.right .msg-col { align-items: flex-end; }
         .moves.chat .msg-name {
-            font-size: 14px; font-size: clamp(13px, 3.7cqw, 17px);
+            font-size: 15px; font-size: clamp(14px, 3.9cqw, 19px);
             font-weight: 700; line-height: 1.25; color: var(--ba-name);
         }
         .moves.chat .bubble {
             position: relative; width: fit-content; max-width: 100%;
-            padding: .3em .8em;
-            border-radius: 8px;
+            padding: .36em .7em;
+            border-radius: .4em;
             background: var(--ba-bubble-l); color: #fff;
-            font-size: 15px; font-size: clamp(14px, 3.9cqw, 19px);
+            font-size: 16px; font-size: clamp(15px, 4cqw, 20px);
             font-weight: 400; line-height: 1.4;
             overflow-wrap: anywhere;
         }
         .moves.chat .msg.right .bubble { background: var(--ba-bubble-r); }
-        .moves.chat .bubble.first { border-top-left-radius: 0; }
-        /* duoi bubble: tam giac 8x9 de len bubble 1px (khong co khe ho do lam tron pixel) */
+        /* duoi: tam giac nho chi ra canh ben, hoi lech xuong duoi goc tren; de len bubble ~1px nen khong co khe ho */
         .moves.chat .bubble.first::before {
-            content: ""; position: absolute; top: 0; left: -7px; width: 8px; height: 9px;
-            background: var(--ba-bubble-l); clip-path: polygon(0 0, 100% 0, 100% 100%);
+            content: ""; position: absolute; left: -.34em; top: .5em; width: .42em; height: .66em;
+            background: var(--ba-bubble-l); clip-path: polygon(100% 0, 0 50%, 100% 100%);
         }
-        .moves.chat .msg.right .bubble.first { border-top-left-radius: 8px; border-top-right-radius: 0; }
         .moves.chat .msg.right .bubble.first::before {
-            left: auto; right: -7px;
-            background: var(--ba-bubble-r); clip-path: polygon(0 0, 100% 0, 0 100%);
+            left: auto; right: -.34em;
+            background: var(--ba-bubble-r); clip-path: polygon(0 0, 100% 50%, 0 100%);
         }
 
         /* --- bo cuc desktop / tablet / dien thoai ngang: ban co to hon + panel rong hon (phan bo theo UI.clip) --- */
@@ -474,6 +480,17 @@
             }
             html[data-theme^="ba"] .panel { width: var(--panel-w); max-width: 40vw; min-width: 240px; }
         }
+
+        /* ---- Khong chon chu bua bai: nhan dup / triple-click khong boi den chu gan nhat; anh khong keo / khong chon.
+           Chi lich su nuoc di + ten nguoi choi con boi den duoc bang cach KEO CHUOT truc tiep (JS chan multi-click). ---- */
+        html, body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+        .moves, .player-bar .name, input[type="text"] { -webkit-user-select: text; user-select: text; }
+        img { -webkit-user-drag: none; user-select: none; -webkit-user-select: none; }
+        /* ---- An thanh cuon (van cuon duoc) ---- */
+        html, body, .panel, .moves, .o-list { scrollbar-width: none; -ms-overflow-style: none; }
+        html::-webkit-scrollbar, body::-webkit-scrollbar, .panel::-webkit-scrollbar, .moves::-webkit-scrollbar, .o-list::-webkit-scrollbar { display: none; width: 0; height: 0; }
+        /* ---- Classic: ban co go (chon trong Options > Theme > Board) ---- */
+        html[data-theme="classic"][data-board="wood"] { --sq-light: #f0d9b5; --sq-dark: #b58863; }
 
         /* ================= Nut Options (banh rang) + bang Options (thiet ke trong temp/UI.clip) =================
            Bang Options la 1 "stage" 1356x705 co dinh, JS chi scale deu (--s) cho vua man hinh -> khong doi ti le o bat ky man hinh nao. */
@@ -527,6 +544,8 @@
         .o-li:hover, .o-li.on { background: #e6f5ff; }
         .o-li.on { font-weight: 700; }
         .o-status { position: absolute; transform: translateY(-50%); font-size: 20px; line-height: 1; color: #8da0b6; white-space: nowrap; max-width: 900px; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+        .o-bcard { position: absolute; inset: 0; pointer-events: none; }
+        .o-bcard[hidden] { display: none; }
         .opt-stage .o-dot { display: none; }
         .opt-stage .o-opt.on .o-dot { display: block; }
         .o-optlbl { position: absolute; top: 32px; transform: translateY(-50%); font-size: 30px; font-weight: 500; line-height: 1; color: #c4c7cb; white-space: nowrap; pointer-events: none; }
@@ -558,7 +577,7 @@
                 max-width: none;
                 min-width: 0;
                 height: auto;
-                overflow: visible;
+                overflow: hidden;       /* cat noi dung theo border-radius (truoc day visible -> mat bo goc o tieu de / nut / lich su) */
             }
             .panel-title { padding: 8px 10px; }
             .panel-status { padding: 7px 10px; }
@@ -588,7 +607,7 @@
     </style>
     <!-- tai truoc webp 3MB cua man loading song song voi trang (iframe loading.html dung lai tu cache) -->
     <link rel="preload" as="image" href="/loading/now-loading.webp">
-    <script src="/arona-early.js?v=14"></script>
+    <script src="/arona-early.js?v=15"></script>
 </head>
 <body>
 <div id="root">
@@ -680,6 +699,7 @@
       <button class="o-opt" data-theme="ba-dark" type="button" role="radio" aria-checked="false" style="left:333px;top:206px;width:300px;height:64px"><img class="o "  src="/ba-theme/opt/radio-dark.png" alt="" draggable="false" style="left:12px;top:12px;width:40px;height:40px"><img class="o o-dot"  src="/ba-theme/opt/dot-dark.png" alt="" draggable="false" style="left:17px;top:17px;width:31px;height:32px"><span class="o-optlbl" style="left:68px">Dark</span></button>
       <button class="o-opt" data-theme="ba-light" type="button" role="radio" aria-checked="false" style="left:662px;top:206px;width:300px;height:64px"><img class="o "  src="/ba-theme/opt/radio-light.png" alt="" draggable="false" style="left:12px;top:12px;width:41px;height:41px"><img class="o o-dot"  src="/ba-theme/opt/dot-dark.png" alt="" draggable="false" style="left:17px;top:17px;width:31px;height:32px"><span class="o-optlbl" style="left:69px">Light</span></button>
       <button class="o-opt" data-theme="classic" type="button" role="radio" aria-checked="false" style="left:991px;top:206px;width:300px;height:64px"><img class="o "  src="/ba-theme/opt/radio-light.png" alt="" draggable="false" style="left:12px;top:12px;width:41px;height:41px"><img class="o o-dot"  src="/ba-theme/opt/dot-dark.png" alt="" draggable="false" style="left:17px;top:17px;width:31px;height:32px"><span class="o-optlbl" style="left:69px">Classic</span></button>
+      <div class="o-bcard" id="board-card" hidden><img class="o " src="/ba-theme/opt/theme-bg.png" alt="" draggable="false" style="left:309px;top:297px;width:1007px;height:156px"><span class="o-t o-lbl" style="left:348px;top:330px">Board</span><button class="o-opt" data-board="green" type="button" role="radio" aria-checked="false" style="left:333px;top:378px;width:300px;height:64px"><img class="o " src="/ba-theme/opt/radio-dark.png" alt="" draggable="false" style="left:12px;top:12px;width:40px;height:40px"><img class="o o-dot" src="/ba-theme/opt/dot-dark.png" alt="" draggable="false" style="left:17px;top:17px;width:31px;height:32px"><span class="o-optlbl" style="left:68px">Chess.com</span></button><button class="o-opt" data-board="wood" type="button" role="radio" aria-checked="false" style="left:662px;top:378px;width:300px;height:64px"><img class="o " src="/ba-theme/opt/radio-light.png" alt="" draggable="false" style="left:12px;top:12px;width:41px;height:41px"><img class="o o-dot" src="/ba-theme/opt/dot-dark.png" alt="" draggable="false" style="left:17px;top:17px;width:31px;height:32px"><span class="o-optlbl" style="left:69px">Wood</span></button></div>
       </section>
     </div>
 </div>
@@ -689,7 +709,7 @@
 </div>
 <div id="gate"><iframe src="/loading/loading.html?v=13" style="position:absolute;inset:0;width:100%;height:100%;display:block;border:none;background:#000;" allow="autoplay"></iframe></div>
 <script type="module" src="/arona-boot.js?v=12"></script>
-<script type="module" src="/arona-board.js?v=18"></script>
+<script type="module" src="/arona-board.js?v=19"></script>
 <script type="module" src="/arona-fx.js?v=12"></script>
 </body>
 </html>

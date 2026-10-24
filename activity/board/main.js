@@ -48,6 +48,11 @@ function sfx(kind) {
 // khi phan tu ben trong goi stopPropagation (vd o co). Cac sfx("ui") le o tung nut da go bo de khong bi phat doi.
 document.addEventListener("pointerdown", () => sfx("ui"), true)
 
+// Nhan dup / triple-click khong boi den chu gan nhat (chi con keo chuot de chon chu o lich su nuoc di / ten); o nhap lieu giu nguyen.
+document.addEventListener("mousedown", (ev) => {
+    if (ev.detail > 1 && !(ev.target.closest && ev.target.closest("input, textarea"))) { ev.preventDefault() }
+}, true)
+
 // ── nhạc nền (BGM) + jingle thang/thua ──
 // Server trich YouTube bang yt-dlp va phuc vu file tinh: /api/chess/bgm/resolve -> /bgm-audio/<id>.<ext>
 // Giao dien o panel: dropdown playlist de tinh, paste link YouTube bat ky, volume slider; luu localStorage.
@@ -464,6 +469,8 @@ const THEMES = ["classic", "ba-light", "ba-dark"]
 const THEME_LABELS = { "classic": "Classic", "ba-light": "BA Light", "ba-dark": "BA Dark" }
 let theme = localStorage.getItem("arona-theme")
 if (!THEMES.includes(theme)) theme = "classic"
+let boardStyle = "green"          // Classic: "green" (chess.com) | "wood"; cac theme Blue Archive luon dung ban co go
+try { if (localStorage.getItem("arona-board") === "wood") boardStyle = "wood" } catch (ignored) { /* private mode */ }
 
 function isBA() { return theme !== "classic" }
 
@@ -471,6 +478,7 @@ function applyTheme() {
     const root = $("root")
     if (root) { root.dataset.theme = theme }
     document.documentElement.dataset.theme = theme      // nen trang cua <html> doi theo
+    document.documentElement.dataset.board = boardStyle
     if (typeof syncThemeUI === "function") { syncThemeUI() }
 }
 
@@ -548,9 +556,19 @@ function syncOptionsUI() {
     }
 }
 
+function setBoard(next) {
+    if (next !== "green" && next !== "wood") return
+    boardStyle = next
+    try { localStorage.setItem("arona-board", boardStyle) } catch (ignored) { /* private mode */ }
+    document.documentElement.dataset.board = boardStyle
+    syncThemeUI()
+}
+
 function syncThemeUI() {
+    const card = $("board-card")
+    if (card) { card.hidden = theme !== "classic" }       // chon kieu ban co chi co y nghia o Classic
     for (const opt of document.querySelectorAll(".o-opt")) {
-        const on = opt.dataset.theme === theme
+        const on = opt.dataset.theme ? opt.dataset.theme === theme : opt.dataset.board === boardStyle
         opt.classList.toggle("on", on)
         opt.setAttribute("aria-checked", on ? "true" : "false")
     }
@@ -572,7 +590,9 @@ function setLevel(ch, value) {
     $("opt-scrim").addEventListener("click", closeOptions)
     $("tab-volume").addEventListener("click", () => showOptPage("volume"))
     $("tab-theme").addEventListener("click", () => showOptPage("theme"))
-    for (const opt of document.querySelectorAll(".o-opt")) { opt.addEventListener("click", () => setTheme(opt.dataset.theme)) }
+    for (const opt of document.querySelectorAll(".o-opt")) {
+        opt.addEventListener("click", () => { if (opt.dataset.theme) { setTheme(opt.dataset.theme) } else { setBoard(opt.dataset.board) } })
+    }
     for (const chk of document.querySelectorAll(".o-chk")) {
         chk.addEventListener("click", () => {
             const p = audioPrefs()
