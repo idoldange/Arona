@@ -966,6 +966,14 @@ async def h_chess_analysis(request):
     return web.json_response(payload)
 
 
+async def h_arona_avatar(request):
+    """Arona's PvE avatar lives at the repo root, outside the activity web root."""
+    path = os.path.join(ROOT, "arona.png")
+    if not os.path.isfile(path):
+        raise web.HTTPNotFound()
+    return web.FileResponse(path)
+
+
 async def h_static(request):
     rel = request.match_info.get("path", "") or START_PAGE
     if not request.match_info.get("path", ""):
@@ -1140,6 +1148,7 @@ def make_app() -> web.Application:
     ])
     # file nhac da cache: khong qua auth (the <audio> dat header khong duoc)
     app.router.add_get("/bgm-audio/{name:.*}", h_bgm_audio)
+    app.router.add_get("/arona.png", h_arona_avatar)
     app.router.add_get("/{path:.*}", h_static)      # dang ky sau cac route /api; doc thu muc web theo tung request (build lai khong can restart)
     return app
 
