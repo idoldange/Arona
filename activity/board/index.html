@@ -454,16 +454,16 @@
         }
         .moves.chat .msg.right .bubble { background: var(--ba-bubble-r); }
         .moves.chat .bubble.first { border-top-left-radius: 0; }
+        /* duoi bubble: tam giac 8x9 de len bubble 1px (khong co khe ho do lam tron pixel) */
         .moves.chat .bubble.first::before {
-            content: ""; position: absolute; top: 0; left: -7px;
-            border-top: 8px solid var(--ba-bubble-l); border-left: 7px solid transparent;
+            content: ""; position: absolute; top: 0; left: -7px; width: 8px; height: 9px;
+            background: var(--ba-bubble-l); clip-path: polygon(0 0, 100% 0, 100% 100%);
         }
         .moves.chat .msg.right .bubble.first { border-top-left-radius: 8px; border-top-right-radius: 0; }
         .moves.chat .msg.right .bubble.first::before {
             left: auto; right: -7px;
-            border-left: 0; border-right: 7px solid transparent; border-top-color: var(--ba-bubble-r);
+            background: var(--ba-bubble-r); clip-path: polygon(0 0, 100% 0, 0 100%);
         }
-        .moves.chat .bubble.last { box-shadow: 0 0 0 2px rgba(255, 207, 77, .95); }
 
         /* --- bo cuc desktop / tablet / dien thoai ngang: ban co to hon + panel rong hon (phan bo theo UI.clip) --- */
         @media (min-width: 601px), (orientation: landscape) {

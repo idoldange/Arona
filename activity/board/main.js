@@ -109,7 +109,7 @@ function stopBgm() {
     if (bgmAudio) { try { bgmAudio.pause() } catch (ignored) { /* */ } }
     bgmAudio = null
     bgmPlayingKey = ""
-    updateBgmStatus("stopped")
+    updateBgmStatus("")
     bgmSave({ ...bgmPrefs(), key: "", label: "" })
     updateBgmToggle()
 }
@@ -123,7 +123,7 @@ async function bgmPlay(entry) {
         if (res.error) { updateBgmStatus(res.error); return }
         if (res.playlist) {
             fillPlaylist(res.entries || [])
-            updateBgmStatus("playlist loaded")
+            updateBgmStatus("")
             return
         }
         if (bgmAudio) { try { bgmAudio.pause() } catch (ignored) { /* */ } }
@@ -176,7 +176,7 @@ async function loadBgmList() {
     try {
         const payload = await apiGet("/api/chess/bgm/list")
         if (payload.error) { updateBgmStatus(payload.error) }
-        else { fillPlaylist(payload.entries || []); updateBgmStatus("ready") }
+        else { fillPlaylist(payload.entries || []); updateBgmStatus("") }
     } catch (e) {
         updateBgmStatus((e && e.message) || "playlist failed")
     }
@@ -1113,7 +1113,6 @@ function renderMovesChat(box) {
         const bubble = document.createElement("div")
         bubble.className = "bubble"
         if (fresh) bubble.classList.add("first")
-        if (i === state.moves.length - 1) bubble.classList.add("last")
         bubble.textContent = moveText(i, san)
         cur.col.appendChild(bubble)
     })
