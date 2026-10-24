@@ -38,6 +38,7 @@ const sfxEls = {}
 function sfx(kind) {
     try {
         const el = sfxEls[kind] || (sfxEls[kind] = new Audio(SFX_URL[kind]))
+        el.volume = level("sfx")
         el.currentTime = 0
         el.play().catch(() => {})      // autoplay bi chan thi im lang, khong vang loi
     } catch (ignored) { /* khong co Audio */ }
@@ -57,7 +58,7 @@ const jingleSrc = {}             // win/defeat -> src file dai cache tren server
 let bgmAudio = null              // the <audio> shuffle BGM (loop)
 let bgmOpening = false
 let bgmPlayingKey = ""
-let bgmVolume = 35
+let bgmEntries = []             // playlist tinh tu server (hien trong o chon BGM cua bang Options)
 let jinglePlayedKey = ""         // so nuoc cua tran da phat jingle -> choi dung 1 lan moi tran
 
 function bgmPrefs() {
@@ -72,12 +73,34 @@ function updateBgmToggle() {
     if (btn) { btn.textContent = `🎵 ${bgmPrefs().label || "none"}` }
 }
 
-function applyVolume(vol) {
-    bgmVolume = vol
-    if (bgmAudio) { bgmAudio.volume = vol / 100 }
-    for (const el of Object.values(sfxEls)) { el.volume = vol / 100 }
-    updateBgmStatus(`volume ${vol}%`)
-    bgmSave({ ...bgmPrefs(), vol })
+// Am luong: 3 kenh Master / BGM / SFX, moi kenh 0-100 + co mute. Muc hieu dung = master x kenh (0 neu mute master hoac mute kenh).
+const AUDIO_KEY = "arona-audio"
+let audioPrefsCache = null
+function audioPrefs() {
+    if (audioPrefsCache) return audioPrefsCache
+    let saved = {}
+    try { saved = JSON.parse(localStorage.getItem(AUDIO_KEY) || "{}") || {} } catch (ignored) { saved = {} }
+    const num = (v, d) => (v === undefined || v === null || !Number.isFinite(Number(v))) ? d : Math.max(0, Math.min(100, Math.round(Number(v))))
+    const mute = saved.mute || {}
+    audioPrefsCache = {
+        master: num(saved.master, 100),
+        bgm: num(saved.bgm, num(bgmPrefs().vol, 35)),      // truoc day chi co 1 thanh volume chung -> lay lam muc BGM ban dau
+        sfx: num(saved.sfx, 100),
+        mute: { master: !!mute.master, bgm: !!mute.bgm, sfx: !!mute.sfx },
+    }
+    return audioPrefsCache
+}
+function audioSave() { try { localStorage.setItem(AUDIO_KEY, JSON.stringify(audioPrefs())) } catch (ignored) { /* private mode */ } }
+function level(ch) {
+    const p = audioPrefs()
+    if (p.mute.master || p.mute[ch]) return 0
+    return (p.master / 100) * (p[ch] / 100)
+}
+function applyAudio() {
+    if (bgmAudio) { bgmAudio.volume = level("bgm") }
+    if (jingleAudio) { jingleAudio.volume = level("bgm") }
+    for (const el of Object.values(sfxEls)) { el.volume = level("sfx") }
+    if (typeof syncOptionsUI === "function") { syncOptionsUI() }
 }
 
 function updateBgmStatus(text) { $("bgm-status").textContent = text }
@@ -106,7 +129,7 @@ async function bgmPlay(entry) {
         if (bgmAudio) { try { bgmAudio.pause() } catch (ignored) { /* */ } }
         bgmAudio = new Audio(res.src)
         bgmAudio.loop = true
-        bgmAudio.volume = bgmVolume / 100
+        bgmAudio.volume = level("bgm")
         await bgmAudio.play()
         bgmPlayingKey = entry.key || "custom"
         const title = res.title || entry.label || "playing"
@@ -121,26 +144,29 @@ async function bgmPlay(entry) {
     }
 }
 
+function markPlaylist() {
+    const list = $("bgm-list")
+    if (!list) return
+    const key = bgmPrefs().key
+    for (const li of list.querySelectorAll(".o-li")) { li.classList.toggle("on", Boolean(key) && li.dataset.id === key) }
+}
+
 function fillPlaylist(entries) {
-    const select = $("bgm-select")
-    const prefs = bgmPrefs()
-    select.innerHTML = ""
-    const none = document.createElement("option")
-    none.value = ""
-    none.textContent = "music: none"
-    select.appendChild(none)
-    const custom = document.createElement("option")
-    custom.value = "__custom"
-    custom.textContent = prefs.custom ? `custom: ${prefs.custom}` : "paste a link below..."
-    select.appendChild(custom)
-    for (const entry of entries) {
-        const opt = document.createElement("option")
-        opt.value = entry.id
-        opt.textContent = (entry.title || entry.id).slice(0, 64)
-        select.appendChild(opt)
+    bgmEntries = entries
+    const list = $("bgm-list")
+    if (!list) return
+    list.innerHTML = ""
+    const add = (id, text) => {
+        const li = document.createElement("div")
+        li.className = "o-li"
+        li.dataset.id = id
+        li.setAttribute("role", "option")
+        li.textContent = text
+        list.appendChild(li)
     }
-    if (prefs.key && entries.some(e => e.id === prefs.key)) { select.value = prefs.key }
-    else if (prefs.custom) { select.value = "__custom" }
+    add("", "music: none")
+    for (const entry of entries) { add(entry.id, (entry.title || entry.id).slice(0, 64)) }
+    markPlaylist()
 }
 
 async function loadBgmList() {
@@ -179,7 +205,7 @@ function playJingle(kind) {
         stopJingle()
         jingleAudio = new Audio(jingleSrc[kind])
         jingleAudio.loop = true           // ca win & defeat vong lap cho den khi bat tran moi
-        jingleAudio.volume = bgmVolume / 100
+        jingleAudio.volume = level("bgm")
         jingleAudio.play().catch(() => {})
     }
     if (jingleSrc[kind]) { start(); return }
@@ -298,26 +324,35 @@ function maybeJingle(prev) {
 
 // BGM UI (phan tu dem trong board.html): listeners dem bam mot lan khi module chay (dom co san roi).
 (function initBgm() {
-    const select = $("bgm-select")
-    select.addEventListener("change", () => {
-        const v = select.value
-        if (v === "") { stopBgm(); return }
-        if (v === "__custom") { $("bgm-custom").focus(); return }
-        bgmPlay({ key: v })
+    const field = $("bgm-custom"), list = $("bgm-list")
+    const openList = () => { list.hidden = false; if (!bgmEntries.length) { loadBgmList() } else { markPlaylist() } }
+    field.addEventListener("focus", openList)
+    field.addEventListener("click", openList)
+    field.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+            const url = field.value.trim()
+            ev.preventDefault()
+            if (!url) return
+            closeBgmList()
+            bgmPlay({ custom: url, label: "custom" })
+        } else if (ev.key === "Escape" && !list.hidden) {
+            closeBgmList()
+            ev.stopPropagation()
+        }
     })
+    $("bgm-caret").addEventListener("click", () => { if (list.hidden) { openList() } else { closeBgmList() } })
     $("bgm-custom-btn").addEventListener("click", () => {
-        const url = $("bgm-custom").value.trim()
+        const url = field.value.trim()
         if (!url) return
+        closeBgmList()
         bgmPlay({ custom: url, label: "custom" })
     })
-    $("bgm-custom").addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter") { $("bgm-custom-btn").click(); ev.preventDefault() }
-    })
-    $("bgm-stop").addEventListener("click", () => { stopBgm() })
-    // Keo anh volng: chot "ui" theo nhip 120ms de khong spam SFX lint tuc luc keo.
-    let lastVolClick = 0
-    $("bgm-vol").addEventListener("input", (ev) => {
-        applyVolume(Number(ev.target.value || 0))
+    $("bgm-stop").addEventListener("click", () => { stopBgm(); closeBgmList() })
+    list.addEventListener("click", (ev) => {
+        const li = ev.target.closest(".o-li")
+        if (!li) return
+        closeBgmList()
+        if (li.dataset.id === "") { stopBgm() } else { bgmPlay({ key: li.dataset.id }) }
     })
     // Reload trang + da co BGM luu truoc -> bat sau lan tuong tac dau (autoplay chinh sach cua trinh duyet).
     document.addEventListener("pointerdown", () => {
@@ -326,9 +361,9 @@ function maybeJingle(prev) {
         if (p.key) { bgmPlay({ key: p.key, label: p.label }) }
         else if (p.custom) { bgmPlay({ custom: p.custom, label: p.label }) }
     }, { once: true })
-    const volSlider = $("bgm-vol")
-    if (volSlider) { volSlider.value = String(bgmPrefs().vol); bgmVolume = bgmPrefs().vol }
 })()
+
+function closeBgmList() { const list = $("bgm-list"); if (list) { list.hidden = true } }
 
 // ── thanh trượt Elo cho PvE: keo thay do manh cua Arona, gui len server luc nhan New game ──
 const ELO_MIN = 400, ELO_MAX = 3190
@@ -435,21 +470,157 @@ function isBA() { return theme !== "classic" }
 function applyTheme() {
     const root = $("root")
     if (root) { root.dataset.theme = theme }
-    document.documentElement.dataset.theme = theme      // nen trang + nut Theme nam ngoai #root cung doi theo
-    const btn = $("theme-toggle")
-    if (btn) { btn.textContent = `Theme: ${THEME_LABELS[theme] || theme}` }
+    document.documentElement.dataset.theme = theme      // nen trang cua <html> doi theo
+    if (typeof syncThemeUI === "function") { syncThemeUI() }
 }
 
-function toggleTheme() {
-    theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]
-    localStorage.setItem("arona-theme", theme)
+function setTheme(next) {
+    if (!THEMES.includes(next) || next === theme) return
+    theme = next
+    try { localStorage.setItem("arona-theme", theme) } catch (ignored) { /* private mode */ }
     applyTheme()
     if (state && state.active) { renderPanel(parseFen(state.fen)) }      // tieu de / nut / lich su nuoc di doi kieu theo theme
 }
 
-const themeBtn = $("theme-toggle")
-if (themeBtn) { themeBtn.addEventListener("click", toggleTheme) }
+// ── Bang Options (nut banh rang goc phai tren) — thiet ke trong temp/UI.clip ──
+// Stage co dinh 1356x705 (don vi thiet ke); chi scale deu bang --s cho vua man hinh -> ti le khong doi du man hinh ti le nao.
+// Hai trang Volume / Theme (tab ben trai) chi mo MOT trang moi luc; phan con lai cua man hinh bi lam toi (scrim).
+const OPT_W = 1356, OPT_H = 705
+const THUMB_MIN = 545, THUMB_MAX = 957      // toa do trai cua thumb o 0% / 100% (don vi stage)
+const TRACK_L = 559, TRACK_R = 971          // tam thumb o 0% / 100%
+let optPage = "volume"
+
+function optionsOpen() { const box = $("options"); return Boolean(box) && !box.hidden }
+
+function fitOptions() {
+    const box = $("options")
+    if (!box || box.hidden) return
+    const s = Math.min(innerWidth * 0.96 / OPT_W, innerHeight * 0.94 / OPT_H, 1.5)
+    box.style.setProperty("--s", String(s))
+}
+
+function showOptPage(page) {
+    optPage = page === "theme" ? "theme" : "volume"
+    for (const p of ["volume", "theme"]) {
+        $(`page-${p}`).hidden = p !== optPage
+        const tab = $(`tab-${p}`)
+        tab.classList.toggle("sel", p === optPage)
+        tab.setAttribute("aria-selected", p === optPage ? "true" : "false")
+    }
+    closeBgmList()
+    if (optPage === "volume" && !bgmEntries.length) { loadBgmList() }
+}
+
+function openOptions() {
+    const box = $("options")
+    if (!box) return
+    box.hidden = false
+    fitOptions()
+    showOptPage(optPage)
+    syncOptionsUI()
+    syncThemeUI()
+}
+
+function closeOptions() {
+    const box = $("options")
+    if (!box || box.hidden) return
+    closeBgmList()
+    box.hidden = true
+}
+
+function syncOptionsUI() {
+    const p = audioPrefs()
+    for (const ch of ["master", "bgm", "sfx"]) {
+        const gray = p.mute[ch] || (ch !== "master" && p.mute.master)      // mute master = tat tieng ca 2 kenh con
+        const thumb = document.querySelector(`.o-thumb[data-ch="${ch}"]`)
+        if (thumb) {
+            thumb.style.left = `${Math.round(THUMB_MIN + (THUMB_MAX - THUMB_MIN) * p[ch] / 100)}px`
+            thumb.classList.toggle("muted", gray)
+        }
+        const icons = document.querySelector(`.o-icons[data-ch="${ch}"]`)
+        if (icons) { icons.classList.toggle("muted", gray) }
+        const tick = document.querySelector(`.o-tick[data-ch="${ch}"]`)
+        if (tick) { tick.classList.toggle("on", p.mute[ch]) }
+        const track = document.querySelector(`.o-track[data-ch="${ch}"]`)
+        if (track) { track.setAttribute("aria-valuenow", String(p[ch])) }
+        const chk = document.querySelector(`.o-chk[data-ch="${ch}"]`)
+        if (chk) { chk.setAttribute("aria-checked", p.mute[ch] ? "true" : "false") }
+    }
+}
+
+function syncThemeUI() {
+    for (const opt of document.querySelectorAll(".o-opt")) {
+        const on = opt.dataset.theme === theme
+        opt.classList.toggle("on", on)
+        opt.setAttribute("aria-checked", on ? "true" : "false")
+    }
+}
+
+function setLevel(ch, value) {
+    const v = Math.max(0, Math.min(100, Math.round(value)))
+    const p = audioPrefs()
+    if (p[ch] === v) return
+    p[ch] = v
+    audioSave()
+    applyAudio()
+}
+
+(function initOptions() {
+    const btn = $("options-btn")
+    if (btn) { btn.addEventListener("click", openOptions) }
+    $("opt-close").addEventListener("click", closeOptions)
+    $("opt-scrim").addEventListener("click", closeOptions)
+    $("tab-volume").addEventListener("click", () => showOptPage("volume"))
+    $("tab-theme").addEventListener("click", () => showOptPage("theme"))
+    for (const opt of document.querySelectorAll(".o-opt")) { opt.addEventListener("click", () => setTheme(opt.dataset.theme)) }
+    for (const chk of document.querySelectorAll(".o-chk")) {
+        chk.addEventListener("click", () => {
+            const p = audioPrefs()
+            p.mute[chk.dataset.ch] = !p.mute[chk.dataset.ch]
+            audioSave()
+            applyAudio()
+        })
+    }
+    // Keo thanh truot: doi toa do chuot -> toa do stage (stage dang bi scale), thumb nhay toi ngon tro.
+    const stage = $("opt-stage")
+    const valueAt = (clientX) => {
+        const r = stage.getBoundingClientRect()
+        const x = (clientX - r.left) / (r.width / OPT_W)
+        return (x - TRACK_L) / (TRACK_R - TRACK_L) * 100
+    }
+    for (const track of document.querySelectorAll(".o-track")) {
+        const ch = track.dataset.ch
+        let dragging = false
+        track.addEventListener("pointerdown", (ev) => {
+            dragging = true
+            try { track.setPointerCapture(ev.pointerId) } catch (ignored) { /* */ }
+            setLevel(ch, valueAt(ev.clientX))
+            ev.preventDefault()
+        })
+        track.addEventListener("pointermove", (ev) => { if (dragging) { setLevel(ch, valueAt(ev.clientX)) } })
+        const end = () => { dragging = false }
+        track.addEventListener("pointerup", end)
+        track.addEventListener("pointercancel", end)
+        track.addEventListener("keydown", (ev) => {
+            const cur = audioPrefs()[ch]
+            const step = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5 }[ev.key]
+            if (step !== undefined) { setLevel(ch, cur + step); ev.preventDefault() }
+            else if (ev.key === "Home") { setLevel(ch, 0); ev.preventDefault() }
+            else if (ev.key === "End") { setLevel(ch, 100); ev.preventDefault() }
+        })
+    }
+    // Bam ra ngoai o chon BGM thi dong danh sach.
+    stage.addEventListener("pointerdown", (ev) => { if (!ev.target.closest(".o-field, .o-list")) { closeBgmList() } })
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && optionsOpen()) { closeOptions() } })
+    window.addEventListener("resize", fitOptions)
+    window.addEventListener("orientationchange", fitOptions)
+    if (window.visualViewport) { window.visualViewport.addEventListener("resize", fitOptions) }
+    // Su kien resize cua mot so trinh duyet (WebKit) den tre / khong den khi xoay man hinh -> theo doi them kich thuoc cua chinh lop #options (fixed, luon bang man hinh).
+    if (typeof ResizeObserver === "function") { new ResizeObserver(() => fitOptions()).observe($("options")) }
+})()
+
 applyTheme()
+applyAudio()
 
 // ── game clock (timed games only: blitz / bullet / any time limit) ──
 function syncClock(next) {
@@ -648,8 +819,9 @@ function showLoading() {
     const gate = $("gate")
     gate.style.display = "grid"
     gate.style.padding = "0"
-    const themeBtn = $("theme-toggle")
-    if (themeBtn) themeBtn.hidden = true      // nut Theme chi hien khi ban co da len
+    const optBtn = $("options-btn")
+    if (optBtn) optBtn.hidden = true      // nut Options chi hien khi ban co da len
+    closeOptions()
     if (!gate.querySelector("iframe")) {
         gate.innerHTML = '<iframe src="/loading/loading.html?v=13" style="position:absolute;inset:0;width:100%;height:100%;display:block;border:none;background:#000;" allow="autoplay"></iframe>'
     }
@@ -663,8 +835,8 @@ function render() {
         return
     }
     gate.style.display = "none"
-    const themeToggle = $("theme-toggle")
-    if (themeToggle) themeToggle.hidden = false
+    const optionsBtn = $("options-btn")
+    if (optionsBtn) optionsBtn.hidden = false
     // DUNG dung style.display = "": xoa inline thi computed fallback ve rule
     // "#root { display: none }" trong board.html -> ban co (root) an cam mai mai.
     $("root").style.display = "block"
@@ -973,7 +1145,6 @@ function renderPanel(map) {
     // Action row: no undo/hint in PvP, rematch once the game is over.
     const actions = $("actions")
     actions.innerHTML = ""
-    appendBgmToggle(actions)
     syncEloRow()
     applyTheme()
     if (state.over) {
@@ -999,22 +1170,6 @@ function actionBtn(label, style, handler) {
     if (style === "danger") btn.style.background = "var(--danger)"
     btn.addEventListener("click", () => { handler(btn) })
     return btn
-}
-
-// Nut mo/đong kho nhạc nền; giữ selection label mới cập nhật sau mỗi lần render panel.
-function appendBgmToggle(actions) {
-    const btn = document.createElement("button")
-    btn.id = "bgm-toggle"
-    btn.className = "btn"
-    btn.style.fontSize = "12px"
-    btn.textContent = `🎵 ${bgmPrefs().label || "none"}`
-    btn.addEventListener("click", () => {
-        // (am click do listener pointerdown toan cuc phat) bam nut mo/đong BGM -> click loi
-        const box = $("bgm")
-        box.hidden = !box.hidden
-        if (!box.hidden) { loadBgmList() }
-    })
-    actions.appendChild(btn)
 }
 
 function toast(text, ms = 2600) {

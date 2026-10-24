@@ -53,7 +53,7 @@ cp diag/index.html web/diag.html
 "$ESBUILD" board/main.js --bundle --format=esm --minify --outfile=web/arona-board.js
 cp board/early.js web/arona-early.js
 # Asset theme Blue Archive (nen light/dark, khung avatar, font Noto Sans) - xuat tu temp/UI.clip
-[ -d board/ba-theme ] && mkdir -p web/ba-theme && cp board/ba-theme/* web/ba-theme/
+[ -d board/ba-theme ] && mkdir -p web/ba-theme && cp -r board/ba-theme/. web/ba-theme/
 mkdir -p web/sfx && cp sfx/*.mp3 web/sfx/
 cp board/index.html web/board.html
 cp board/index.html web/index.html

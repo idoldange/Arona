@@ -274,12 +274,6 @@
         }
         .btn:hover { background: #3d3b38; }
         .btn[disabled] { opacity: .5; cursor: default; }
-        #theme-toggle[hidden] { display: none; }
-        #theme-toggle {
-            position: fixed; top: 14px; right: 16px; z-index: 55;
-            height: 30px; padding: 0 12px; font-size: 11px;
-            border: 1px solid var(--line); background: rgba(38,36,33,.92);
-        }
         .promote {
             position: absolute;
             z-index: 90;
@@ -413,20 +407,12 @@
         }
         html[data-theme^="ba"] .actions .btn:hover { background: var(--ba-btn-hover); }
         html[data-theme^="ba"] .actions .btn:last-child { grid-column: 1 / -1; }
-        html[data-theme^="ba"] .actions #bgm-toggle { grid-column: 1 / -1; height: 30px; }
         html[data-theme^="ba"] .elo-row, html[data-theme^="ba"] .bgm {
             background: var(--ba-actions); border-top: 1px solid rgba(0, 0, 0, .06); color: var(--text-dim);
         }
         html[data-theme^="ba"] .elo-row { padding-bottom: 8px; }
         html[data-theme^="ba"] .bgm-row select, html[data-theme^="ba"] .bgm-row input[type="text"] {
             background-color: var(--ba-btn); color: var(--ba-btn-text); border-color: transparent;
-        }
-        html[data-theme^="ba"] #theme-toggle {
-            top: 0; right: 0;
-            height: 34px; padding: 0 14px;
-            border: 0; border-radius: 0 0 0 14px;
-            background: #fff; color: #466398; font-weight: 700;
-            box-shadow: 0 2px 10px rgba(0, 20, 60, .25);
         }
 
         /* --- lich su nuoc di dang khung chat Blue Archive (bubble: doi thu trai, sensei phai) --- */
@@ -488,6 +474,63 @@
             html[data-theme^="ba"] .panel { width: var(--panel-w); max-width: 40vw; min-width: 240px; }
         }
 
+        /* ================= Nut Options (banh rang) + bang Options (thiet ke trong temp/UI.clip) =================
+           Bang Options la 1 "stage" 1356x705 co dinh, JS chi scale deu (--s) cho vua man hinh -> khong doi ti le o bat ky man hinh nao. */
+        #options-btn {
+            position: fixed; top: 0; right: 0; z-index: 55;
+            width: 93px; height: 45px; padding: 0; border: 0; background: none; cursor: pointer;
+            filter: drop-shadow(0 2px 4px rgba(0, 30, 80, .32));
+            -webkit-tap-highlight-color: transparent;
+        }
+        #options-btn::before { content: ""; position: absolute; inset: 0; background: #fff; clip-path: polygon(0 0, 100% 0, 100% 100%, 24% 100%); }
+        #options-btn:hover::before { background: #eaf4ff; }
+        #options-btn img { position: absolute; left: 28px; top: 0; width: 51px; height: 45px; display: block; pointer-events: none; }
+        #options-btn[hidden] { display: none; }
+        #options { position: fixed; inset: 0; z-index: 70; touch-action: none; }
+        #options[hidden] { display: none; }
+        .opt-scrim { position: absolute; inset: 0; background: rgba(4, 12, 34, .62); }
+        .opt-stage {
+            position: absolute; left: 50%; top: 50%;
+            width: 1356px; height: 705px;
+            transform: translate(-50%, -50%) scale(var(--s, 1));
+            transform-origin: 50% 50%;
+            font-family: "Noto Sans", "Segoe UI", system-ui, sans-serif;
+            -webkit-user-select: none; user-select: none;
+            touch-action: none;
+        }
+        .opt-stage .o { position: absolute; display: block; max-width: none; pointer-events: none; -webkit-user-drag: none; }
+        .opt-stage button { position: absolute; margin: 0; padding: 0; border: 0; background: none; cursor: pointer; font-family: inherit; -webkit-tap-highlight-color: transparent; }
+        .opt-stage .o-page { position: absolute; inset: 0; pointer-events: none; }
+        .opt-stage .o-page[hidden] { display: none; }
+        .opt-stage .o-page button, .opt-stage .o-track, .opt-stage .o-field, .opt-stage .o-list { pointer-events: auto; }
+        .o-tab .o-tab-t { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); text-align: center; font-size: 35px; font-weight: 700; line-height: 1; color: #005e86; pointer-events: none; }
+        .o-tab .on { display: none; left: 0; top: 0; }
+        .o-tab.sel .on { display: block; }
+        .o-tab.sel .o-tab-t { color: #37393c; }
+        .opt-stage .o-close:hover .o { filter: brightness(1.4); }
+        .opt-stage .o-t { position: absolute; transform: translateY(-50%); white-space: nowrap; line-height: 1; pointer-events: none; }
+        .opt-stage .o-lbl { font-size: 29px; font-weight: 700; color: #506e8d; }
+        .o-thumb.muted, .o-icons.muted { filter: grayscale(1); }
+        .opt-stage .o-tick { display: none; }
+        .opt-stage .o-tick.on { display: block; }
+        .o-track { position: absolute; cursor: pointer; touch-action: none; border-radius: 14px; }
+        .o-track:focus-visible, .o-chk:focus-visible, .o-opt:focus-visible, .o-tab:focus-visible, .o-close:focus-visible { outline: 3px solid #6dd2ff; outline-offset: -3px; border-radius: 12px; }
+        .o-field { position: absolute; display: flex; align-items: center; box-sizing: border-box; border: 2px solid #d3d9df; border-radius: 8px; background: #fff; }
+        .o-field input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; font: 400 29px/1 "Noto Sans", "Segoe UI", system-ui, sans-serif; color: #2c4662; padding: 0 12px 0 18px; }
+        .o-field input::placeholder { color: #c4c7cb; opacity: 1; }
+        .opt-stage .o-fb { position: relative; flex: none; width: 42px; height: 42px; margin-right: 4px; border-radius: 8px; display: grid; place-items: center; color: #6d8fb0; }
+        .opt-stage .o-fb:hover { background: #eaf4ff; color: #2c4662; }
+        .o-list { position: absolute; z-index: 5; box-sizing: border-box; max-height: 136px; overflow-y: auto; background: #fff; border: 2px solid #d3d9df; border-radius: 8px; box-shadow: 0 8px 20px rgba(20, 40, 80, .22); touch-action: pan-y; }
+        .o-list[hidden] { display: none; }
+        .o-li { padding: 8px 18px; font-size: 25px; line-height: 1.2; color: #2c4662; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+        .o-li:hover, .o-li.on { background: #e6f5ff; }
+        .o-li.on { font-weight: 700; }
+        .o-status { position: absolute; transform: translateY(-50%); font-size: 20px; line-height: 1; color: #8da0b6; white-space: nowrap; max-width: 900px; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+        .opt-stage .o-dot { display: none; }
+        .opt-stage .o-opt.on .o-dot { display: block; }
+        .o-optlbl { position: absolute; top: 32px; transform: translateY(-50%); font-size: 30px; font-weight: 500; line-height: 1; color: #c4c7cb; white-space: nowrap; pointer-events: none; }
+        .o-opt.on .o-optlbl { color: #2c4662; }
+
         /* Chi dien thoai DOC moi dung giao dien 1 cot. Tablet va dien thoai xoay ngang dung giao dien desktop (ban co + panel canh nhau). */
         @media (max-width: 600px) and (orientation: portrait) {
             /* rule goc dat touch-action:none tren html/body -> chan keo cuon tren mobile; o day cho phep cuon doc */
@@ -509,7 +552,6 @@
             .avatar { width: 30px; height: 30px; }
             .clock { min-width: 72px; padding: 5px 8px; font-size: 17px; }
             #bar-top { padding-right: 96px; }
-            #theme-toggle { top: 8px; right: 8px; height: 26px; padding: 0 8px; font-size: 10px; }
             .panel {
                 width: 100%;
                 max-width: none;
@@ -541,12 +583,11 @@
             html[data-theme^="ba"] .panel { border-radius: 14px; }
             html[data-theme^="ba"] .panel-title { font-size: 19px; padding: 11px 10px; }
             html[data-theme^="ba"] .actions .btn { height: 40px; }
-            html[data-theme^="ba"] #theme-toggle { top: 0; right: 0; height: 30px; padding: 0 10px; font-size: 10px; border-radius: 0 0 0 12px; }
         }
     </style>
     <!-- tai truoc webp 3MB cua man loading song song voi trang (iframe loading.html dung lai tu cache) -->
     <link rel="preload" as="image" href="/loading/now-loading.webp">
-    <script src="/arona-early.js?v=13"></script>
+    <script src="/arona-early.js?v=14"></script>
 </head>
 <body>
 <div id="root">
@@ -592,32 +633,62 @@
                 <input id="elo-slider" type="range" min="400" max="3190" step="10" value="1500"
                        title="Độ mạnh của Arona — áp dụng từ lần New game tới">
             </div>
-            <div class="bgm" id="bgm" hidden>
-                <div class="bgm-row head">
-                    <span title="Nhạc nền ván cờ">🎵 BGM</span>
-                    <select id="bgm-select"></select>
-                </div>
-                <div class="bgm-row">
-                    <input id="bgm-custom" type="text" placeholder="Paste a YouTube link..." spellcheck="false">
-                    <button class="btn bgm-mini" id="bgm-custom-btn">▶</button>
-                </div>
-                <div class="bgm-row">
-                    🔊 <input id="bgm-vol" type="range" min="0" max="100" value="35">
-                    <button class="btn bgm-mini" id="bgm-stop" title="Stop">⏹</button>
-                </div>
-                <div class="bgm-status" id="bgm-status"></div>
-            </div>
         </aside>
     </div>
 </div>
-<button id="theme-toggle" class="btn" hidden>Theme: Classic</button>
+<button id="options-btn" type="button" aria-label="Options" hidden><img src="/ba-theme/gear-tab.png" alt="" draggable="false"></button>
+<div id="options" hidden>
+    <div class="opt-scrim" id="opt-scrim"></div>
+    <div class="opt-stage" id="opt-stage" role="dialog" aria-modal="true" aria-label="Options">
+      <img class="o "  src="/ba-theme/opt/bg.png" alt="" draggable="false" style="left:0px;top:0px;width:1356px;height:705px">
+      <button class="o-tab sel" id="tab-volume" type="button" role="tab" aria-selected="true" style="left:31px;top:114px;width:260px;height:88px"><img class="o on"  src="/ba-theme/opt/tab-volume-on.png" alt="" draggable="false" style="left:0px;top:0px;width:260px;height:88px"><span class="o-tab-t">Volume</span></button>
+      <button class="o-tab" id="tab-theme" type="button" role="tab" aria-selected="false" style="left:31px;top:203px;width:260px;height:88px"><img class="o on"  src="/ba-theme/opt/tab-volume-on.png" alt="" draggable="false" style="left:0px;top:0px;width:260px;height:88px"><span class="o-tab-t">Theme</span></button>
+      <img class="o "  src="/ba-theme/opt/sep1.png" alt="" draggable="false" style="left:34px;top:201px;width:249px;height:3px"><img class="o "  src="/ba-theme/opt/sep1.png" alt="" draggable="false" style="left:34px;top:290px;width:249px;height:3px">
+      <button class="o-close" id="opt-close" type="button" aria-label="Close" style="left:1275px;top:11px;width:57px;height:57px"><img class="o "  src="/ba-theme/opt/close.png" alt="" draggable="false" style="left:8px;top:8px;width:41px;height:41px"></button>
+      <section class="o-page" id="page-volume">
+      <img class="o "  src="/ba-theme/opt/vol-bg.png" alt="" draggable="false" style="left:306px;top:124px;width:1012px;height:433px">
+      <img class="o "  src="/ba-theme/opt/mute-label.png" alt="" draggable="false" style="left:1082px;top:147px;width:106px;height:275px">
+      <img class="o "  src="/ba-theme/opt/vol-labels.png" alt="" draggable="false" style="left:344px;top:147px;width:111px;height:275px">
+      <img class="o "  src="/ba-theme/opt/slider-base.png" alt="" draggable="false" style="left:541px;top:161px;width:449px;height:256px">
+      <img class="o o-icons" data-ch="master" src="/ba-theme/opt/icons-master.png" alt="" draggable="false" style="left:458px;top:147px;width:611px;height:67px">
+      <img class="o o-icons" data-ch="bgm" src="/ba-theme/opt/icons-bgm.png" alt="" draggable="false" style="left:454px;top:260px;width:606px;height:68px">
+      <img class="o o-icons" data-ch="sfx" src="/ba-theme/opt/icons-sfx.png" alt="" draggable="false" style="left:455px;top:376px;width:613px;height:46px">
+      <img class="o o-thumb" data-ch="master" src="/ba-theme/opt/thumb-sfx.png" alt="" draggable="false" style="left:957px;top:166px;width:28px;height:27px">
+      <img class="o o-thumb" data-ch="bgm" src="/ba-theme/opt/thumb-sfx.png" alt="" draggable="false" style="left:957px;top:281px;width:28px;height:27px">
+      <img class="o o-thumb" data-ch="sfx" src="/ba-theme/opt/thumb-sfx.png" alt="" draggable="false" style="left:957px;top:385px;width:28px;height:27px">
+      <img class="o "  src="/ba-theme/opt/chk-master.png" alt="" draggable="false" style="left:1220px;top:147px;width:66px;height:66px">
+      <img class="o o-tick" data-ch="master" src="/ba-theme/opt/tick-master.png" alt="" draggable="false" style="left:1226px;top:154px;width:54px;height:50px">
+      <img class="o "  src="/ba-theme/opt/chk-master.png" alt="" draggable="false" style="left:1220px;top:262px;width:66px;height:66px">
+      <img class="o o-tick" data-ch="bgm" src="/ba-theme/opt/tick-master.png" alt="" draggable="false" style="left:1226px;top:270px;width:54px;height:50px">
+      <img class="o "  src="/ba-theme/opt/chk-master.png" alt="" draggable="false" style="left:1220px;top:366px;width:66px;height:66px">
+      <img class="o o-tick" data-ch="sfx" src="/ba-theme/opt/tick-master.png" alt="" draggable="false" style="left:1226px;top:374px;width:54px;height:50px">
+      <span class="o-t o-lbl" style="left:348px;top:502px">Choose BGM</span>
+      <div class="o-field" style="left:541px;top:477px;width:745px;height:50px"><input id="bgm-custom" type="text" placeholder="Click to select or Paste a Youtube link..." spellcheck="false" autocomplete="off"><button class="o-fb" id="bgm-custom-btn" type="button" aria-label="Play link"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor"/></svg></button><button class="o-fb" id="bgm-stop" type="button" aria-label="Stop music"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></svg></button><button class="o-fb" id="bgm-caret" type="button" aria-label="Playlist"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+      <div class="o-status" id="bgm-status" style="left:348px;top:543px"></div>
+      <div class="o-list" id="bgm-list" role="listbox" hidden style="left:541px;top:530px;width:745px"></div>
+      <div class="o-track" data-ch="master" role="slider" tabindex="0" aria-label="Master volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" style="left:535px;top:148px;width:460px;height:63px"></div>
+      <div class="o-track" data-ch="bgm" role="slider" tabindex="0" aria-label="BGM volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" style="left:535px;top:263px;width:460px;height:63px"></div>
+      <div class="o-track" data-ch="sfx" role="slider" tabindex="0" aria-label="SFX volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" style="left:535px;top:367px;width:460px;height:63px"></div>
+      <button class="o-chk" data-ch="master" type="button" role="checkbox" aria-checked="false" aria-label="Mute Master" style="left:1212px;top:139px;width:82px;height:82px"></button>
+      <button class="o-chk" data-ch="bgm" type="button" role="checkbox" aria-checked="false" aria-label="Mute BGM" style="left:1212px;top:254px;width:82px;height:82px"></button>
+      <button class="o-chk" data-ch="sfx" type="button" role="checkbox" aria-checked="false" aria-label="Mute SFX" style="left:1212px;top:358px;width:82px;height:82px"></button>
+      </section>
+      <section class="o-page" id="page-theme" hidden>
+      <img class="o "  src="/ba-theme/opt/theme-bg.png" alt="" draggable="false" style="left:309px;top:125px;width:1007px;height:156px">
+      <span class="o-t o-lbl" style="left:348px;top:158px">Theme</span>
+      <button class="o-opt" data-theme="ba-dark" type="button" role="radio" aria-checked="false" style="left:333px;top:206px;width:300px;height:64px"><img class="o "  src="/ba-theme/opt/radio-dark.png" alt="" draggable="false" style="left:12px;top:12px;width:40px;height:40px"><img class="o o-dot"  src="/ba-theme/opt/dot-dark.png" alt="" draggable="false" style="left:17px;top:17px;width:31px;height:32px"><span class="o-optlbl" style="left:68px">Dark</span></button>
+      <button class="o-opt" data-theme="ba-light" type="button" role="radio" aria-checked="false" style="left:662px;top:206px;width:300px;height:64px"><img class="o "  src="/ba-theme/opt/radio-light.png" alt="" draggable="false" style="left:12px;top:12px;width:41px;height:41px"><img class="o o-dot"  src="/ba-theme/opt/dot-dark.png" alt="" draggable="false" style="left:17px;top:17px;width:31px;height:32px"><span class="o-optlbl" style="left:69px">Light</span></button>
+      <button class="o-opt" data-theme="classic" type="button" role="radio" aria-checked="false" style="left:991px;top:206px;width:300px;height:64px"><img class="o "  src="/ba-theme/opt/radio-light.png" alt="" draggable="false" style="left:12px;top:12px;width:41px;height:41px"><img class="o o-dot"  src="/ba-theme/opt/dot-dark.png" alt="" draggable="false" style="left:17px;top:17px;width:31px;height:32px"><span class="o-optlbl" style="left:69px">Classic</span></button>
+      </section>
+    </div>
+</div>
 <div id="overlay" hidden>
     <iframe id="overlay-frame" src="about:blank"></iframe>
     <button id="overlay-skip" class="btn">Continue</button>
 </div>
 <div id="gate"><iframe src="/loading/loading.html?v=13" style="position:absolute;inset:0;width:100%;height:100%;display:block;border:none;background:#000;" allow="autoplay"></iframe></div>
 <script type="module" src="/arona-boot.js?v=12"></script>
-<script type="module" src="/arona-board.js?v=17"></script>
+<script type="module" src="/arona-board.js?v=18"></script>
 <script type="module" src="/arona-fx.js?v=12"></script>
 </body>
 </html>
