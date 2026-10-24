@@ -1,3 +1,11 @@
+// Dat data-theme len <html> TRUOC khi ve: nen anh Blue Archive hien ngay, khong nhay tu Classic sang BA.
+(function () {
+    try {
+        const t = localStorage.getItem("arona-theme")
+        document.documentElement.dataset.theme = t === "ba-light" || t === "ba-dark" ? t : "classic"
+    } catch (e) {}
+})();
+
 // Chay TRUOC moi module script: tao panel debug ngay lap tuc nen bat ky loi nao
 // (JS, rejection, CSP, module khong chay duoc) cung hien len man hinh thay vi
 // con lai man xam roi. Panel tu dong do lai sau khi board chay thanh cong; chip

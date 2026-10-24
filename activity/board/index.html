@@ -65,6 +65,7 @@
         .avatar.letter { display: grid; place-items: center; font-weight: 700; color: #fff; font-size: 15px; }
         /* [hidden] khong tac dung khi rule khac dat display -> phai ep tay */
         .avatar.letter[hidden] { display: none; }
+        .plate { display: contents; }
         .who { min-width: 0; flex: 1; }
         .clock {
             flex: none;
@@ -307,6 +308,186 @@
             display: none;
             max-width: 80%;
         }
+
+        /* ================= Blue Archive themes (thiet ke trong temp/UI.clip, canvas 1920x1080) =================
+           ba-light / ba-dark: anh nen lop hoc, ban co go, panel hong #fb94a7 + khung chat Noto Sans, nut trang tren nen xam.
+           Bien mau dat tren <html data-theme> (early.js + applyTheme) -> nen trang, nut Theme va #root deu dung chung. */
+        @font-face {
+            font-family: "Noto Sans";
+            src: url("/ba-theme/NotoSans-var.woff2") format("woff2");
+            font-weight: 100 900;
+            font-style: normal;
+            font-display: swap;
+        }
+        html[data-theme="ba-light"], html[data-theme="ba-dark"] {
+            --panel-w: clamp(300px, 29vw, 460px);
+            --sq-light: #f0d9b5;           /* ban co "wood" */
+            --sq-dark: #b58863;
+            --ba-title: #fb94a7;           /* thanh tieu de: dark giu nguyen */
+            --ba-bubble-l: #4c5b73;        /* bubble doi thu (xam xanh) */
+            --ba-bubble-r: #4a8bdb;        /* bubble sensei */
+            font-family: "Noto Sans", "Segoe UI", system-ui, sans-serif;
+        }
+        html[data-theme="ba-light"] {
+            --bg: #5ec4fe;
+            --panel: #ffffff; --panel-dark: #ffffff;
+            --line: #e4e7eb;
+            --text: #2a2e35; --text-dim: #6a7280;
+            --ba-bg-img: url("/ba-theme/bg-light.webp");
+            --ba-actions: #d5d5d5;
+            --ba-btn: #ffffff; --ba-btn-text: #111111; --ba-btn-hover: #f1f5f9;
+            --ba-name: #3b4252;
+            --ba-chip: #eef1f4;
+        }
+        html[data-theme="ba-dark"] {
+            --bg: #0f326e;
+            --panel: #313338; --panel-dark: #313338;      /* xam tro Discord */
+            --line: #3f4147;
+            --text: #dbdee1; --text-dim: #949ba4;
+            --ba-bg-img: url("/ba-theme/bg-dark.webp");
+            --ba-actions: #2b2d31;
+            --ba-btn: #4e5058; --ba-btn-text: #f2f3f5; --ba-btn-hover: #5d6068;
+            --ba-name: #f2f3f5;
+            --ba-chip: #404249;
+            --ba-bubble-r: #3f7fd6;
+        }
+        html[data-theme^="ba"] { background: var(--bg) var(--ba-bg-img) center / cover no-repeat fixed; }
+        html[data-theme^="ba"] body { background: transparent; font-family: inherit; }
+        html[data-theme^="ba"] button, html[data-theme^="ba"] select, html[data-theme^="ba"] input { font-family: inherit; }
+
+        /* --- thanh nguoi choi: khung avatar hinh binh hanh + ten trang --- */
+        html[data-theme^="ba"] .plate {
+            display: block; position: relative; flex: none;
+            width: 54px; height: 44px;
+            background: url("/ba-theme/avatar-frame.png") center / 100% 100% no-repeat;
+            filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .35));
+        }
+        html[data-theme^="ba"] .plate .avatar {
+            position: absolute; inset: 10% 12%;
+            width: auto; height: auto;
+            border-radius: 0; background-color: #dfe6ee;
+            -webkit-mask: url("/ba-theme/avatar-frame.png") center / 100% 100% no-repeat;
+            mask: url("/ba-theme/avatar-frame.png") center / 100% 100% no-repeat;
+        }
+        html[data-theme^="ba"] .plate .avatar.letter { font-size: 16px; }
+        html[data-theme^="ba"] .player-bar .name {
+            color: #fff; font-weight: 700; font-size: 20px;
+            text-shadow: 0 1px 4px rgba(0, 20, 60, .65);
+        }
+        html[data-theme^="ba"] .player-bar .sub { color: rgba(255, 255, 255, .88); text-shadow: 0 1px 3px rgba(0, 20, 60, .6); }
+        html[data-theme^="ba"] .mat-diff { color: #fff; text-shadow: 0 1px 3px rgba(0, 20, 60, .6); }
+        html[data-theme^="ba"] .clock { background: rgba(8, 24, 64, .55); color: #e6f0ff; }
+        html[data-theme^="ba"] .clock.active { background: #fff; color: #1c2b4a; }
+        html[data-theme^="ba"] .clock.low { color: #ffb4b4; }
+        html[data-theme^="ba"] .clock.active.low, html[data-theme^="ba"] .clock.flagged { background: #cf4040; color: #fff; }
+        html[data-theme^="ba"] #board { box-shadow: 0 0 0 3px rgba(255, 255, 255, .92), 0 8px 28px rgba(0, 20, 60, .4); }
+
+        /* --- panel: tieu de hong, trang thai, lich su nuoc di (chat), khu nut xam --- */
+        html[data-theme^="ba"] .panel {
+            background: var(--panel);
+            border-radius: 16px;
+            box-shadow: 0 8px 30px rgba(0, 20, 60, .35);
+        }
+        html[data-theme^="ba"] .panel-title {
+            flex: none;
+            background: var(--ba-title); color: #fff;
+            border-bottom: 0;
+            padding: 14px 10px;
+            font-size: clamp(18px, 1.7vw, 28px); font-weight: 700; letter-spacing: .2px;
+            text-shadow: 0 1px 2px rgba(120, 20, 50, .2);
+        }
+        html[data-theme^="ba"] .panel-status { flex: none; background: var(--panel); color: var(--text-dim); border-bottom: 1px solid var(--line); }
+        html[data-theme^="ba"] .badge { background: var(--ba-chip); color: var(--text-dim); }
+        html[data-theme^="ba"] .moves { background: var(--panel); color: var(--text); container-type: inline-size; }
+        html[data-theme^="ba"] .actions {
+            background: var(--ba-actions);
+            border-top: 0;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px; padding: 8px;
+        }
+        html[data-theme^="ba"] .actions .btn {
+            height: 42px; border-radius: 6px;
+            background: var(--ba-btn); color: var(--ba-btn-text);
+            font-size: 17px; font-weight: 500;
+            box-shadow: 0 1px 0 rgba(0, 0, 0, .08);
+        }
+        html[data-theme^="ba"] .actions .btn:hover { background: var(--ba-btn-hover); }
+        html[data-theme^="ba"] .actions .btn:last-child { grid-column: 1 / -1; }
+        html[data-theme^="ba"] .actions #bgm-toggle { grid-column: 1 / -1; height: 30px; }
+        html[data-theme^="ba"] .elo-row, html[data-theme^="ba"] .bgm {
+            background: var(--ba-actions); border-top: 1px solid rgba(0, 0, 0, .06); color: var(--text-dim);
+        }
+        html[data-theme^="ba"] .elo-row { padding-bottom: 8px; }
+        html[data-theme^="ba"] .bgm-row select, html[data-theme^="ba"] .bgm-row input[type="text"] {
+            background-color: var(--ba-btn); color: var(--ba-btn-text); border-color: transparent;
+        }
+        html[data-theme^="ba"] #theme-toggle {
+            top: 0; right: 0;
+            height: 34px; padding: 0 14px;
+            border: 0; border-radius: 0 0 0 14px;
+            background: #fff; color: #466398; font-weight: 700;
+            box-shadow: 0 2px 10px rgba(0, 20, 60, .25);
+        }
+
+        /* --- lich su nuoc di dang khung chat Blue Archive (bubble: doi thu trai, sensei phai) --- */
+        .moves.chat {
+            display: flex; flex-direction: column; gap: 10px;
+            padding: 12px 14px 18px;
+            font-family: "Noto Sans", "Segoe UI", system-ui, sans-serif;
+        }
+        .moves.chat:empty::before {
+            content: "No moves yet";
+            color: var(--text-dim); font-size: 13px; text-align: center; padding: 18px 0;
+        }
+        .moves.chat .msg { display: flex; align-items: flex-start; gap: 10px; flex: none; }
+        .moves.chat .msg.right { justify-content: flex-end; }
+        .moves.chat .msg-avatar {
+            flex: none; width: 40px; height: 40px;
+            width: clamp(36px, 12cqw, 56px); height: clamp(36px, 12cqw, 56px);
+            border-radius: 50%; object-fit: cover; background: #cfd6df;
+        }
+        .moves.chat .msg-avatar.letter {
+            display: grid; place-items: center;
+            color: #fff; font-weight: 700; font-size: 18px;
+        }
+        .moves.chat .msg-col { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; max-width: 80%; }
+        .moves.chat .msg.right .msg-col { align-items: flex-end; }
+        .moves.chat .msg-name {
+            font-size: 14px; font-size: clamp(13px, 3.7cqw, 17px);
+            font-weight: 700; line-height: 1.25; color: var(--ba-name);
+        }
+        .moves.chat .bubble {
+            position: relative; width: fit-content; max-width: 100%;
+            padding: .3em .8em;
+            border-radius: 8px;
+            background: var(--ba-bubble-l); color: #fff;
+            font-size: 15px; font-size: clamp(14px, 3.9cqw, 19px);
+            font-weight: 400; line-height: 1.4;
+            overflow-wrap: anywhere;
+        }
+        .moves.chat .msg.right .bubble { background: var(--ba-bubble-r); }
+        .moves.chat .bubble.first { border-top-left-radius: 0; }
+        .moves.chat .bubble.first::before {
+            content: ""; position: absolute; top: 0; left: -7px;
+            border-top: 8px solid var(--ba-bubble-l); border-left: 7px solid transparent;
+        }
+        .moves.chat .msg.right .bubble.first { border-top-left-radius: 8px; border-top-right-radius: 0; }
+        .moves.chat .msg.right .bubble.first::before {
+            left: auto; right: -7px;
+            border-left: 0; border-right: 7px solid transparent; border-top-color: var(--ba-bubble-r);
+        }
+        .moves.chat .bubble.last { box-shadow: 0 0 0 2px rgba(255, 207, 77, .95); }
+
+        /* --- bo cuc desktop / tablet / dien thoai ngang: ban co to hon + panel rong hon (phan bo theo UI.clip) --- */
+        @media (min-width: 601px), (orientation: landscape) {
+            html[data-theme^="ba"] .layout { gap: 18px; }
+            html[data-theme^="ba"] .board-wrap {
+                width: min(calc(100vh - 140px), 840px, calc(100vw - var(--panel-w) - 56px));
+                width: min(calc(100dvh - 140px), 840px, calc(100vw - var(--panel-w) - 56px));
+            }
+            html[data-theme^="ba"] .panel { width: var(--panel-w); max-width: 40vw; min-width: 240px; }
+        }
+
         /* Chi dien thoai DOC moi dung giao dien 1 cot. Tablet va dien thoai xoay ngang dung giao dien desktop (ban co + panel canh nhau). */
         @media (max-width: 600px) and (orientation: portrait) {
             /* rule goc dat touch-action:none tren html/body -> chan keo cuon tren mobile; o day cho phep cuon doc */
@@ -354,19 +535,28 @@
                 overflow: visible;
                 touch-action: auto;
             }
+
+            html[data-theme^="ba"] .plate { width: 46px; height: 38px; }
+            html[data-theme^="ba"] .player-bar .name { font-size: 17px; }
+            html[data-theme^="ba"] .panel { border-radius: 14px; }
+            html[data-theme^="ba"] .panel-title { font-size: 19px; padding: 11px 10px; }
+            html[data-theme^="ba"] .actions .btn { height: 40px; }
+            html[data-theme^="ba"] #theme-toggle { top: 0; right: 0; height: 30px; padding: 0 10px; font-size: 10px; border-radius: 0 0 0 12px; }
         }
     </style>
     <!-- tai truoc webp 3MB cua man loading song song voi trang (iframe loading.html dung lai tu cache) -->
     <link rel="preload" as="image" href="/loading/now-loading.webp">
-    <script src="/arona-early.js?v=12"></script>
+    <script src="/arona-early.js?v=13"></script>
 </head>
 <body>
 <div id="root">
     <div class="layout">
         <div class="board-side">
             <div class="player-bar" id="bar-top">
-                <img class="avatar" id="top-avatar" alt="">
-                <span class="avatar letter" id="top-avatar-lg" hidden></span>
+                <span class="plate">
+                    <img class="avatar" id="top-avatar" alt="">
+                    <span class="avatar letter" id="top-avatar-lg" hidden></span>
+                </span>
                 <div class="who">
                     <div class="name" id="top-name"></div>
                     <div class="sub" id="top-sub"></div>
@@ -380,8 +570,10 @@
                 <div id="toaster"></div>
             </div>
             <div class="player-bar" id="bar-bottom">
-                <img class="avatar" id="bottom-avatar" alt="">
-                <span class="avatar letter" id="bottom-avatar-lg" hidden></span>
+                <span class="plate">
+                    <img class="avatar" id="bottom-avatar" alt="">
+                    <span class="avatar letter" id="bottom-avatar-lg" hidden></span>
+                </span>
                 <div class="who">
                     <div class="name" id="bottom-name"></div>
                     <div class="sub" id="bottom-sub"></div>
@@ -425,7 +617,7 @@
 </div>
 <div id="gate"><iframe src="/loading/loading.html?v=13" style="position:absolute;inset:0;width:100%;height:100%;display:block;border:none;background:#000;" allow="autoplay"></iframe></div>
 <script type="module" src="/arona-boot.js?v=12"></script>
-<script type="module" src="/arona-board.js?v=16"></script>
+<script type="module" src="/arona-board.js?v=17"></script>
 <script type="module" src="/arona-fx.js?v=12"></script>
 </body>
 </html>

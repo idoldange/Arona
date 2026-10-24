@@ -430,9 +430,12 @@ const THEME_LABELS = { "classic": "Classic", "ba-light": "BA Light", "ba-dark": 
 let theme = localStorage.getItem("arona-theme")
 if (!THEMES.includes(theme)) theme = "classic"
 
+function isBA() { return theme !== "classic" }
+
 function applyTheme() {
     const root = $("root")
     if (root) { root.dataset.theme = theme }
+    document.documentElement.dataset.theme = theme      // nen trang + nut Theme nam ngoai #root cung doi theo
     const btn = $("theme-toggle")
     if (btn) { btn.textContent = `Theme: ${THEME_LABELS[theme] || theme}` }
 }
@@ -441,6 +444,7 @@ function toggleTheme() {
     theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]
     localStorage.setItem("arona-theme", theme)
     applyTheme()
+    if (state && state.active) { renderPanel(parseFen(state.fen)) }      // tieu de / nut / lich su nuoc di doi kieu theo theme
 }
 
 const themeBtn = $("theme-toggle")
@@ -849,30 +853,19 @@ function animateLastMove(uci) {
     pieceEl.style.transform = ""
 }
 
-function renderPanel(map) {
-    const isPvp = state.mode === "pvp"
-    $("panel-title").textContent = isPvp ? "🚩 PvP Game" : "💻 Play vs Arona"
-    // Status line: what is happening right now.
-    let status
-    if (state.over) {
-        status = state.result || "Game over."
-    } else if (state.mode === "engine" && state.turn !== myColor() && state.you.role !== "spectator") {
-        status = "Arona is thinking..."
-    } else if (myTurn()) {
-        status = "Your turn"
-    } else {
-        const seat = state.turn === "white" ? state.white : state.black
-        status = `${state.turn.charAt(0).toUpperCase() + state.turn.slice(1)} to move${seat.name ? ` — ${seat.name}` : ""}`
-    }
-    $("status").textContent = status
-    let badge = isPvp ? (state.you.role === "spectator" ? "SPECTATOR" : "PvP") : "vs Arona"
-    if (state.you.role === "spectator" && state.mode === "engine") badge = "SPECTATOR"
-    if (state.clock) badge += ` · ${state.clock.category} ${state.clock.label}`
-    $("room").textContent = badge
-
-    // Move list in 1. white black rows; highlight the cell of the last move.
+// ── Lich su nuoc di: Classic = bang 1. e4 e5 nhu chess.com; Blue Archive = khung chat (doi thu trai, minh phai) ──
+function renderMoves() {
     const moveBox = $("moves")
     moveBox.innerHTML = ""
+    moveBox.classList.toggle("chat", isBA())
+    if (isBA()) { renderMovesChat(moveBox) } else { renderMovesTable(moveBox) }
+    moveBox.scrollTop = moveBox.scrollHeight
+    // panel con nut/thanh Elo phia duoi chua dung xong luc nay -> o cao that cua danh sach doi, cuon lai sau khi layout xong
+    requestAnimationFrame(() => { moveBox.scrollTop = moveBox.scrollHeight })
+}
+
+function renderMovesTable(moveBox) {
+    // Move list in 1. white black rows; highlight the cell of the last move.
     for (let i = 0; i < state.moves.length; i += 2) {
         const row = document.createElement("div")
         row.className = "mv-row"
@@ -896,7 +889,86 @@ function renderPanel(map) {
         row.appendChild(cellB)
         moveBox.appendChild(row)
     }
-    moveBox.scrollTop = moveBox.scrollHeight
+}
+
+function moveText(i, san) {
+    const n = Math.floor(i / 2) + 1
+    return i % 2 === 0 ? `${n}. ${san}` : `${n}\u2026 ${san}`
+}
+
+function chatAvatar(seat) {
+    const name = seat.name || "?"
+    if (seat.avatar_url) {
+        const img = document.createElement("img")
+        img.className = "msg-avatar"
+        img.alt = ""
+        img.src = seat.avatar_url
+        return img
+    }
+    const el = document.createElement("span")
+    el.className = "msg-avatar letter"
+    el.textContent = name.slice(0, 1).toUpperCase()
+    el.style.background = avatarBackground(name)
+    return el
+}
+
+function renderMovesChat(box) {
+    // Ben "minh" (duoi ban co) = bubble xanh duong ben phai, khong avatar; doi thu = avatar + ten + bubble xam xanh ben trai.
+    const bottomColor = myColor() === "black" ? "black" : "white"
+    let cur = null
+    state.moves.forEach((san, i) => {
+        const color = i % 2 === 0 ? "white" : "black"
+        const mine = color === bottomColor
+        let fresh = false
+        if (!cur || cur.color !== color) {
+            const seat = (color === "white" ? state.white : state.black) || {}
+            const msg = document.createElement("div")
+            msg.className = `msg ${mine ? "right" : "left"}`
+            if (!mine) msg.appendChild(chatAvatar(seat))
+            const col = document.createElement("div")
+            col.className = "msg-col"
+            if (!mine) {
+                const nm = document.createElement("div")
+                nm.className = "msg-name"
+                nm.textContent = seat.name || "?"
+                col.appendChild(nm)
+            }
+            msg.appendChild(col)
+            box.appendChild(msg)
+            cur = { color, col }
+            fresh = true
+        }
+        const bubble = document.createElement("div")
+        bubble.className = "bubble"
+        if (fresh) bubble.classList.add("first")
+        if (i === state.moves.length - 1) bubble.classList.add("last")
+        bubble.textContent = moveText(i, san)
+        cur.col.appendChild(bubble)
+    })
+}
+
+function renderPanel(map) {
+    const isPvp = state.mode === "pvp"
+    $("panel-title").textContent = isBA() ? (isPvp ? "PvP" : "Play with Arona") : (isPvp ? "🚩 PvP Game" : "💻 Play vs Arona")
+    // Status line: what is happening right now.
+    let status
+    if (state.over) {
+        status = state.result || "Game over."
+    } else if (state.mode === "engine" && state.turn !== myColor() && state.you.role !== "spectator") {
+        status = "Arona is thinking..."
+    } else if (myTurn()) {
+        status = "Your turn"
+    } else {
+        const seat = state.turn === "white" ? state.white : state.black
+        status = `${state.turn.charAt(0).toUpperCase() + state.turn.slice(1)} to move${seat.name ? ` — ${seat.name}` : ""}`
+    }
+    $("status").textContent = status
+    let badge = isPvp ? (state.you.role === "spectator" ? "SPECTATOR" : "PvP") : "vs Arona"
+    if (state.you.role === "spectator" && state.mode === "engine") badge = "SPECTATOR"
+    if (state.clock) badge += ` · ${state.clock.category} ${state.clock.label}`
+    $("room").textContent = badge
+
+    renderMoves()
 
     // Action row: no undo/hint in PvP, rematch once the game is over.
     const actions = $("actions")
@@ -913,8 +985,9 @@ function renderPanel(map) {
     if (state.you.role === "spectator" && isPvp) return
     if (state.mode === "engine") {
         // No take-backs in timed games (the server refuses them too).
-        if (state.turn === myColor() && !busy && !state.clock) actions.appendChild(actionBtn("↩ Undo", "secondary", apiUndo))
-        if (state.turn === myColor() && !busy) actions.appendChild(actionBtn("💡 Hint", "secondary", apiHint))
+        const undoBtn = (state.turn === myColor() && !busy && !state.clock) ? actionBtn("↩ Undo", "secondary", apiUndo) : null
+        const hintBtn = (state.turn === myColor() && !busy) ? actionBtn("💡 Hint", "secondary", apiHint) : null
+        for (const b of (isBA() ? [hintBtn, undoBtn] : [undoBtn, hintBtn])) { if (b) actions.appendChild(b) }
     }
     actions.appendChild(actionBtn("🚩 Resign", "secondary", apiResign))
 }
@@ -922,7 +995,7 @@ function renderPanel(map) {
 function actionBtn(label, style, handler) {
     const btn = document.createElement("button")
     btn.className = "btn"
-    btn.textContent = label
+    btn.textContent = isBA() ? label.replace(/^[^\p{L}\p{N}]+/u, "") : label      // BA: nut chu thuong (Hint / Undo / Resign), khong emoji
     if (style === "danger") btn.style.background = "var(--danger)"
     btn.addEventListener("click", () => { handler(btn) })
     return btn
