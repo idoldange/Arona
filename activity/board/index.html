@@ -345,7 +345,9 @@
             --ba-chip: #404249;
             --ba-bubble-r: #3f7fd6;
         }
-        html[data-theme^="ba"] { background: var(--bg) var(--ba-bg-img) center / cover no-repeat fixed; }
+        /* anh nen o lop position:fixed rieng (background-attachment:fixed ve lai ca trang moi lan cuon / animation -> nang tren may yeu) */
+        html[data-theme^="ba"] { background: var(--bg); }
+        html[data-theme^="ba"]::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: var(--ba-bg-img) center / cover no-repeat; }
         html[data-theme^="ba"] body { background: transparent; font-family: inherit; }
         html[data-theme^="ba"] button, html[data-theme^="ba"] select, html[data-theme^="ba"] input { font-family: inherit; }
 
