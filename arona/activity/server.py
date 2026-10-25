@@ -767,6 +767,24 @@ async def h_chess_resign(request):
     return web.json_response(await _chess_state(channel_id, uid, s.guild_id))
 
 
+async def h_chess_elo(request):
+    s, uid = request["session"], request["user_id"]
+    channel_id = _chess_board_channel(s)
+    _, chess_manager, _refresh = _chess_deps()
+    try:
+        _ensure_player(channel_id, uid)
+    except ChessAccessError as e:
+        return _deny(403, str(e))
+    try:
+        body = await request.json()
+        elo_val = int(body["elo"])
+    except Exception:
+        return _deny(400, "Invalid Elo")
+    if chess_manager.set_engine_elo(channel_id, elo_val) is None:
+        return _deny(400, "No engine game in this channel")
+    return web.json_response(await _chess_state(channel_id, uid, s.guild_id))
+
+
 async def h_chess_newgame(request):
     s, uid = request["session"], request["user_id"]
     channel_id = _chess_board_channel(s)
@@ -1140,6 +1158,7 @@ def make_app() -> web.Application:
         web.post("/api/chess/move", h_chess_move),
         web.post("/api/chess/resign", h_chess_resign),
         web.post("/api/chess/newgame", h_chess_newgame),
+        web.post("/api/chess/elo", h_chess_elo),
         web.post("/api/chess/undo", h_chess_undo),
         web.post("/api/chess/hint", h_chess_hint),
         web.get("/api/chess/analysis", h_chess_analysis),

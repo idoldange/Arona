@@ -407,6 +407,7 @@ function syncEloRow() {
 
 ;(function initElo() {
     const slider = $("elo-slider")
+    let eloTimer = 0
     let lastUIClick = 0
     slider.addEventListener("input", (ev) => {
         // Chi phat am 1 lan luc nhan chuot xuong (listener pointerdown toan cuc), keo thanh truot thi im lang.
@@ -414,6 +415,11 @@ function syncEloRow() {
         $("elo-label").textContent = `⚡ Arona ~${eloShown} elo`
         updateBotEloLabel()
         localStorage.setItem("arona-elo", String(eloShown))
+        // Ap dung ngay cho van dang choi: debounce roi bao server doi suc manh engine.
+        clearTimeout(eloTimer)
+        eloTimer = setTimeout(() => {
+            apiPostRaw("/api/chess/elo", { elo: eloShown }).catch(() => {})
+        }, 250)
     })
 })()
 

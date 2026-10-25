@@ -24,7 +24,7 @@
         panel.id = "arona-debug"
         panel.style.cssText = "position:fixed;left:0;right:0;bottom:0;max-height:45vh;overflow:auto;margin:0;padding:6px 8px;" +
             "background:rgba(20,21,26,.94);color:#d8dae0;font:11px/1.4 Consolas,monospace;z-index:2147483647;white-space:pre-wrap"
-        panel.textContent = "arona debug — click to hide (chip at bottom-right reopens)"
+        panel.textContent = "arona debug — click to hide "
         panel.onclick = function () {
             panel.hidden = true
             userClosed = true
@@ -52,17 +52,6 @@
         if (!panel) { return }
         panel.hidden = true
         userClosed = true
-        if (!chip) {
-            chip = document.createElement("div")
-            chip.id = "arona-debug-chip"
-            chip.style.cssText = "position:fixed;right:10px;bottom:10px;width:18px;height:18px;border-radius:4px;z-index:2147483646;" +
-                "background:rgba(20,21,26,.9);color:#9c9a97;font:11px/18px Consolas,monospace;text-align:center;cursor:pointer"
-            chip.textContent = "e"
-            chip.title = "show arona debug log"
-            chip.onclick = open
-            ;(document.body || document.documentElement).appendChild(chip)
-        }
-        chip.hidden = false
     }
 
     window.addEventListener("error", (ev) => {

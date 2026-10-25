@@ -253,6 +253,15 @@ class DiscordChessManager:
         session = self.engine_sessions.get(channel_id)
         return session.get("elo") if session else None
 
+    def set_engine_elo(self, channel_id, elo) -> Optional[int]:
+        """Change engine strength of the running game; takes effect on the engine's next move."""
+        session = self.engine_sessions.get(channel_id)
+        if session is None:
+            return None
+        session["elo"] = self._clamp_elo(elo)
+        self.save_engine_sessions()
+        return session["elo"]
+
     def get_user_color(self, channel_id) -> str:
         """Side the human plays in this channel's engine game ('white' or 'black')."""
         session = self.engine_sessions.get(channel_id)
