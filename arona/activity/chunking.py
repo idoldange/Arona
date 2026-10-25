@@ -15,6 +15,8 @@ import json
 import re
 from dataclasses import dataclass
 
+from arona.activity import pitch as pitchmod
+
 MIN_GAP_SEC = 0.35      # khoang lang toi thieu de cat chunk
 MAX_CHUNK_SEC = 12.0    # chunk dai hon se bi cat nho them
 MAX_CHUNK_NOTES = 48    # chunk nhieu note hon cung bi cat (gen cham theo so phrase)
@@ -27,6 +29,7 @@ class Note:
     dur: int
     tone: int
     lyric: str
+    pitch: dict | None = None    # pitch bend cua note (xem arona/activity/pitch.py)
 
 
 @dataclass
@@ -81,7 +84,7 @@ def clean_notes(raw_notes) -> list[Note]:
         if end <= start:
             continue
         lyric = str(n.get("lyric", "")).replace("\n", " ").strip() or "a"
-        out.append(Note(start, end - start, max(0, min(127, int(n["tone"]))), lyric))
+        out.append(Note(start, end - start, max(0, min(127, int(n["tone"]))), lyric, pitchmod.normalize(n.get("pitch"))))
         cursor = end
     return out
 
@@ -140,18 +143,21 @@ def chunk_to_ust(chunk: Chunk, ppq: int, tempos, name: str = "chunk") -> bytes:
     """UST (UTF-8, giong dinh dang ustx_track_to_ust) cho 1 chunk; bat dau tu note dau, rest giua note giu nguyen."""
     tempos = normalize_tempos(tempos)
     k = UST_PPQ / ppq
-    notes, cursor = [], chunk.start_tick
+    notes, cursor, prev_tone = [], chunk.start_tick, None     # prev_tone: tone note truoc neu sat nhau (cho snapFirst)
     for n in chunk.notes:
         if n.pos > cursor:
-            notes.append(("R", 60, n.pos - cursor, cursor))
-        notes.append((n.lyric, n.tone, n.dur, n.pos))
+            notes.append(("R", 60, n.pos - cursor, cursor, None, None))
+            prev_tone = None
+        notes.append((n.lyric, n.tone, n.dur, n.pos, n.pitch, prev_tone))
+        prev_tone = n.tone
         cursor = n.pos + n.dur
     first_bpm = tempo_at(tempos, chunk.start_tick)
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", name) or "chunk"
     out = ["[#VERSION]", "UST Version1.2", "[#SETTING]", f"Tempo={first_bpm:.2f}", "Tracks=1", f"ProjectName={safe}"]
     cur_bpm = first_bpm
-    for i, (ly, tone, dur, start) in enumerate(notes):
+    for i, (ly, tone, dur, start, pit, prev) in enumerate(notes):
         out += [f"[#{i:04d}]", f"Length={max(1, int(round(dur * k)))}", f"Lyric={ly}", f"NoteNum={tone}"]
+        out += pitchmod.to_ust_lines(pit, tone, prev)
         bpm = tempo_at(tempos, start)
         if abs(bpm - cur_bpm) > 1e-6:
             out.append(f"Tempo={bpm:.2f}")

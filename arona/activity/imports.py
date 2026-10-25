@@ -10,8 +10,18 @@ from __future__ import annotations
 import copy
 import os
 
+from arona.activity import pitch as _pitch
+
 MAX_NOTES_PER_TRACK = 20000
 MAX_TRACKS = 64
+
+
+def _note_json(n) -> dict:
+    out = {"pos": n.pos, "dur": n.dur, "tone": n.tone, "lyric": n.lyric, "vel": n.vel}
+    pit = getattr(n, "pitch", None)
+    if pit:
+        out["pitch"] = pit          # pitch bend: xem arona/activity/pitch.py
+    return out
 
 
 def project_to_json(name: str, proj, overrides: dict | None = None, resolve=None) -> dict:
@@ -43,8 +53,7 @@ def project_to_json(name: str, proj, overrides: dict | None = None, resolve=None
             "bank": int(bank),
             "sf": str(sf or ""),
             "drums": bool(t.drums),
-            "notes": [{"pos": n.pos, "dur": n.dur, "tone": n.tone, "lyric": n.lyric, "vel": n.vel}
-                      for n in t.notes[:MAX_NOTES_PER_TRACK]],
+            "notes": [_note_json(n) for n in t.notes[:MAX_NOTES_PER_TRACK]],
         })
     return {"name": os.path.splitext(os.path.basename(name))[0] or "project",
             "ppq": proj.resolution,
@@ -56,7 +65,10 @@ def _parse_ust(name: str, data: bytes):
     """UST (UTAU) don gian: 1 track vocal, tick 480. Lyric 'R' la khoang nghi."""
     from arona.tts import synth as S
 
-    text = data.decode("utf-8-sig", errors="replace")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:                    # UST that cua UTAU thuong la Shift-JIS
+        text = data.decode("cp932", errors="replace")
     notes, tempos = [], []
     pos, bpm = 0, 120.0
     cur: dict = {}
@@ -70,7 +82,8 @@ def _parse_ust(name: str, data: bytes):
         except (TypeError, ValueError):
             tone = 60
         if dur > 0 and lyric and lyric.upper() not in ("R", "-"):
-            notes.append(S.UNote(pos=pos, dur=dur, tone=max(0, min(127, tone)), lyric=lyric))
+            notes.append(S.UNote(pos=pos, dur=dur, tone=max(0, min(127, tone)), lyric=lyric,
+                                 pitch=_pitch.from_ust(cur.get("PBS"), cur.get("PBW"), cur.get("PBY"), cur.get("PBM"))))
         pos += max(0, dur)
         cur.clear()
 
@@ -89,7 +102,7 @@ def _parse_ust(name: str, data: bytes):
                 tempos.append((pos, bpm))
             except ValueError:
                 pass
-        elif key in ("Length", "Lyric", "NoteNum"):
+        elif key in ("Length", "Lyric", "NoteNum", "PBS", "PBW", "PBY", "PBM"):
             cur[key] = value
     flush()
     if not tempos:

@@ -209,6 +209,7 @@ class UNote:
     tone: int
     lyric: str
     vel: int = 96
+    pitch: dict | None = None   # pitch bend (arona/activity/pitch.py): {"points": [{x ms, y 0.1 semitone, shape}], "snapFirst": bool}
 
 
 @dataclass
@@ -319,6 +320,7 @@ def detect_format(body: bytes) -> str:
 
 def parse_ustx(body: bytes) -> UProject:
     import yaml
+    from arona.activity import pitch as _pitch
     text = body.decode("utf-8-sig", errors="replace")
     doc = yaml.safe_load(text)
     if not isinstance(doc, dict) or "tracks" not in doc:
@@ -370,6 +372,7 @@ def parse_ustx(body: bytes) -> UProject:
                     dur=dur,
                     tone=int(n["tone"]),
                     lyric=str(n.get("lyric") or ""),
+                    pitch=_pitch.normalize(n.get("pitch")),
                 ))
             except Exception:
                 continue
@@ -560,25 +563,30 @@ def _tempo_at(tempos, tick: int) -> float:
 
 def ustx_track_to_ust(t: UTrack, proj: UProject) -> bytes:
     """Track vocal -> noi dung UST (UTF-8) cho /synth. Khoang trong giua cac note -> note R; note chong len nhau bi cat bot."""
+    from arona.activity import pitch as _pitch
     k = 480.0 / proj.resolution
-    notes, cursor = [], 0
+    notes, cursor, prev_tone = [], 0, None     # prev_tone: tone note truoc neu sat nhau (cho snapFirst)
     for n in t.notes:
         start = max(n.pos, cursor)
         end = n.pos + n.dur
         if end <= start:
             continue
         if start > cursor:
-            notes.append(("R", 60, start - cursor, cursor))
-        notes.append((n.lyric.replace("\n", " ").strip() or "a", max(0, min(127, n.tone)), end - start, start))
+            notes.append(("R", 60, start - cursor, cursor, None, None))
+            prev_tone = None
+        tone = max(0, min(127, n.tone))
+        notes.append((n.lyric.replace("\n", " ").strip() or "a", tone, end - start, start, getattr(n, "pitch", None), prev_tone))
+        prev_tone = tone
         cursor = end
     out = ["[#VERSION]", "UST Version1.2", "[#SETTING]", f"Tempo={proj.tempos[0][1]:.2f}", "Tracks=1",
            f"ProjectName={re.sub(r'[^A-Za-z0-9_-]', '_', t.name) or 'track'}"]
     cur_bpm = proj.tempos[0][1]
-    for i, (ly, tone, dur, start) in enumerate(notes):
+    for i, (ly, tone, dur, start, pit, prev) in enumerate(notes):
         out.append(f"[#{i:04d}]")
         out.append(f"Length={max(1, int(round(dur * k)))}")
         out.append(f"Lyric={ly}")
         out.append(f"NoteNum={tone}")
+        out.extend(_pitch.to_ust_lines(pit, tone, prev))
         bpm = _tempo_at(proj.tempos, start)
         if abs(bpm - cur_bpm) > 1e-6:
             out.append(f"Tempo={bpm:.2f}")
