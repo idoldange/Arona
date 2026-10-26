@@ -44,6 +44,8 @@ SAVE_KEEP = 5                         # so ban luu giu lai moi kenh voice
 SAVE_TTL_S = 7 * 24 * 3600            # ban luu qua 7 ngay bi xoa
 SAVE_MAX_BYTES = 4 * 1024 * 1024
 IMPORT_MAX_BYTES = 32 * 1024 * 1024
+AUDIO_MAX_BYTES = 100 * 1024 * 1024        # file nhac up len de ffmpeg doi sang wav
+AUDIO_CONVERT_TIMEOUT_S = 120
 EXPORT_MODES = {"audio", "audio+ustx", "ustx"}
 EXPORT_MAX_AUDIO_BYTES = 100 * 1024 * 1024
 EXPORT_MAX_USTX_BYTES = 5 * 1024 * 1024
@@ -150,7 +152,7 @@ async def auth_mw(request: web.Request, handler):
         if not (launched_from_text and _member_ok(uid, sess.guild_id)):
             return _deny(403, "you are not in this voice/text channel")
     sess.touch(uid)
-    if path not in ("/api/export", "/api/import") and (request.content_length or 0) > JSON_MAX_BYTES:
+    if path not in ("/api/export", "/api/import", "/api/audio/convert") and (request.content_length or 0) > JSON_MAX_BYTES:
         return _deny(413, "request too large")
     request["session"], request["user_id"] = sess, uid
     return await handler(request)
@@ -392,6 +394,40 @@ async def h_import_file(request):
     if not projects:
         return _deny(400, "no track with notes found")
     return web.json_response({"projects": projects})
+
+
+async def h_audio_convert(request):
+    """Doi file am thanh bat ky (mp3, ogg, flac, m4a, opus, video...) sang WAV 44.1kHz stereo bang ffmpeg."""
+    import shutil
+    import subprocess
+    import tempfile
+    if request.content_length and request.content_length > AUDIO_MAX_BYTES:
+        return _deny(413, "file too large (max %d MB)" % (AUDIO_MAX_BYTES >> 20))
+    body = await request.read()
+    if not body or len(body) > AUDIO_MAX_BYTES:
+        return _deny(400, "empty or too large file")
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return _deny(501, "ffmpeg is not installed on the bot")
+
+    def work() -> bytes:
+        with tempfile.TemporaryDirectory() as d:
+            src, dst = os.path.join(d, "in.bin"), os.path.join(d, "out.wav")
+            with open(src, "wb") as f:
+                f.write(body)
+            r = subprocess.run([ffmpeg, "-v", "error", "-y", "-i", src, "-vn", "-ac", "2", "-ar", "44100",
+                                "-c:a", "pcm_s16le", dst], capture_output=True, timeout=AUDIO_CONVERT_TIMEOUT_S)
+            if r.returncode != 0 or not os.path.isfile(dst):
+                raise ValueError((r.stderr or b"").decode("utf-8", "replace").strip()[-200:] or "ffmpeg failed")
+            with open(dst, "rb") as f:
+                return f.read()
+    try:
+        wav = await asyncio.to_thread(work)
+    except subprocess.TimeoutExpired:
+        return _deny(504, "conversion took too long")
+    except Exception as e:
+        return _deny(400, "cannot read this audio file (unsupported or corrupt)")
+    return web.Response(body=wav, content_type="audio/wav")
 
 
 async def h_font(request):
@@ -1149,6 +1185,7 @@ def make_app() -> web.Application:
         web.get("/api/session/imports", h_imports),
         web.get("/api/session/font/{stem}", h_font),
         web.post("/api/import", h_import_file),
+        web.post("/api/audio/convert", h_audio_convert),
         web.post("/api/export", h_export),
         web.post("/api/save", h_save),
         web.get("/api/save/latest", h_save_latest),
