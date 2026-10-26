@@ -47,7 +47,10 @@ def normalize(raw) -> dict | None:
     else:
         return None
     if not isinstance(items, (list, tuple)):
-        return None
+        if isinstance(raw, dict) and (raw.get("vibrato") or raw.get("pitd")):
+            items = []
+        else:
+            return None
     points = []
     for item in items[:MAX_POINTS]:
         if isinstance(item, dict):
@@ -64,15 +67,18 @@ def normalize(raw) -> dict | None:
             "shape": shape if shape in SHAPES else "io",     # "sp" (spline) cua OpenUtau -> io
         })
     vib = normalize_vibrato(raw.get("vibrato")) if isinstance(raw, dict) else None
-    if not points and vib is None:
+    pitd = normalize_offset(raw.get("pitd")) if isinstance(raw, dict) else None
+    if not points and vib is None and pitd is None:
         return None
-    if not points:                                  # chi co vibrato: duong pitch phang, khong snap
-        return {"points": [{"x": -25.0, "y": 0.0, "shape": "io"}, {"x": 25.0, "y": 0.0, "shape": "io"}],
-                "snapFirst": False, "vibrato": vib}
+    if not points:                                  # chi co vibrato/overwrite: duong pitch phang, khong snap
+        points = [{"x": -25.0, "y": 0.0, "shape": "io"}, {"x": 25.0, "y": 0.0, "shape": "io"}]
+        snap = False
     points.sort(key=lambda p: p["x"])
     res = {"points": points, "snapFirst": snap is not False and snap != 0 and snap != "false"}
     if vib:
         res["vibrato"] = vib
+    if pitd:
+        res["pitd"] = pitd
     return res
 
 
@@ -106,6 +112,64 @@ def from_vbr(text) -> dict | None:
         return None
     v += [0.0] * (8 - len(v))
     return normalize_vibrato(dict(zip(("length", "period", "depth", "in", "out", "shift", "drift", "volLink"), v[:8])))
+
+
+MAX_OFFSET = 512
+
+
+def normalize_offset(raw) -> list[dict] | None:
+    """Lop overwrite (pitd): [{x ms, y 0.1 semitone}] cong them len tren duong cong, = 0 ngoai doan da ve."""
+    if not isinstance(raw, (list, tuple)):
+        return None
+    out = []
+    for item in raw[:MAX_OFFSET]:
+        x, y = (_num(item.get("x")), _num(item.get("y"))) if isinstance(item, dict) else (None, None)
+        if x is not None and y is not None:
+            out.append({"x": _r1(max(X_MIN, min(X_MAX, x))), "y": _r1(max(-Y_LIMIT, min(Y_LIMIT, y)))})
+    out.sort(key=lambda p: p["x"])
+    return out or None
+
+
+def _ease(shape: str, u: float) -> float:
+    import math
+    if shape == "l":
+        return u
+    if shape == "i":
+        return 1 - math.cos(u * math.pi / 2)
+    if shape == "o":
+        return math.sin(u * math.pi / 2)
+    return 0.5 - 0.5 * math.cos(u * math.pi)
+
+
+def _sample(points: list[dict], x: float) -> float:
+    if x <= points[0]["x"]:
+        return points[0]["y"]
+    if x >= points[-1]["x"]:
+        return points[-1]["y"]
+    for a, b in zip(points, points[1:]):
+        if a["x"] <= x <= b["x"]:
+            u = 1.0 if b["x"] == a["x"] else (x - a["x"]) / (b["x"] - a["x"])
+            return a["y"] + (b["y"] - a["y"]) * _ease(a["shape"], u)
+    return points[-1]["y"]
+
+
+def _sample_offset(off: list[dict], x: float) -> float:
+    if x < off[0]["x"] or x > off[-1]["x"]:
+        return 0.0
+    for a, b in zip(off, off[1:]):
+        if a["x"] <= x <= b["x"]:
+            return b["y"] if b["x"] == a["x"] else a["y"] + (b["y"] - a["y"]) * (x - a["x"]) / (b["x"] - a["x"])
+    return off[-1]["y"]
+
+
+def bake_offset(points: list[dict], off: list[dict] | None) -> list[dict]:
+    """UST khong co lop overwrite -> gop vao cac diem pitch (doan 'l' trong khoang da ve)."""
+    if not off:
+        return points
+    x0, x1 = off[0]["x"], off[-1]["x"]
+    xs = sorted({p["x"] for p in off} | {p["x"] for p in points if x0 < p["x"] < x1})
+    mid = [{"x": x, "y": _r1(_sample(points, x) + _sample_offset(off, x)), "shape": "l"} for x in xs]
+    return [p for p in points if p["x"] < x0] + mid + [p for p in points if p["x"] > x1]
 
 
 def from_note(n: dict) -> dict | None:
@@ -163,6 +227,7 @@ def to_ust_lines(pitch: dict | None, tone: int, prev_tone: int | None = None) ->
         return []
     vbr = vbr_line(pitch.get("vibrato"))
     points = expand_spline(effective_points(pitch, tone, prev_tone))
+    points = bake_offset(points, pitch.get("pitd"))
     if len(points) == 1:                       # 1 diem = giu nguyen y: thanh 2 diem de UST bieu dien duoc
         points.append({"x": points[0]["x"] + 10.0, "y": points[0]["y"], "shape": points[0]["shape"]})
     widths = [_fmt(points[i]["x"] - points[i - 1]["x"]) for i in range(1, len(points))]
