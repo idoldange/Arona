@@ -13,7 +13,7 @@ Ghi ra: UST (PBS/PBW/PBY/PBM) cho synth/ttsapi.
 """
 from __future__ import annotations
 
-SHAPES = ("io", "l", "i", "o")
+SHAPES = ("io", "l", "i", "o", "sp")
 X_MIN, X_MAX = -2000.0, 120000.0
 Y_LIMIT = 1200.0
 MAX_POINTS = 256
@@ -132,13 +132,37 @@ def _fmt(value: float) -> str:
     return text if text not in ("", "-0") else "0"
 
 
+def expand_spline(points: list[dict]) -> list[dict]:
+    """UST khong co spline: doan 'sp' (cubic Hermite, tiep tuyen Catmull-Rom nhu client) duoc lay mau thanh cac doan thang ngan."""
+    out: list[dict] = []
+    n = len(points)
+    for i, a in enumerate(points):
+        if a["shape"] != "sp" or i == n - 1:
+            out.append({**a, "shape": "io" if a["shape"] == "sp" else a["shape"]})
+            continue
+        b = points[i + 1]
+        dx = b["x"] - a["x"]
+        slope = (b["y"] - a["y"]) / dx if dx else 0.0
+        p, q = (points[i - 1] if i > 0 else None), (points[i + 2] if i + 2 < n else None)
+        m0 = (b["y"] - p["y"]) / (b["x"] - p["x"]) if p and b["x"] != p["x"] else slope
+        m1 = (q["y"] - a["y"]) / (q["x"] - a["x"]) if q and q["x"] != a["x"] else slope
+        steps = max(1, min(40, int(dx // 10)))
+        for k in range(steps):
+            u = k / steps
+            u2, u3 = u * u, u * u * u
+            y = ((2 * u3 - 3 * u2 + 1) * a["y"] + (u3 - 2 * u2 + u) * dx * m0
+                 + (-2 * u3 + 3 * u2) * b["y"] + (u3 - u2) * dx * m1)
+            out.append({"x": _r1(a["x"] + dx * u), "y": _r1(y), "shape": "l"})
+    return out
+
+
 def to_ust_lines(pitch: dict | None, tone: int, prev_tone: int | None = None) -> list[str]:
     """Cac dong UST `PBS=`, `PBW=`, `PBY=`, `PBM=` (rong neu note khong co pitch)."""
     pitch = normalize(pitch) if pitch is not None else None
     if pitch is None:
         return []
     vbr = vbr_line(pitch.get("vibrato"))
-    points = effective_points(pitch, tone, prev_tone)
+    points = expand_spline(effective_points(pitch, tone, prev_tone))
     if len(points) == 1:                       # 1 diem = giu nguyen y: thanh 2 diem de UST bieu dien duoc
         points.append({"x": points[0]["x"] + 10.0, "y": points[0]["y"], "shape": points[0]["shape"]})
     widths = [_fmt(points[i]["x"] - points[i - 1]["x"]) for i in range(1, len(points))]
