@@ -534,6 +534,7 @@ class GeminiWebSocket:
                 mock_msg.author = self.current_user
                 mock_msg.channel = self.current_channel
                 mock_msg.guild = self.current_guild
+                mock_msg.from_live = True   # tool call made by the Live model itself (see leave_voice_channel)
                 
                 try:
                     result = await self.function_handler(name, args, mock_msg)

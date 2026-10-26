@@ -1157,15 +1157,22 @@ async def join_voice_channel(user: discord.Member, text_channel: discord.TextCha
             await user.guild.voice_client.disconnect(force=True)
         return f"Error joining voice channel: {e}"
       
-async def leave_voice_channel(guild: discord.Guild, user: discord.Member, text_channel: discord.TextChannel, farewell_message: str = None):
-    """Leaves the current voice channel. farewell_message is sent after disconnect if provided."""
+async def leave_voice_channel(guild: discord.Guild, user: discord.Member, text_channel: discord.TextChannel, farewell_message: str = None, from_model: bool = False):
+    """Leaves the current voice channel. farewell_message is sent after disconnect if provided.
+    from_model: the Gemini Live model itself decided to leave (leave_voice tool call)."""
     global _intentional_disconnect
     voice_client = guild.voice_client
     if not voice_client:
         return "Bot not in a voice channel."
 
-    # Allow anyone to disconnect the bot if they are in a channel
-    if not user.voice or user.voice.channel != voice_client.channel:
+    # Anyone in the call may make her leave. The check is skipped when (a) the model itself decided to leave:
+    # `user` is then only the member who invited her, who has usually already left by the time the model is
+    # told the channel is empty (that is exactly when it calls leave_voice), or (b) nobody is left in the
+    # channel, so there is no one to protect from a stranger kicking her out.
+    _user_voice = getattr(user, "voice", None)
+    _in_call = _user_voice is not None and _user_voice.channel == voice_client.channel
+    _call_is_empty = not any(not m.bot for m in voice_client.channel.members)
+    if not (_in_call or from_model or _call_is_empty):
         await text_channel.send("You need to be in the same voice channel as Arona to ask her to leave.")
         return "User not in the same voice channel."
 
@@ -2799,7 +2806,8 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
     
     elif function_name == "leave_voice":
       farewell = args.get("farewell_message", None)
-      return await leave_voice_channel(message.guild, message.author, message.channel, farewell_message=farewell)
+      return await leave_voice_channel(message.guild, message.author, message.channel, farewell_message=farewell,
+                                       from_model=bool(getattr(message, "from_live", False)))
 
 
 
