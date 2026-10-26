@@ -63,10 +63,60 @@ def normalize(raw) -> dict | None:
             "y": _r1(max(-Y_LIMIT, min(Y_LIMIT, y))),
             "shape": shape if shape in SHAPES else "io",     # "sp" (spline) cua OpenUtau -> io
         })
-    if not points:
+    vib = normalize_vibrato(raw.get("vibrato")) if isinstance(raw, dict) else None
+    if not points and vib is None:
         return None
+    if not points:                                  # chi co vibrato: duong pitch phang, khong snap
+        return {"points": [{"x": -25.0, "y": 0.0, "shape": "io"}, {"x": 25.0, "y": 0.0, "shape": "io"}],
+                "snapFirst": False, "vibrato": vib}
     points.sort(key=lambda p: p["x"])
-    return {"points": points, "snapFirst": snap is not False and snap != 0 and snap != "false"}
+    res = {"points": points, "snapFirst": snap is not False and snap != 0 and snap != "false"}
+    if vib:
+        res["vibrato"] = vib
+    return res
+
+
+VIB_FIELDS = (("length", 0.0, 100.0), ("period", 5.0, 500.0), ("depth", 0.0, 200.0), ("in", 0.0, 100.0),
+              ("out", 0.0, 100.0), ("shift", 0.0, 100.0), ("drift", -100.0, 100.0), ("volLink", -100.0, 100.0))
+_VIB_DEFAULT = {"length": 0.0, "period": 175.0, "depth": 25.0, "in": 10.0, "out": 10.0, "shift": 0.0, "drift": 0.0, "volLink": 0.0}
+
+
+def normalize_vibrato(raw) -> dict | None:
+    """Vibrato cua note (OpenUtau): length % note, period ms, depth cent, in/out % vibrato, shift/drift/volLink %. length<=0 = tat."""
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for key, lo, hi in VIB_FIELDS:
+        v = _num(raw.get(key, raw.get("vol_link") if key == "volLink" else None))
+        out[key] = _r1(max(lo, min(hi, v))) if v is not None else _VIB_DEFAULT[key]
+    return out if out["length"] > 0 and out["depth"] > 0 else None
+
+
+def vbr_line(vib: dict | None) -> list[str]:
+    v = normalize_vibrato(vib)
+    if v is None:
+        return []
+    vals = [v["length"], v["period"], v["depth"], v["in"], v["out"], v["shift"], v["drift"], v["volLink"]]
+    return ["VBR=" + ",".join(_fmt(x) for x in vals)]
+
+
+def from_vbr(text) -> dict | None:
+    v = _split_floats(text)
+    if len(v) < 3:
+        return None
+    v += [0.0] * (8 - len(v))
+    return normalize_vibrato(dict(zip(("length", "period", "depth", "in", "out", "shift", "drift", "volLink"), v[:8])))
+
+
+def from_note(n: dict) -> dict | None:
+    """Pitch + vibrato cua 1 note dang JSON (USTX: pitch/vibrato ngang hang; DAW: vibrato nam trong pitch)."""
+    p, v = n.get("pitch"), n.get("vibrato")
+    if isinstance(p, dict):
+        if v is not None and "vibrato" not in p:
+            p = {**p, "vibrato": v}
+    elif v is not None:
+        p = {"points": [], "vibrato": v}
+    return normalize(p)
 
 
 def effective_points(pitch: dict, tone: int, prev_tone: int | None) -> list[dict]:
@@ -87,6 +137,7 @@ def to_ust_lines(pitch: dict | None, tone: int, prev_tone: int | None = None) ->
     pitch = normalize(pitch) if pitch is not None else None
     if pitch is None:
         return []
+    vbr = vbr_line(pitch.get("vibrato"))
     points = effective_points(pitch, tone, prev_tone)
     if len(points) == 1:                       # 1 diem = giu nguyen y: thanh 2 diem de UST bieu dien duoc
         points.append({"x": points[0]["x"] + 10.0, "y": points[0]["y"], "shape": points[0]["shape"]})
@@ -96,7 +147,7 @@ def to_ust_lines(pitch: dict | None, tone: int, prev_tone: int | None = None) ->
     return [f"PBS={_fmt(points[0]['x'])};{_fmt(points[0]['y'])}",
             "PBW=" + ",".join(widths),
             "PBY=" + ",".join(ys),
-            "PBM=" + ",".join(modes)]
+            "PBM=" + ",".join(modes)] + vbr
 
 
 def _split_floats(text) -> list[float]:
@@ -108,7 +159,19 @@ def _split_floats(text) -> list[float]:
     return out
 
 
-def from_ust(pbs, pbw, pby, pbm) -> dict | None:
+def from_ust(pbs, pbw, pby, pbm, vbr=None) -> dict | None:
+    res = _from_ust_bend(pbs, pbw, pby, pbm)
+    vib = from_vbr(vbr) if vbr else None
+    if vib:
+        res = dict(res or {"points": [], "snapFirst": False})
+        if not res["points"]:
+            res = normalize({"points": [], "vibrato": vib})
+        else:
+            res["vibrato"] = vib
+    return res
+
+
+def _from_ust_bend(pbs, pbw, pby, pbm) -> dict | None:
     """PBS/PBW/PBY/PBM cua 1 note UST -> dang chuan (giong ParsePitchBend cua OpenUtau)."""
     has_pbs = bool(str(pbs or "").strip())
     widths = _split_floats(pbw) if str(pbw or "").strip() else []

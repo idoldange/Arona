@@ -372,7 +372,7 @@ def parse_ustx(body: bytes) -> UProject:
                     dur=dur,
                     tone=int(n["tone"]),
                     lyric=str(n.get("lyric") or ""),
-                    pitch=_pitch.normalize(n.get("pitch")),
+                    pitch=_pitch.from_note(n),
                 ))
             except Exception:
                 continue

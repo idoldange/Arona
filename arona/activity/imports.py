@@ -83,7 +83,7 @@ def _parse_ust(name: str, data: bytes):
             tone = 60
         if dur > 0 and lyric and lyric.upper() not in ("R", "-"):
             notes.append(S.UNote(pos=pos, dur=dur, tone=max(0, min(127, tone)), lyric=lyric,
-                                 pitch=_pitch.from_ust(cur.get("PBS"), cur.get("PBW"), cur.get("PBY"), cur.get("PBM"))))
+                                 pitch=_pitch.from_ust(cur.get("PBS"), cur.get("PBW"), cur.get("PBY"), cur.get("PBM"), cur.get("VBR"))))
         pos += max(0, dur)
         cur.clear()
 
@@ -102,7 +102,7 @@ def _parse_ust(name: str, data: bytes):
                 tempos.append((pos, bpm))
             except ValueError:
                 pass
-        elif key in ("Length", "Lyric", "NoteNum", "PBS", "PBW", "PBY", "PBM"):
+        elif key in ("Length", "Lyric", "NoteNum", "PBS", "PBW", "PBY", "PBM", "VBR"):
             cur[key] = value
     flush()
     if not tempos:
