@@ -165,7 +165,7 @@ from utils.tool_schemas import get_gemini_tools
 from utils import tool_groups
 from utils.discord_ui import AskUserModal, MalformedRetryView, AskUserView
 from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_board_message, restore_board_views
-from utils.text_utils import split_message, time_utc, is_japanese, convert_md_to_grid_table
+from utils.text_utils import split_message, time_utc, is_japanese
 from dotenv import load_dotenv
 from arona.tts.tts import text_to_speech, strip_emotion_tags
 from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts, describe_soundfonts, preset_search_text, ensure_soundfonts
@@ -6710,24 +6710,6 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
   except Exception:
     pass
   
-  try:
-    table_pattern = r'(?:(?:^|\n)\|.*?\|(?:\r?\n|$))+'
-    md_table_matches = re.findall(table_pattern, new_content, re.MULTILINE)
-
-    for i, table_block in enumerate(md_table_matches):
-      if re.search(r'\|[:\s-]{3,}\|', table_block):
-        
-        grid_table = await convert_md_to_grid_table(table_block)
-        
-        txt_filename = f"table_data_{int(time.time())}_{i+1}.md"
-        file_obj = discord.File(BytesIO(grid_table.encode("utf-8")), filename=txt_filename)
-        
-        files.append(file_obj)
-        console.log(f"[Table] Exported grid table to {txt_filename}", "INFO")
-        
-        new_content = new_content.replace(table_block, f"\nTable attached: `{txt_filename}`\n")
-  except Exception as e:
-    console.log(f"Error creating Grid table: {e}", "WARN")
   
   
 
