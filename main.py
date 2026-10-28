@@ -6710,6 +6710,24 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
   except Exception:
     pass
   
+  try:
+    table_pattern = r'(?:(?:^|\n)\|.*?\|(?:\r?\n|$))+'
+    md_table_matches = re.findall(table_pattern, new_content, re.MULTILINE)
+
+    for i, table_block in enumerate(md_table_matches):
+      if re.search(r'\|[:\s-]{3,}\|', table_block):
+        
+        md_table = table_block.strip() + chr(10)
+        
+        txt_filename = f"table_data_{int(time.time())}_{i+1}.md"
+        file_obj = discord.File(BytesIO(md_table.encode("utf-8")), filename=txt_filename)
+        
+        files.append(file_obj)
+        console.log(f"[Table] Exported markdown table to {txt_filename}", "INFO")
+        
+        new_content = new_content.replace(table_block, f"\nTable attached: `{txt_filename}`\n")
+  except Exception as e:
+    console.log(f"Error exporting markdown table: {e}", "WARN")
   
   
 
