@@ -202,6 +202,8 @@ def _parse_track(body: dict):
     # independently makes the octave jump between phrases (different median per chunk).
     if "transpose" not in params and params.get("auto_octave", True):
         params["transpose"] = chunking.auto_transpose(notes, float(params.get("voice_center", 66.0)))
+    # Track co transpose thu cong (note["transpose"]) bo qua auto: dich note de sau khi synth cong transpose chung thi ra dung gia tri do.
+    notes = chunking.apply_track_transpose(notes, int(params.get("transpose", 0) or 0))
     chunks, usts = chunking.plan_track(notes, ppq, tempos, params, str(body.get("track", "vocal")))
     return chunks, usts, params
 

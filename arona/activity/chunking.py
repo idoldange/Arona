@@ -96,12 +96,29 @@ def auto_transpose(raw_notes, voice_center: float = 66.0) -> int:
     thi moi chunk se roi vao 1 quang 8 khac nhau -> giong bi nhay octave giua cac cau.
     """
     nums = sorted(int(n["tone"]) for n in raw_notes or []
-                  if str(n.get("lyric", "")).strip().lower() not in ("", "r"))
+                  if n.get("transpose") is None      # track chinh tay khong tham gia tinh auto
+                  and str(n.get("lyric", "")).strip().lower() not in ("", "r"))
     if not nums:
         return 0
     mid = len(nums) // 2
     med = float(nums[mid]) if len(nums) % 2 else (nums[mid - 1] + nums[mid]) / 2.0
     return 12 * int(round((float(voice_center) - med) / 12.0))
+
+
+def apply_track_transpose(raw_notes, base: int):
+    """Track co `transpose` thu cong (absolute, semitone) thi gen dung muc do, khong theo auto.
+
+    Synth se cong them `base` (transpose chung cua ca bai) vao moi note, nen note cua track thu cong
+    duoc dich san (manual - base) de sau khi cong lai thanh dung `manual`. Note khong co `transpose` giu nguyen.
+    """
+    out = []
+    for n in raw_notes or []:
+        manual = n.get("transpose")
+        if manual is None:
+            out.append(n)
+            continue
+        out.append({**n, "tone": int(n["tone"]) + int(manual) - int(base)})
+    return out
 
 
 def _split_long(notes: list[Note], ppq: int, tempos) -> list[list[Note]]:
