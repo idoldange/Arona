@@ -24,7 +24,7 @@ SESSION_TTL_S = 1800
 SESSIONS: dict = {}   # (channel_id, user_id) -> SynthSession
 
 PROJ_EXTS = (".ust", ".ustx", ".mid", ".midi")
-PROJ_MAX_MB = {".ust": 1, ".ustx": 6, ".mid": 2, ".midi": 2}
+PROJ_MAX_MB = {".ust": 10, ".ustx": 60, ".mid": 200, ".midi": 200}
 MB = 1024 * 1024
 SF_EXTS = (".sf2", ".sf3")
 SF_MAX_MB = 200      # per soundfont

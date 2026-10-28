@@ -25,7 +25,7 @@ MAX_OUT_BYTES = 9 * 1024 * 1024   # gioi han upload Discord (giong nhanh wav->mp
 MAX_SECONDS = 600
 FPS = 30
 AUDIO_KBPS = 128
-MEDIA_MAX_MB = {"image": 10, "video": 50, "audio": 25}
+MEDIA_MAX_MB = {"image": 1024, "video": 1024, "audio": 1024}   # gioi han upload Discord (MB)
 
 
 def media_kind(filename: str):
