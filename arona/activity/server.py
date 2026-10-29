@@ -62,6 +62,8 @@ _bot = None
 _user_cache: dict[str, tuple[int, float]] = {}     # token -> (user_id, het han)
 _jobs: dict[str, asyncio.Task] = {}                # hash -> job gen dang chay (dung chung giua cac request/retry)
 _job_errors: dict[str, tuple[str, float]] = {}     # hash -> (loi, luc xay ra) cho job that bai khi khong ai dang doi
+_wanted_by: dict[str, dict] = {}                   # hash -> {user_id: lan cuoi hoi chunk nay} (huy chunk khi KHONG con ai can)
+SHARED_GRACE_S = WAIT_S + RETRY_AFTER_S + 5        # nguoi khac hoi chunk trong khoang nay = van dang can
 _watched: set[str] = set()                         # hash ma 1 request dang cho truc tiep
 
 
@@ -220,6 +222,38 @@ def _fresh(h: str) -> bool:
         return False
 
 
+def _cancel_chunks(uid, hashes, now: float | None = None) -> list[str]:
+    """Huy job gen cua cac chunk ma client `uid` khong con can (da sua / bi mute / xoa).
+    Neu nguoi khac trong cung session van vua hoi chunk do thi giu lai (hash giong nhau thi dung chung job).
+    Huy task -> `_post_synth` bi huy -> ket noi toi GPT-SoVITS dong -> api_v2 dung han ca vong lap phrase."""
+    now = time.time() if now is None else now
+    out: list[str] = []
+    for h in hashes:
+        who = _wanted_by.get(h)
+        if who is not None:
+            who.pop(uid, None)
+            if any(now - t < SHARED_GRACE_S for t in who.values()):
+                continue
+            _wanted_by.pop(h, None)
+        task = _jobs.get(h)
+        if task is not None and not task.done():
+            task.cancel()
+            out.append(h)
+    return out
+
+
+async def h_cancel(request):
+    try:
+        body = await request.json()
+        hashes = [str(h) for h in (body.get("hashes") or [])][:64]
+    except (ValueError, TypeError, AttributeError):
+        return _deny(400, "bad json")
+    cancelled = _cancel_chunks(request["user_id"], hashes)
+    if cancelled:
+        console.log(f"Activity cancelled {len(cancelled)} stale chunk(s) by user {request['user_id']}", "INFO")
+    return web.json_response({"cancelled": len(cancelled)})
+
+
 async def h_plan(request):
     """Tra danh sach chunk + hash + da co cache chua -> client biet chunk nao can gen lai."""
     try:
@@ -276,6 +310,7 @@ def _start_job(h: str, ust: bytes, params: dict) -> tuple[asyncio.Task, bool]:
     def _done(t: asyncio.Task) -> None:
         if _jobs.get(h) is t:
             del _jobs[h]
+        _wanted_by.pop(h, None)
         if t.cancelled():
             return
         exc = t.exception()      # luon doc de khong bi warning "never retrieved"
@@ -319,6 +354,7 @@ async def h_chunk(request):
     err = _job_errors.pop(c.hash, None)
     if err and time.time() - err[1] < 120 and c.hash not in _jobs:
         return _deny(502, err[0])
+    _wanted_by.setdefault(c.hash, {})[request["user_id"]] = time.time()
     task, started = _start_job(c.hash, usts[idx], params)
     if started:
         console.log(f"Activity chunk {idx}/{len(chunks)} ({len(c.notes)} notes) by user {request['user_id']}", "INFO")
@@ -331,7 +367,7 @@ async def h_chunk(request):
         return web.json_response({"status": "pending", "retry_after": RETRY_AFTER_S}, status=202,
                                  headers={"Retry-After": str(RETRY_AFTER_S)})
     if task.cancelled():
-        return _deny(502, "synth job cancelled")
+        return _deny(409, "chunk cancelled; re-plan")
     exc = task.exception()
     if exc is not None:
         _job_errors.pop(c.hash, None)
@@ -1193,6 +1229,7 @@ def make_app() -> web.Application:
         web.get("/api/save/latest", h_save_latest),
         web.post("/api/vocal/plan", h_plan),
         web.post("/api/vocal/chunk", h_chunk),
+        web.post("/api/vocal/cancel", h_cancel),
         web.get("/api/chess/state", h_chess_state),
         web.post("/api/chess/move", h_chess_move),
         web.post("/api/chess/resign", h_chess_resign),
