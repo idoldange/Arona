@@ -49,6 +49,7 @@ AUDIO_CONVERT_TIMEOUT_S = 120
 EXPORT_MODES = {"audio", "audio+ustx", "ustx"}
 EXPORT_MAX_AUDIO_BYTES = 100 * 1024 * 1024
 EXPORT_MAX_USTX_BYTES = 5 * 1024 * 1024
+EXPORT_MAX_PARTS = 20
 EXPORT_COOLDOWN_S = 3
 FALLBACK_UPLOAD_LIMIT = 10 * 1024 * 1024      # gioi han upload khi khong doc duoc tu guild
 JSON_MAX_BYTES = 4 * 1024 * 1024              # moi endpoint JSON (tru /api/export)
@@ -557,6 +558,16 @@ async def h_export(request):
     if total > limit:
         return _deny(413, f"export is {total >> 20} MB, over this server's {limit >> 20} MB upload limit even as mp3")
 
+    # wav parts imported by the user: sent as they were, in extra messages when over the limit
+    parts, skipped = [], []
+    for f in form.getall("part", [])[:EXPORT_MAX_PARTS]:
+        fname = re.sub(r"[^\w.\- ]", "_", str(getattr(f, "filename", "") or "audio").replace("%2F", "/").replace("\\", "/").rsplit("/", 1)[-1])[:100].lstrip(".") or "audio"
+        data = f.file.read(limit + 1) if hasattr(f, "file") else b""
+        if not data or len(data) > limit:
+            skipped.append(fname)
+        else:
+            parts.append((fname, data))
+
     s.last_export = time.time()
     files = []
     if audio is not None:
@@ -570,9 +581,23 @@ async def h_export(request):
         return _deny(502, "the bot cannot post files in that channel")
     except discord.HTTPException as e:
         return _deny(502, f"Discord rejected the message: {str(e)[:150]}")
+    sent = [f.filename for f in files]
+    batch, size = [], 0
+    try:
+        for fname, data in parts + [(None, b"")]:
+            if (fname is None or len(batch) >= 10 or size + len(data) > limit) and batch:
+                await channel.send(content=f"🎵 audio parts of **{name}**", files=batch,
+                                   allowed_mentions=discord.AllowedMentions.none())
+                sent += [f.filename for f in batch]
+                batch, size = [], 0
+            if fname is not None:
+                batch.append(discord.File(io.BytesIO(data), filename=fname))
+                size += len(data)
+    except discord.HTTPException as e:
+        return _deny(502, f"project sent, but the audio parts failed: {str(e)[:150]}")
     console.log(f"Activity export '{name}' ({mode}) by user {uid} -> #{s.text_channel_id}", "INFO")
-    return web.json_response({"ok": True, "message_url": msg.jump_url, "files": [f.filename for f in files],
-                              "converted_to_mp3": converted})
+    return web.json_response({"ok": True, "message_url": msg.jump_url, "files": sent,
+                              "skipped": skipped, "converted_to_mp3": converted})
 
 
 # ------------------------------------------------------------------------------------------------ saves
