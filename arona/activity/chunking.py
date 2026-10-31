@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from arona.activity import pitch as pitchmod
 
+LANGS = {"ja", "en", "zh", "ko", "yue"}     # ngon ngu hat per-note (khong co = auto)
 MIN_GAP_SEC = 0.35      # khoang lang toi thieu de cat chunk
 MAX_CHUNK_SEC = 12.0    # chunk dai hon se bi cat nho them
 MAX_CHUNK_NOTES = 48    # chunk nhieu note hon cung bi cat (gen cham theo so phrase)
@@ -30,6 +31,7 @@ class Note:
     tone: int
     lyric: str
     pitch: dict | None = None    # pitch bend cua note (xem arona/activity/pitch.py)
+    lang: str | None = None      # ngon ngu hat cua note (None = tu nhan dien / theo request)
 
 
 @dataclass
@@ -41,6 +43,10 @@ class Chunk:
     end_sec: float
     notes: list
     hash: str = ""
+
+    @property
+    def lang(self) -> str | None:
+        return self.notes[0].lang if self.notes else None
 
     def info(self) -> dict:
         return {"index": self.index, "hash": self.hash, "start_sec": round(self.start_sec, 4),
@@ -84,7 +90,9 @@ def clean_notes(raw_notes) -> list[Note]:
         if end <= start:
             continue
         lyric = str(n.get("lyric", "")).replace("\n", " ").strip() or "a"
-        out.append(Note(start, end - start, max(0, min(127, int(n["tone"]))), lyric, pitchmod.normalize(n.get("pitch"))))
+        lang = n.get("lang")
+        out.append(Note(start, end - start, max(0, min(127, int(n["tone"]))), lyric, pitchmod.normalize(n.get("pitch")),
+                        lang if lang in LANGS else None))
         cursor = end
     return out
 
@@ -142,7 +150,8 @@ def split_chunks(notes: list[Note], ppq: int, tempos) -> list[Chunk]:
     for n in notes:
         if cur:
             gap_sec = tick_to_sec(n.pos, ppq, tempos) - tick_to_sec(cur[-1].pos + cur[-1].dur, ppq, tempos)
-            if gap_sec >= MIN_GAP_SEC:
+            # doi ngon ngu = cat chunk (moi chunk chi hat 1 ngon ngu)
+            if gap_sec >= MIN_GAP_SEC or n.lang != cur[-1].lang:
                 groups.append(cur)
                 cur = []
         cur.append(n)
@@ -183,6 +192,14 @@ def chunk_to_ust(chunk: Chunk, ppq: int, tempos, name: str = "chunk") -> bytes:
     return ("\r\n".join(out) + "\r\n").encode("utf-8")
 
 
+def chunk_params(params: dict | None, chunk: Chunk) -> dict:
+    """Params gui cho synth: ngon ngu cua chunk (neu co) thang ngon ngu chung."""
+    out = dict(params or {})
+    if chunk.lang:
+        out["text_lang"] = chunk.lang
+    return out
+
+
 def chunk_hash(ust: bytes, params: dict) -> str:
     h = hashlib.sha1()
     h.update(ust)
@@ -198,6 +215,6 @@ def plan_track(raw_notes, ppq: int, tempos, params: dict | None = None, name: st
     usts = []
     for c in chunks:
         ust = chunk_to_ust(c, ppq, tempos, name)
-        c.hash = chunk_hash(ust, params or {})
+        c.hash = chunk_hash(ust, chunk_params(params, c))
         usts.append(ust)
     return chunks, usts

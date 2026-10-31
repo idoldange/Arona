@@ -40,8 +40,11 @@ COI = os.environ.get("ACTIVITY_COI", "0") == "1"      # cross-origin isolation h
 DISCORD_API = "https://discord.com/api/v10"
 CACHE_MAX_FILES = 400
 SAVE_DIR = os.path.join(ROOT, "activity", "saves")
-SAVE_KEEP = 5                         # so ban luu giu lai moi kenh voice
-SAVE_TTL_S = 7 * 24 * 3600            # ban luu qua 7 ngay bi xoa
+SAVE_KEEP = 3                         # so ban luu giu lai cho MOI project (cung ten) trong kenh
+SAVE_MAX_FILES = 40                   # tong so ban luu giu lai moi kenh voice
+SAVE_TTL_S = 30 * 24 * 3600           # ban luu qua 30 ngay bi xoa
+SAVE_LANGS = {"auto", "ja", "en", "zh", "ko", "yue"}     # ngon ngu hat cua project
+RECENTS_SHOWN = 12
 SAVE_MAX_BYTES = 4 * 1024 * 1024
 IMPORT_MAX_BYTES = 32 * 1024 * 1024
 AUDIO_MAX_BYTES = 100 * 1024 * 1024        # file nhac up len de ffmpeg doi sang wav
@@ -356,7 +359,7 @@ async def h_chunk(request):
     if err and time.time() - err[1] < 120 and c.hash not in _jobs:
         return _deny(502, err[0])
     _wanted_by.setdefault(c.hash, {})[request["user_id"]] = time.time()
-    task, started = _start_job(c.hash, usts[idx], params)
+    task, started = _start_job(c.hash, usts[idx], chunking.chunk_params(params, c))
     if started:
         console.log(f"Activity chunk {idx}/{len(chunks)} ({len(c.notes)} notes) by user {request['user_id']}", "INFO")
     _watched.add(c.hash)
@@ -610,10 +613,23 @@ def _save_files(channel_id: int) -> list[str]:
     return sorted((os.path.join(d, n) for n in names), reverse=True)     # ten file la timestamp ms -> moi nhat truoc
 
 
+def _save_meta(path: str) -> dict:
+    try:
+        with open(path[:-4] + ".json", encoding="utf-8") as f:
+            meta = json.load(f)
+        return meta if isinstance(meta, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def _prune_saves(channel_id: int) -> None:
+    """Giu SAVE_KEEP ban moi nhat cho moi project (theo ten), toi da SAVE_MAX_FILES, va khong qua TTL."""
     now = time.time()
-    for i, path in enumerate(_save_files(channel_id)):
-        if i >= SAVE_KEEP or now - os.path.getmtime(path) > SAVE_TTL_S:
+    per_name: dict[str, int] = {}
+    for i, path in enumerate(_save_files(channel_id)):         # moi nhat truoc
+        name = str(_save_meta(path).get("name", ""))
+        per_name[name] = per_name.get(name, 0) + 1
+        if i >= SAVE_MAX_FILES or per_name[name] > SAVE_KEEP or now - os.path.getmtime(path) > SAVE_TTL_S:
             for p in (path, path[:-4] + ".json"):
                 try:
                     os.remove(p)
@@ -622,12 +638,23 @@ def _prune_saves(channel_id: int) -> None:
 
 
 async def h_save(request):
-    """Activity tu luu: body = file MIDI cua Signal (loi hat nam trong su kien Lyric), header X-Save-Name = ten bai (url-encoded)."""
+    """Activity tu luu: body = file MIDI cua Signal (loi hat nam trong su kien Lyric), header X-Save-Name = ten bai (url-encoded),
+    X-Save-Lang = ngon ngu hat cua project."""
     s, uid = request["session"], request["user_id"]
     body = await request.read()
     if not body or len(body) > SAVE_MAX_BYTES or body[:4] != b"MThd":
         return _deny(400, "body must be a MIDI file (max %d MB)" % (SAVE_MAX_BYTES >> 20))
     name = _safe_name(unquote(request.headers.get("X-Save-Name", "")))
+    lang = request.headers.get("X-Save-Lang", "auto")
+    if lang not in SAVE_LANGS:
+        lang = "auto"
+    tracks = {}
+    try:
+        raw = json.loads(request.headers.get("X-Save-Tracks", "{}"))
+        if isinstance(raw, dict):
+            tracks = {str(int(k)): v for k, v in list(raw.items())[:64] if v in SAVE_LANGS and v != "auto"}
+    except (ValueError, TypeError):
+        tracks = {}
     d = os.path.join(SAVE_DIR, str(s.channel_id))
     os.makedirs(d, exist_ok=True)
     stamp = int(time.time() * 1000)
@@ -636,9 +663,26 @@ async def h_save(request):
         f.write(body)
     os.replace(base + ".mid.tmp", base + ".mid")
     with open(base + ".json", "w", encoding="utf-8") as f:
-        f.write('{"name": %s, "user": %d}' % (__import__("json").dumps(name), uid))
+        json.dump({"name": name, "user": uid, "lang": lang, "tracks": tracks}, f)
     _prune_saves(s.channel_id)
     return web.json_response({"ok": True, "saved_at": stamp})
+
+
+def _save_response(path: str) -> web.Response:
+    meta = _save_meta(path)
+    try:
+        user = int(meta.get("user", 0))
+    except (TypeError, ValueError):
+        user = 0
+    lang = str(meta.get("lang", "auto"))
+    tracks = meta.get("tracks") if isinstance(meta.get("tracks"), dict) else {}
+    with open(path, "rb") as f:
+        data = f.read()
+    return web.Response(body=data, content_type="audio/midi", headers={
+        "X-Save-Name": quote(str(meta.get("name", ""))), "X-Saved-At": os.path.basename(path)[:-4],
+        "X-Saved-By": str(user), "X-Save-Lang": lang if lang in SAVE_LANGS else "auto",
+        "X-Save-Tracks": json.dumps(tracks),
+        "Access-Control-Expose-Headers": "X-Save-Name,X-Saved-At,X-Saved-By,X-Save-Lang,X-Save-Tracks"})
 
 
 async def h_save_latest(request):
@@ -648,18 +692,38 @@ async def h_save_latest(request):
     files = _save_files(s.channel_id)
     if not files:
         return _deny(404, "no save for this channel")
-    path = files[0]
-    name, user = "", 0
-    try:
-        meta = __import__("json").load(open(path[:-4] + ".json", encoding="utf-8"))
-        name, user = str(meta.get("name", "")), int(meta.get("user", 0))
-    except (OSError, ValueError):
-        pass
-    with open(path, "rb") as f:
-        data = f.read()
-    return web.Response(body=data, content_type="audio/midi", headers={
-        "X-Save-Name": quote(name), "X-Saved-At": os.path.basename(path)[:-4], "X-Saved-By": str(user),
-        "Access-Control-Expose-Headers": "X-Save-Name,X-Saved-At,X-Saved-By"})
+    return _save_response(files[0])
+
+
+async def h_save_list(request):
+    """Recents: ban luu moi nhat cua tung project (theo ten) trong kenh nay, moi nhat truoc."""
+    s = request["session"]
+    _prune_saves(s.channel_id)
+    seen, items = set(), []
+    for path in _save_files(s.channel_id):
+        meta = _save_meta(path)
+        name = str(meta.get("name", ""))
+        if name in seen:
+            continue
+        seen.add(name)
+        lang = str(meta.get("lang", "auto"))
+        items.append({"id": os.path.basename(path)[:-4], "name": name, "saved_at": int(os.path.basename(path)[:-4]),
+                      "user": meta.get("user", 0), "lang": lang if lang in SAVE_LANGS else "auto"})
+        if len(items) >= RECENTS_SHOWN:
+            break
+    return web.json_response({"saves": items})
+
+
+async def h_save_get(request):
+    """Mot ban luu cu the cua kenh nay (id = timestamp ms)."""
+    s = request["session"]
+    sid = request.match_info["save_id"]
+    if not sid.isdigit() or len(sid) > 16:
+        return _deny(400, "bad save id")
+    path = os.path.join(SAVE_DIR, str(int(s.channel_id)), sid + ".mid")
+    if not os.path.isfile(path):
+        return _deny(404, "that save is gone")
+    return _save_response(path)
 
 
 # ------------------------------------------------------------------------------------------------ chess (interactive board)
@@ -1252,6 +1316,8 @@ def make_app() -> web.Application:
         web.post("/api/export", h_export),
         web.post("/api/save", h_save),
         web.get("/api/save/latest", h_save_latest),
+        web.get("/api/save/list", h_save_list),
+        web.get("/api/save/{save_id}", h_save_get),
         web.post("/api/vocal/plan", h_plan),
         web.post("/api/vocal/chunk", h_chunk),
         web.post("/api/vocal/cancel", h_cancel),
