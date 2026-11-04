@@ -8,6 +8,7 @@ DB writes happen async in background — never blocks response path.
 import asyncio
 import random
 import os
+import time
 import aiosqlite
 import threading
 from config import AFFECTION_DB_PATH as DB_PATH
@@ -25,6 +26,11 @@ _cache: dict[int, float] = {}
 
 # Track pending flush tasks to ensure they complete before shutdown
 _pending_flushes: set = set()
+
+# Last-activity clock per user (epoch seconds) - drives idle decay. Persisted as bond.last_seen.
+_last_seen: dict[int, float] = {}
+# Last applied <bond> tag per user (monotonic) - cooldown
+_last_adjust: dict[int, float] = {}
 
 # Minimum cache size threshold — if cache is this small, something went wrong
 _EXPECTED_CACHE_SIZE = 70
@@ -90,6 +96,11 @@ async def _init_db():
                 bond    REAL    NOT NULL DEFAULT 0.0
             )
         """)
+        # Migration: idle-decay clock
+        async with db.execute("PRAGMA table_info(bond)") as cur:
+            _cols = {r[1] for r in await cur.fetchall()}
+        if "last_seen" not in _cols:
+            await db.execute("ALTER TABLE bond ADD COLUMN last_seen REAL")
         await db.commit()
 
 
@@ -100,12 +111,15 @@ async def _flush(user_id: int, bond: float):
         # Read latest value from cache — avoids writing stale value if cache was updated after this task was scheduled
         with _cache_lock:
             bond = _cache.get(user_id, bond)
+            seen = _last_seen.get(user_id)
         async with _lock:
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("""
-                    INSERT INTO bond (user_id, bond) VALUES (?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET bond = excluded.bond
-                """, (user_id, bond))
+                    INSERT INTO bond (user_id, bond, last_seen) VALUES (?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        bond = excluded.bond,
+                        last_seen = COALESCE(excluded.last_seen, bond.last_seen)
+                """, (user_id, bond, seen))
                 await db.commit()
                 console.log(f"[bond] Saved user={user_id} bond={bond:.2f}", "DEBUG")
     except Exception as e:
@@ -130,11 +144,14 @@ async def initialize():
     await _init_db()
     console.log(f"[bond] Loading bonds from: {DB_PATH}", "INFO")
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT user_id, bond FROM bond") as cur:
+        async with db.execute("SELECT user_id, bond, last_seen FROM bond") as cur:
             rows = await cur.fetchall()
+            _now = time.time()
             with _cache_lock:
-                for user_id, bond in rows:
+                for user_id, bond, seen in rows:
                     _cache[int(user_id)] = min(100.0, bond)
+                    # Rows from before decay existed have no last_seen - start their clock now
+                    _last_seen[int(user_id)] = seen if seen else _now
                     console.log(f"[bond] Loaded user={user_id} bond={bond:.2f}", "DEBUG")
     with _cache_lock:
         size = len(_cache)
@@ -287,6 +304,110 @@ async def health_check_loop():
         except Exception as e:
             console.log(f"[bond] health_check_loop error: {e}", "ERROR")
             await asyncio.sleep(10)  # Brief wait before retry
+
+
+# Idle decay + model-driven adjustment
+
+def _schedule_flush(user_id: int, value: float):
+    try:
+        task = asyncio.get_running_loop().create_task(_flush(user_id, value))
+    except RuntimeError:
+        return  # no running loop (sync/test context) - next flush will persist it
+    _pending_flushes.add(task)
+    task.add_done_callback(lambda t: _pending_flushes.discard(t))
+
+
+def _rank_floor(bond: float) -> float:
+    """Lower bound of the rank this bond sits in - decay never demotes below it."""
+    for lo, hi, _name, _mult in RANKS:
+        if lo <= bond < hi:
+            return float(lo)
+    return 100.0
+
+
+def _decay_user_locked(user_id: int, now: float) -> bool:
+    """
+    Apply whole-day idle decay for one user. Caller must hold _cache_lock.
+    Consumed days advance last_seen, so a restart can never double-apply them.
+    Returns True if the bond value changed.
+    """
+    seen = _last_seen.get(user_id)
+    if seen is None or user_id not in _cache:
+        return False
+    n = int((now - seen) / 86400.0 - BOND_DECAY_GRACE_DAYS)
+    if n < 1:
+        return False
+    old = _cache[user_id]
+    new = max(_rank_floor(old), old - n * BOND_DECAY_PER_DAY)
+    _last_seen[user_id] = seen + n * 86400.0
+    _cache[user_id] = new
+    if new != old:
+        console.log(f"[bond] decay user={user_id}: {old:.2f} -> {new:.2f} ({n}d idle past grace)", "INFO")
+    return new != old
+
+
+def touch(user_id: int):
+    """Mark user active now. Applies any pending idle decay first so the prompt sees the real value."""
+    user_id = int(user_id)
+    now = time.time()
+    with _cache_lock:
+        changed = _decay_user_locked(user_id, now)
+        _last_seen[user_id] = now
+        val = _cache.get(user_id)
+    if changed and val is not None:
+        _schedule_flush(user_id, val)
+
+
+def adjust(user_id: int, delta: float) -> float:
+    """
+    Model-driven bond change (+/-), from a <bond>N</bond> tag.
+    Clamped to [BOND_TAG_MIN, BOND_TAG_MAX], per-user cooldown. Returns the applied delta (0.0 if skipped).
+    """
+    user_id = int(user_id)
+    delta = max(BOND_TAG_MIN, min(BOND_TAG_MAX, float(delta)))
+    if delta == 0.0:
+        return 0.0
+    now = time.monotonic()
+    with _cache_lock:
+        if now - _last_adjust.get(user_id, -1e9) < BOND_TAG_COOLDOWN:
+            console.log(f"[bond] adjust user={user_id} {delta:+.1f} skipped (cooldown)", "DEBUG")
+            return 0.0
+        current = _cache.get(user_id, 0.0)
+        new_val = max(0.0, min(100.0, current + delta))
+        _cache[user_id] = new_val
+        _last_adjust[user_id] = now
+    console.log(f"[bond] adjust user={user_id}: {current:.2f} -> {new_val:.2f} (tag {delta:+.1f})", "INFO")
+    _schedule_flush(user_id, new_val)
+    return new_val - current
+
+
+async def decay_once() -> int:
+    """Apply idle decay to every cached user. Returns how many bonds changed."""
+    now = time.time()
+    changed = []
+    with _cache_lock:
+        for uid in list(_cache.keys()):
+            if uid not in _last_seen:
+                _last_seen[uid] = now   # no clock yet - start it, don't decay retroactively
+                continue
+            if _decay_user_locked(uid, now):
+                changed.append((uid, _cache[uid]))
+    for uid, val in changed:
+        _schedule_flush(uid, val)
+    return len(changed)
+
+
+async def decay_loop():
+    """Run as asyncio.create_task(). Never raises."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            n = await decay_once()
+            if n:
+                console.log(f"[bond] decay pass: {n} bond(s) decayed", "INFO")
+        except Exception as e:
+            console.log(f"[bond] decay_loop error: {e}", "ERROR")
+        await asyncio.sleep(BOND_DECAY_CHECK_SECS)
 
 
 async def shutdown():

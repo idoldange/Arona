@@ -4029,6 +4029,14 @@ def _patch_trailing_model_turn(history: list) -> str | None:
   history.append({"role": "user", "parts": [{"text": "(continue)"}]})
   return "appended placeholder user turn after trailing model turn"
 
+def _affection_uid(message):
+  """Resolved user id for <bond> tags (None when there is no human speaker)."""
+  try:
+    return resolve_id(message.author.id) if message is not None else None
+  except Exception:
+    return None
+
+
 async def ask_gemini(model_name: str = None, text: str = "", attachments: list = None, temperature: float = None, max_retries: int = None, max_attempts: int = None, sys_prompt: bool = True, timeout: int = None, custom_sys_prompt:str=None, msg_history="", enable_functions: bool = True, max_function_turns: int = None, level: str = None, message: discord.Message = None, typing_pause_event: asyncio.Event = None, thinking_budget: int | None = None, rules=None, safety_note="") -> dict:
   """
   Send a prompt to the Gemini API with smart key fallback.
@@ -5657,7 +5665,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       has_func_call = any("functionCall" in p for p in parts_list)
       if has_func_call and text_parts and message and not gemini_ws.is_voice_session:
         combined_text = "\n".join(text_parts).strip()
-        combined_text = affection.parse_and_apply_mood_tag(combined_text)
+        combined_text = affection.parse_and_apply_mood_tag(combined_text, user_id=_affection_uid(message))
         try:
           await send_content_or_file(channel=message.channel, content=combined_text, message=message)
         except Exception as e:
@@ -7968,7 +7976,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
             _overload_status_msgs.pop(message.channel.id, None)
       
         return
-      reply = affection.parse_and_apply_mood_tag(reply)
+      reply = affection.parse_and_apply_mood_tag(reply, user_id=_affection_uid(message))
 
       # Stop the typing indicator loop BEFORE sending the final message.
       # Discord has no "cancel typing now" API — trigger_typing() just expires after ~10s.

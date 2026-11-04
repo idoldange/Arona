@@ -59,7 +59,7 @@
     })
     window.addEventListener("unhandledrejection", (ev) => {
         const reason = ev && ev.reason
-        note(`rejection: ${(reason && reason.message) || reason}`, true)
+        note(`rejection: ${(reason && reason.message) || reason}${reason && reason.stack ? "\n" + String(reason.stack).split("\n").slice(1, 5).map(l => l.trim().replace(/^at /, "").replace(/https?:\/\/[^/]+\//, "")).join("\n") : ""}`, true)
     })
     document.addEventListener("securitypolicyviolation", (ev) => {
         note(`CSP blocked ${ev.violatedDirective}: ${ev.blockedURI}`, true)

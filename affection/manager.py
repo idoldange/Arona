@@ -39,6 +39,11 @@ _SHOCKED_TAG_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_BOND_TAG_RE = re.compile(
+    r"<bond>\s*(?P<v>[+\-\u2013\u2014]?\s*\d+(?:\.\d+)?)\s*</bond>",   # canonical:  <bond>-4</bond>
+    re.IGNORECASE,
+)
+
 
 class AffectionManager:
 
@@ -53,6 +58,8 @@ class AffectionManager:
         asyncio.create_task(_mood.tick_loop())
         # Start bond health check loop
         asyncio.create_task(_bond.health_check_loop())
+        # Start bond idle-decay loop
+        asyncio.create_task(_bond.decay_loop())
 
     async def shutdown(self):
         """Call during bot shutdown to ensure all pending DB writes complete."""
@@ -73,7 +80,7 @@ class AffectionManager:
         """Pass a negative value. Non-blocking."""
         _mood.nudge(delta)
 
-    def parse_and_apply_mood_tag(self, text: str) -> str:
+    def parse_and_apply_mood_tag(self, text: str, user_id: int | None = None) -> str:
         """
         Scan model response for <mood>+12</mood> or <mood>-8</mood> tags, and for
         the separate <shocked>reason</shocked> overlay tag. Applies both, then
@@ -95,6 +102,17 @@ class AffectionManager:
             except ValueError:
                 pass
         text = _MOOD_TAG_RE.sub("", text)
+
+        # <bond>N</bond> - applies to the current speaker only; always stripped.
+        bond_matches = list(_BOND_TAG_RE.finditer(text))
+        if bond_matches:
+            if user_id is not None:
+                try:
+                    raw = bond_matches[-1].group("v").replace("\u2014", "-").replace("\u2013", "-").replace(" ", "")
+                    _bond.adjust(int(user_id), float(raw))
+                except (ValueError, TypeError):
+                    pass
+            text = _BOND_TAG_RE.sub("", text)
 
         shocked_match = _SHOCKED_TAG_RE.search(text)
         if shocked_match:
@@ -131,6 +149,7 @@ class AffectionManager:
         _mood.wake()
         was_sleeping = _mood.just_woke()
 
+        _bond.touch(user_id)  # activity clock + any pending idle decay
         b = _bond.get(user_id)
         console.log(f"[bond] on_interaction() after get(): bond={b:.2f}", "DEBUG")
         current_mood = _mood.get()

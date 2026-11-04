@@ -55,7 +55,7 @@ if (query.has("frame_id")) {
         if (!panel.isConnected) {(document.body || document.documentElement).appendChild(panel)}
     }
     window.addEventListener("error", event => add(`error: ${event.message} (${(event.filename || "").split("/").pop()}:${event.lineno})`, true))
-    window.addEventListener("unhandledrejection", event => add(`rejection: ${event.reason && event.reason.message || event.reason}`, true))
+    window.addEventListener("unhandledrejection", event => add(`rejection: ${event.reason && event.reason.message || event.reason}${event.reason && event.reason.stack ? "\n" + String(event.reason.stack).split("\n").slice(1, 5).map(l => l.trim().replace(/^at /, "").replace(/https?:\/\/[^/]+\//, "")).join("\n") : ""}`, true))
     document.addEventListener("securitypolicyviolation", event => add(`CSP blocked ${event.violatedDirective}: ${event.blockedURI}`, true))
 }
 
