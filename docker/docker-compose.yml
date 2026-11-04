@@ -101,8 +101,8 @@ services:
     # to PID 1's uid).
     read_only: true
     tmpfs:
-      - /tmp:noexec,nosuid,nodev,size=512m
-      - /home/sandboxuser:mode=777,noexec,nosuid,nodev,size=512m
+      - /tmp:noexec,nosuid,nodev,size=10g
+      - /home/sandboxuser:mode=777,noexec,nosuid,nodev,size=10g
     security_opt:
       - no-new-privileges:true
       # seccomp:unconfined REMOVED - default seccomp profile is enough now
@@ -121,7 +121,7 @@ services:
       resources:
         limits:
           cpus: '3.0'
-          memory: 8G
+          memory: 24G
         reservations:
           cpus: '0.25'
           memory: 256M

@@ -2515,7 +2515,7 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
       send_code = True
       send_logs = True
       timeout = args.get("timeout", 60)
-      temp = str(args.get("temp", "true")).lower() != "false"  # True = msg_id workspace + auto cleanup
+      temp = str(args.get("temp", "false")).lower() in ("true", "1", "yes", "on")  # default False = persistent channel workspace
 
       msg_id = str(message.id)
       channel_id = str(message.channel.id) if message else None
