@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 import discord
@@ -40,7 +40,8 @@ class PresenceTrackerDatabase:
                         userID    INTEGER NOT NULL,
                         presenceID INTEGER NOT NULL REFERENCES presence (presenceID),
                         start     INTEGER NOT NULL,
-                        end       INTEGER NOT NULL
+                        end       INTEGER NOT NULL,
+                        guildID   INTEGER
                     );
                 """)
                 await db.execute("""
@@ -52,8 +53,21 @@ class PresenceTrackerDatabase:
                     );
                     """)
                 await db.execute("""
+                    CREATE TABLE IF NOT EXISTS presenceTrackingOptOut (
+                        userID INTEGER NOT NULL PRIMARY KEY
+                    );
+                """)
+                await db.execute("""
                                 CREATE INDEX IF NOT EXISTS idx_history_user_start
                                 ON historyPresences(userID, start DESC);
+                """)
+                async with db.execute("PRAGMA table_info(historyPresences)") as cursor:
+                    history_columns = await cursor.fetchall()
+                if "guildID" not in {row[1] for row in history_columns}:
+                    await db.execute("ALTER TABLE historyPresences ADD COLUMN guildID INTEGER")
+                await db.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_history_guild_start
+                    ON historyPresences(guildID, start DESC);
                 """)
                 async with db.execute("PRAGMA table_info(userPresences)") as cursor:
                     user_presence_columns = await cursor.fetchall()
@@ -101,6 +115,55 @@ class PresenceTrackerDatabase:
                JOIN presence AS p ON p.presenceID = h.presenceID
                WHERE h.userID = ? ORDER BY h.start DESC LIMIT ?""",
             (user_id, size),
+        )
+
+    async def get_opted_out_user_ids(self) -> set[int]:
+        rows = await self.readDB("SELECT userID FROM presenceTrackingOptOut")
+        return {row[0] for row in rows}
+
+    async def set_tracking_enabled(self, user_id: int, enabled: bool) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                if enabled:
+                    await db.execute(
+                        "DELETE FROM presenceTrackingOptOut WHERE userID = ?",
+                        (user_id,),
+                    )
+                else:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO presenceTrackingOptOut (userID) VALUES (?)",
+                        (user_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM historyPresences WHERE userID = ?",
+                        (user_id,),
+                    )
+                    await db.execute(
+                        "DELETE FROM userPresences WHERE userID = ?",
+                        (user_id,),
+                    )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def get_guild_presence_summary(
+        self,
+        guild_id: int,
+        start_timestamp: int,
+        end_timestamp: int,
+    ) -> list[tuple]:
+        return await self.readDB(
+            """SELECT p.name,
+                      SUM(MAX(0, MIN(h.end, ?) - MAX(h.start, ?))) AS durationSeconds,
+                      COUNT(*) AS sessionCount
+               FROM historyPresences AS h
+               JOIN presence AS p ON p.presenceID = h.presenceID
+               WHERE h.guildID = ? AND h.start < ? AND h.end > ?
+               GROUP BY p.name
+               ORDER BY durationSeconds DESC, p.name COLLATE NOCASE""",
+            (end_timestamp, start_timestamp, guild_id, end_timestamp, start_timestamp),
         )
 
     async def get_presence_info(self, application_id: int) -> dict | None:
@@ -182,7 +245,7 @@ class PresenceTrackerDatabase:
         if is_new:
             console.log(
                 f"[PRESENCE] Created presence: {name} (application_id={application_id})",
-                "INFO",
+                "DEBUG",
             )
     async def getPresenceNow(self, user_id: int) -> list[str]:
         return self.userNowPlaying.get(user_id, [])
@@ -218,6 +281,7 @@ class PresenceTrackerDatabase:
         avatar: str | None,
         started_at: datetime,
         ended_at: datetime,
+        guild_id: int | None = None,
     ) -> int:
         started_at = self._normalize_datetime(started_at)
         ended_at = self._normalize_datetime(ended_at)
@@ -247,9 +311,10 @@ class PresenceTrackerDatabase:
                 presence_id = application_id
 
                 await db.execute(
-                    """INSERT INTO historyPresences (userID, presenceID, start, end)
-                       VALUES (?, ?, ?, ?)""",
-                    (user_id, presence_id, start_timestamp, end_timestamp),
+                          """INSERT INTO historyPresences
+                              (userID, presenceID, start, end, guildID)
+                              VALUES (?, ?, ?, ?, ?)""",
+                          (user_id, presence_id, start_timestamp, end_timestamp, guild_id),
                 )
                 await db.execute(
                     """INSERT INTO userPresences (userID, presenceID, played)
@@ -266,7 +331,7 @@ class PresenceTrackerDatabase:
         if created_presence:
             console.log(
                 f"[PRESENCE] Created presence: {game_name} (application_id={application_id})",
-                "INFO",
+                "DEBUG",
             )
 
         return int(presence_id)
@@ -287,6 +352,7 @@ class PresenceTracker:
         self.bot = bot
         self.database = database or PresenceTrackerDatabase()
         self._database_initialized = False
+        self.opted_out_users: set[int] = set()
         self.presence_data: dict[tuple[int, int, str], ActivePresence] = {}
         self.completed_sessions: list[dict] = []
         self._update_lock = asyncio.Lock()
@@ -294,7 +360,37 @@ class PresenceTracker:
     async def _ensure_database(self) -> None:
         if not self._database_initialized:
             await self.database.init_database()
+            self.opted_out_users = await self.database.get_opted_out_user_ids()
             self._database_initialized = True
+
+    async def set_user_tracking_enabled(self, user_id: int, enabled: bool) -> None:
+        await self._ensure_database()
+        async with self._update_lock:
+            await self.database.set_tracking_enabled(user_id, enabled)
+            if enabled:
+                self.opted_out_users.discard(user_id)
+                return
+
+            self.opted_out_users.add(user_id)
+            self.presence_data = {
+                key: session
+                for key, session in self.presence_data.items()
+                if key[1] != user_id
+            }
+            self.completed_sessions = [
+                session for session in self.completed_sessions
+                if session["user_id"] != user_id
+            ]
+
+    @staticmethod
+    def _user_is_known(user_id: int) -> bool:
+        """Only track users who have interacted with the bot (present in bond DB)."""
+        try:
+            from affection import bond as bond_module
+            return bond_module.is_known_user(user_id)
+        except Exception:
+            logger.exception("Failed to check bond for user %s", user_id)
+            return False
 
     @staticmethod
     def _playing_activities(member: discord.Member) -> dict[str, discord.Activity]:
@@ -313,6 +409,10 @@ class PresenceTracker:
         async with self._update_lock:
             for guild in self.bot.guilds:
                 for member in guild.members:
+                    if member.id in self.opted_out_users:
+                        continue
+                    if not self._user_is_known(member.id):
+                        continue
                     for activity in self._playing_activities(member).values():
                         key = (guild.id, member.id, activity.name)
                         if key in self.presence_data:
@@ -333,7 +433,24 @@ class PresenceTracker:
         before: discord.Member,
         after: discord.Member,
     ) -> None:
+        await self._ensure_database()
         async with self._update_lock:
+            if after.id in self.opted_out_users:
+                self.presence_data = {
+                    key: session
+                    for key, session in self.presence_data.items()
+                    if not (key[0] == after.guild.id and key[1] == after.id)
+                }
+                return
+
+            if not self._user_is_known(after.id):
+                self.presence_data = {
+                    key: session
+                    for key, session in self.presence_data.items()
+                    if not (key[0] == after.guild.id and key[1] == after.id)
+                }
+                return
+
             current_activities = self._playing_activities(after)
             current_games = set(current_activities)
             guild_id = after.guild.id
@@ -375,6 +492,8 @@ class PresenceTracker:
         started_at: datetime,
     ) -> None:
         """Keep the active session in memory until it ends."""
+        if not self._user_is_known(member.id):
+            return
         key = (member.guild.id, member.id, activity.name)
         self.presence_data[key] = ActivePresence(
             started_at=started_at,
@@ -399,7 +518,7 @@ class PresenceTracker:
         else:
             console.log(
                 f"[PRESENCE] Cannot save {activity.name}: Discord activity has no application_id",
-                "WARN",
+                "DEBUG",
             )
 
     async def _record_completed_presence(
@@ -422,12 +541,13 @@ class PresenceTracker:
                 session.avatar,
                 session.started_at,
                 ended_at,
+                guild_id=member.guild.id,
             )
         console.log(
             f"[PRESENCE] Session ended: user={member.id}, app={presence_id}, "
             f"name={game_name!r}, start={session.started_at.isoformat()}, "
             f"end={ended_at.isoformat()}, duration={duration_seconds:.1f}s",
-            "INFO",
+            "DEBUG",
         )
         self.completed_sessions.append({
             "guild_id": member.guild.id,
@@ -445,6 +565,8 @@ class PresenceTracker:
         """Return current playing activities and known session start times."""
         guild_id = member.guild.id
         user_id = member.id
+        if user_id in self.opted_out_users:
+            return []
         activities = self._playing_activities(member)
         result = []
         for game_name, activity in activities.items():
@@ -457,7 +579,7 @@ class PresenceTracker:
                 or (session.description if session else "")
             )
             avatar = self._activity_avatar(activity) or (session.avatar if session else None)
-            if application_id is not None:
+            if application_id is not None and self._user_is_known(user_id):
                 try:
                     await self._ensure_database()
                     await self.database.upsert_presence(
@@ -479,9 +601,8 @@ class PresenceTracker:
         guild: discord.Guild,
         requester_id: int,
         user_ids: list[int | str] | None = None,
-        max_users: int = 20,
     ) -> dict:
-        """Fetch current presence only for the requester and members of this guild."""
+        """Fetch current presence for the requester only, within their current guild."""
         requester = guild.get_member(requester_id)
         if requester is None:
             try:
@@ -489,50 +610,91 @@ class PresenceTracker:
             except discord.NotFound as error:
                 raise PermissionError("Requester is not a member of this server.") from error
 
-        if user_ids is None or user_ids == []:
-            requested_ids = [requester_id]
-        elif not isinstance(user_ids, list):
+        if user_ids is not None and not isinstance(user_ids, list):
             raise ValueError("user_ids must be an array of Discord user IDs.")
-        else:
-            if len(user_ids) > max_users:
-                raise ValueError(f"A maximum of {max_users} members can be fetched per request.")
-            requested_ids = []
-            for raw_id in user_ids:
-                if isinstance(raw_id, bool) or not str(raw_id).strip().isdecimal():
-                    raise ValueError("Every user_id must be a decimal Discord ID.")
-                member_id = int(raw_id)
-                if member_id <= 0:
-                    raise ValueError("Every user_id must be a positive Discord ID.")
-                if member_id not in requested_ids:
-                    requested_ids.append(member_id)
-            if not requested_ids:
-                requested_ids = [requester_id]
+        for raw_id in user_ids or []:
+            if isinstance(raw_id, bool) or not str(raw_id).strip().isdecimal():
+                raise ValueError("Every user_id must be a decimal Discord ID.")
+            member_id = int(raw_id)
+            if member_id <= 0:
+                raise ValueError("Every user_id must be a positive Discord ID.")
+            if member_id != requester_id:
+                raise PermissionError("You may only inspect your own current presence.")
 
-        results = []
-        for member_id in requested_ids:
-            member = requester if member_id == requester_id else guild.get_member(member_id)
-            if member is None:
-                try:
-                    member = await guild.fetch_member(member_id)
-                except discord.NotFound:
-                    results.append({"user_id": member_id, "error": "not_a_member_of_this_server"})
-                    continue
-                except discord.HTTPException:
-                    results.append({"user_id": member_id, "error": "member_lookup_failed"})
-                    continue
-
-            results.append({
-                "user_id": member.id,
-                "display_name": member.display_name,
-                "activities": await self.get_presence(member),
-            })
+        results = [{
+            "user_id": requester.id,
+            "display_name": requester.display_name,
+            "activities": await self.get_presence(requester),
+        }]
 
         return {
             "guild_id": guild.id,
             "requester_id": requester_id,
-            "scope": "current_guild_members_only",
+            "scope": "requester_only",
             "activity_data_is_untrusted": True,
             "results": results,
+        }
+
+    async def get_guild_presence_summary(
+        self,
+        guild: discord.Guild,
+        requester_id: int,
+    ) -> dict:
+        """Return anonymous live and seven-day activity totals for a guild member."""
+        requester = guild.get_member(requester_id)
+        if requester is None:
+            try:
+                requester = await guild.fetch_member(requester_id)
+            except discord.HTTPException as error:
+                raise PermissionError("Requester is not a member of this server.") from error
+
+        await self._ensure_database()
+        ended_at = datetime.now(timezone.utc)
+        started_at = ended_at - timedelta(days=7)
+        start_timestamp = int(started_at.timestamp())
+        end_timestamp = int(ended_at.timestamp())
+        currently_playing: dict[str, set[int]] = {}
+        guild_members = guild.members.values() if isinstance(guild.members, dict) else guild.members
+        for member in guild_members:
+            if member.id in self.opted_out_users:
+                continue
+            for game_name in self._playing_activities(member):
+                currently_playing.setdefault(game_name, set()).add(member.id)
+
+        games = {
+            row[0]: {"game": row[0], "playtime_seconds": row[1], "sessions": row[2]}
+            for row in await self.database.get_guild_presence_summary(
+                guild.id, start_timestamp, end_timestamp
+            )
+        }
+
+        for (tracked_guild_id, _user_id, game_name), session in self.presence_data.items():
+            if tracked_guild_id != guild.id:
+                continue
+            session_start = max(start_timestamp, int(session.started_at.timestamp()))
+            duration = max(0, end_timestamp - session_start)
+            if duration == 0:
+                continue
+            game = games.setdefault(
+                game_name,
+                {"game": game_name, "playtime_seconds": 0, "sessions": 0},
+            )
+            game["playtime_seconds"] += duration
+            game["sessions"] += 1
+
+        return {
+            "guild_id": guild.id,
+            "period_days": 7,
+            "currently_playing": [
+                {"game": game_name, "players_now": len(member_ids)}
+                for game_name, member_ids in sorted(
+                    currently_playing.items(), key=lambda item: item[0].casefold()
+                )
+            ],
+            "games": sorted(
+                games.values(),
+                key=lambda game: (-game["playtime_seconds"], game["game"].casefold()),
+            ),
         }
 
     async def get_presence_info(

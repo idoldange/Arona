@@ -284,6 +284,55 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
     elif func_name == "wait_for_time":
         return f"-# <:schedule:1484030910960767137> Waiting for {func_args.get('wait_time')} seconds..."
 
+    # daemon
+    elif func_name == "start_daemon":
+        name = func_args.get("name", "")
+        cmd = func_args.get("cmd", "")
+        name_tag = f" `{name}`" if name else ""
+        cmd_preview = cmd[:30] + ("..." if len(cmd) > 30 else "")
+        return f"-# <:schedule:1484030910960767137> Starting daemon{name_tag}: {cmd_preview}..."
+
+    elif func_name == "read_daemon_output":
+        did = func_args.get("id", "")
+        lines = func_args.get("lines", 100)
+        return f"-# <:schedule:1484030910960767137> Reading output from daemon `{did}` (last {lines} lines)..."
+
+    elif func_name == "send_daemon_input":
+        did = func_args.get("id", "")
+        return f"-# <:schedule:1484030910960767137> Sending input to daemon `{did}`..."
+
+    elif func_name == "stop_daemon":
+        did = func_args.get("id", "")
+        return f"-# <:schedule:1484030910960767137> Stopping daemon `{did}`..."
+
+    elif func_name == "daemon_status":
+        did = func_args.get("id", "")
+        return f"-# <:schedule:1484030910960767137> Checking status of daemon `{did}`..."
+
+    elif func_name == "list_daemons":
+        return "-# <:schedule:1484030910960767137> Listing daemons..."
+
+    # presence
+    elif func_name == "fetch_current_presence":
+        return "-# <:read_profile:1484030899531026593> Fetching current presence..."
+
+    elif func_name == "fetch_guild_presence_summary":
+        return "-# <:read_profile:1484030899531026593> Fetching guild presence summary..."
+
+    elif func_name == "fetch_presence_history":
+        limit = func_args.get("limit", 25)
+        return f"-# <:read_profile:1484030899531026593> Fetching presence history (last {limit})..."
+
+    elif func_name == "fetch_presence_info":
+        app_id = func_args.get("application_id", "")
+        return f"-# <:read_profile:1484030899531026593> Fetching presence info for `{app_id}`..."
+
+    elif func_name == "list_presences":
+        query = func_args.get("query", "")
+        if query:
+            return f"-# <:read_profile:1484030899531026593> Searching presences for '{query}'..."
+        return "-# <:read_profile:1484030899531026593> Listing known presences..."
+
     # todo
     elif func_name == "todo":
         action = func_args.get("action", "")

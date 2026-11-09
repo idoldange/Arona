@@ -45,6 +45,27 @@ class RateLimiter:
 rate_limiter = RateLimiter(max_requests=10, window_seconds=60)
 
 
+def _detect_mime_from_content(path: str) -> str:
+    """Detect a file's MIME type from its bytes (magic), falling back to the
+    filename extension only when content sniffing is unavailable.
+
+    VIEW_DIR/workspace lookups must trust the actual file content, not the
+    extension: a model can write HTML/error-page bytes into a `.mp4` name, and
+    attaching that as `video/mp4` makes Gemini reject the whole request with a
+    bare HTTP 400 INVALID_ARGUMENT.
+    """
+    try:
+        import magic
+        with open(path, "rb") as f:
+            head = f.read(8192)
+        detected = magic.from_buffer(head, mime=True)
+        if detected:
+            return detected.lower().split(";")[0].strip()
+    except Exception as e:
+        console.log(f"[docker] content MIME detection failed for {os.path.basename(path)}: {e}", "WARN")
+    return mimetypes.guess_type(path)[0] or ""
+
+
 _proxy_ready: bool | None = None  # None=unchecked, True=ready, False=down
 
 async def _check_proxy_once(proxy_url: str = "http://127.0.0.1:8888") -> bool:
@@ -419,9 +440,10 @@ class AronaDocker:
             if not os.path.isfile(path):
                 continue
 
-            mime = mimetypes.guess_type(path)[0] or ""
+            mime = _detect_mime_from_content(path)
             prefix = next((p for p in self.VIEWABLE_LIMITS if mime.startswith(p)), None)
             if not prefix:
+                console.log(f"[docker] VIEW_DIR: {filename} detected as '{mime or 'unknown'}' (not image/audio/video), skipped", "WARN")
                 continue  # not an image/audio/video — not for VIEW_DIR, skip silently
 
             try:
@@ -479,7 +501,7 @@ class AronaDocker:
         if not path:
             return {"status": "error", "log": f"'{filename}' not found in this channel's persistent workspace (checked root/outputs/view).", "view_files": []}
 
-        mime = mimetypes.guess_type(path)[0] or ""
+        mime = _detect_mime_from_content(path)
         prefix = next((p for p in self.VIEWABLE_LIMITS if mime.startswith(p)), None)
         if not prefix:
             return {"status": "error", "log": f"'{filename}' has mime type '{mime or 'unknown'}' — only image/audio/video files can be viewed. Use OUTPUT_DIR/send_files for other file types.", "view_files": []}

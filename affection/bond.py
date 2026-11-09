@@ -170,8 +170,15 @@ async def initialize():
 
 
 def peek(user_id: int) -> float:
-    """Quiet read for other modules (mood coupling): no logging, never triggers a cache reload."""
     return _cache.get(int(user_id), 0.0)
+
+
+def is_known_user(user_id: int) -> bool:
+    """True if the user has a bond row (has interacted with the bot before)."""
+    user_id = int(user_id)
+    with _cache_lock:
+        return user_id in _cache
+
 
 
 def _day_key(now: float | None = None) -> str:

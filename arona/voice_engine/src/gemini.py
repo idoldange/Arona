@@ -34,6 +34,11 @@ class GeminiWebSocket:
         self.current_user = None
         self.current_channel = None
         self.current_guild = None
+        self._resume_handle = None      # Live session resumption handle
+        self._resume_key = None         # key index that produced the handle
+        self._key_idx = None
+        self._closing = False
+        self._reconnect_task = None
         self.voice_client: Optional[VoiceClient] = None
         self.receive_task: Optional[asyncio.Task] = None
         self.audio_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
@@ -53,7 +58,8 @@ class GeminiWebSocket:
                  
                     }
                 },
-                "enable_affective_dialog": True
+                "enable_affective_dialog": True,
+                "media_resolution": "MEDIA_RESOLUTION_HIGH"
                 #"thinking_level": "LOW"
             }
         }
@@ -81,6 +87,9 @@ class GeminiWebSocket:
         
     async def close(self) -> None:
         """Closes the WebSocket connection."""
+        self._closing = True
+        self._resume_handle = None
+        self._resume_key = None
         try:
             await self.window.stop()
         except Exception as e:
@@ -105,6 +114,7 @@ class GeminiWebSocket:
         if self._connecting:  # a connect (ws open + setup) is already in flight
             return
         self._connecting = True
+        self._closing = False
         try:
             await self._connect_inner()
         finally:
@@ -136,7 +146,13 @@ class GeminiWebSocket:
         endpoint: str = "/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
         
         if not self.ws:
-            for i, api_key in enumerate(api_keys):
+            order = list(range(len(api_keys)))
+            if self._resume_handle and self._resume_key in order:
+                order.remove(self._resume_key)
+                order.insert(0, self._resume_key)   # handle may be tied to its key
+            for i in order:
+                api_key = api_keys[i]
+                resumed = bool(self._resume_handle)
                 try:
                     uri = f"{base_url}{endpoint}?key={api_key}"
                     self.ws = await connect(
@@ -148,12 +164,17 @@ class GeminiWebSocket:
                     console.log(f"Connected to Gemini WebSocket (Key {i+1})", "INFO")
                     await self.setup()
                     self.receive_task = asyncio.create_task(self.listen())
-                    await self.send_voice_reference()
+                    self._key_idx = i
+                    if not resumed:
+                        await self.send_voice_reference()
                     self.window.force_next()
                     
                     return
                 except Exception as e:
                     console.log(f"Failed to connect to Gemini (Key {i+1}): {e}", "WARN")
+                    if resumed:
+                        console.log("[Gemini Live] Resume failed, next attempt starts a fresh session", "WARN")
+                        self._resume_handle = None
                     self.ws = None
             console.log("All API keys failed to connect to Gemini WebSocket.", "ERROR")
             
@@ -173,6 +194,7 @@ class GeminiWebSocket:
                 "tools": tools_config,
                 # audio+video sessions are capped at ~2 min without compression
                 "context_window_compression": {"sliding_window": {}},
+                "session_resumption": ({"handle": self._resume_handle} if self._resume_handle else {}),
                 # Allow model to call multiple functions in parallel
                 "tool_config": {
                     "function_calling_config": {"mode": "AUTO"}
@@ -240,11 +262,20 @@ class GeminiWebSocket:
                     await ws.close()
                 except Exception as e:
                     console.log(f"[Gemini Live] Failed to close ended WebSocket: {e}", "WARN")
+                self._schedule_reconnect()
 
     async def handle_message(self, response: Dict[str, Any]) -> None:
         if "error" in response:
             console.log(f"Error in Gemini response: {response['error']}", "ERROR")
             return
+
+        if "sessionResumptionUpdate" in response:
+            _u = response["sessionResumptionUpdate"] or {}
+            if _u.get("resumable") and _u.get("newHandle"):
+                self._resume_handle, self._resume_key = _u["newHandle"], self._key_idx
+        if "goAway" in response:
+            console.log("[Gemini Live] goAway received, reconnecting with session resumption", "WARN")
+            asyncio.create_task(self._reconnect_now())
 
         # Tool calls come as a top-level "toolCall" key, NOT inside serverContent
         if "toolCall" in response:
@@ -282,6 +313,50 @@ class GeminiWebSocket:
             if server_content.get("turnComplete"):
                 if hasattr(self, "_voice_bridge") and self._voice_bridge and self._voice_bridge.enabled:
                     asyncio.create_task(self._voice_bridge.flush(self))
+
+    def _schedule_reconnect(self) -> None:
+        """Gemini dropped but the bot is still in the voice channel -> reconnect (resumes when we hold a handle)."""
+        try:
+            if self._closing or not (self.voice_client and self.voice_client.is_connected()):
+                return
+        except Exception:
+            return
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._auto_reconnect())
+
+    async def _auto_reconnect(self) -> None:
+        for delay in (0.5, 1, 2, 4, 8, 15, 30, 30):
+            await asyncio.sleep(delay)
+            try:
+                if self._closing or not (self.voice_client and self.voice_client.is_connected()):
+                    return
+            except Exception:
+                return
+            if self.ws and self.ws.protocol.state.name == "OPEN":
+                return
+            try:
+                await self.connect()
+            except Exception as e:
+                console.log(f"[Gemini Live] Reconnect failed: {e}", "WARN")
+            if self.ws and self.ws.protocol.state.name == "OPEN":
+                console.log("[Gemini Live] Reconnected" + (" (session resumed)" if self._resume_handle else ""), "INFO")
+                return
+
+    async def _reconnect_now(self) -> None:
+        """Server announced goAway: swap the socket before it dies, keeping the session via the resumption handle."""
+        if not self._resume_handle or self._connecting:
+            return
+        ws, task = self.ws, self.receive_task
+        self.ws, self.receive_task = None, None
+        if task and task is not asyncio.current_task():
+            task.cancel()
+        if ws:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        await self.connect()
 
     async def play_audio(self, audio_data: bytes) -> None:
         if not self.voice_client or not self.voice_client.is_connected():
@@ -534,6 +609,7 @@ class GeminiWebSocket:
                 mock_msg.author = self.current_user
                 mock_msg.channel = self.current_channel
                 mock_msg.guild = self.current_guild
+                mock_msg.id = f"live{time.time_ns()}"   # tools key per-call state by message.id
                 mock_msg.from_live = True   # tool call made by the Live model itself (see leave_voice_channel)
                 
                 try:
