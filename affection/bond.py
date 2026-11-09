@@ -11,6 +11,7 @@ import os
 import time
 import aiosqlite
 import threading
+from datetime import datetime
 from config import AFFECTION_DB_PATH as DB_PATH
 from console import console
 
@@ -29,8 +30,10 @@ _pending_flushes: set = set()
 
 # Last-activity clock per user (epoch seconds) - drives idle decay. Persisted as bond.last_seen.
 _last_seen: dict[int, float] = {}
-# Last applied <bond> tag per user (monotonic) - cooldown
+# Last applied NEGATIVE <bond> tag per user (monotonic) - cooldown (positive tags have none)
 _last_adjust: dict[int, float] = {}
+# Bond gained today through positive <bond> tags: {user_id: [day "YYYY-MM-DD" in TIMEZONE, gained]}
+_daily: dict[int, list] = {}
 
 # Minimum cache size threshold — if cache is this small, something went wrong
 _EXPECTED_CACHE_SIZE = 70
@@ -101,6 +104,13 @@ async def _init_db():
             _cols = {r[1] for r in await cur.fetchall()}
         if "last_seen" not in _cols:
             await db.execute("ALTER TABLE bond ADD COLUMN last_seen REAL")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bond_tag_daily (
+                user_id INTEGER PRIMARY KEY,
+                day     TEXT    NOT NULL,
+                gained  REAL    NOT NULL DEFAULT 0.0
+            )
+        """)
         await db.commit()
 
 
@@ -155,7 +165,57 @@ async def initialize():
                     console.log(f"[bond] Loaded user={user_id} bond={bond:.2f}", "DEBUG")
     with _cache_lock:
         size = len(_cache)
+    await _load_daily()
     console.log(f"[bond] initialize() COMPLETE: {size} users in cache, id={id(_cache)}", "INFO")
+
+
+def peek(user_id: int) -> float:
+    """Quiet read for other modules (mood coupling): no logging, never triggers a cache reload."""
+    return _cache.get(int(user_id), 0.0)
+
+
+def _day_key(now: float | None = None) -> str:
+    """Calendar day in TIMEZONE (falls back to the host's local date if tz data is unavailable)."""
+    now = time.time() if now is None else now
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.fromtimestamp(now, ZoneInfo(TIMEZONE)).date().isoformat()
+    except Exception:
+        return datetime.fromtimestamp(now).date().isoformat()
+
+
+def daily_gained(user_id: int) -> float:
+    """Bond gained today through positive <bond> tags."""
+    row = _daily.get(int(user_id))
+    return row[1] if row and row[0] == _day_key() else 0.0
+
+
+async def _load_daily():
+    try:
+        today = _day_key()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT user_id, day, gained FROM bond_tag_daily") as cur:
+                rows = await cur.fetchall()
+        with _cache_lock:
+            for uid, day, gained in rows:
+                if day == today:
+                    _daily[int(uid)] = [day, float(gained)]
+        console.log(f"[bond] daily allowance loaded for {len(_daily)} user(s)", "DEBUG")
+    except Exception as e:
+        console.log(f"[bond] _load_daily failed: {e}", "ERROR")
+
+
+async def _flush_daily(user_id: int, day: str, gained: float):
+    try:
+        async with _lock:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("""
+                    INSERT INTO bond_tag_daily (user_id, day, gained) VALUES (?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET day = excluded.day, gained = excluded.gained
+                """, (user_id, day, gained))
+                await db.commit()
+    except Exception as e:
+        console.log(f"[bond] daily flush FAILED user={user_id}: {e}", "ERROR")
 
 
 def get(user_id: int) -> float:
@@ -338,7 +398,12 @@ def _decay_user_locked(user_id: int, now: float) -> bool:
     if n < 1:
         return False
     old = _cache[user_id]
-    new = max(_rank_floor(old), old - n * BOND_DECAY_PER_DAY)
+    try:
+        from affection import special as _sp
+        mult = _sp.decay_mult(user_id)
+    except Exception:
+        mult = 1.0
+    new = max(_rank_floor(old), old - n * BOND_DECAY_PER_DAY * mult)
     _last_seen[user_id] = seen + n * 86400.0
     _cache[user_id] = new
     if new != old:
@@ -360,25 +425,51 @@ def touch(user_id: int):
 
 def adjust(user_id: int, delta: float) -> float:
     """
-    Model-driven bond change (+/-), from a <bond>N</bond> tag.
-    Clamped to [BOND_TAG_MIN, BOND_TAG_MAX], per-user cooldown. Returns the applied delta (0.0 if skipped).
+    Model-driven bond change (+/-), from a <bond>N</bond> tag. Clamped to [BOND_TAG_MIN, BOND_TAG_MAX].
+      negative: per-user cooldown (BOND_TAG_COOLDOWN) so the model cannot punish in a burst
+      positive: no cooldown, but at most BOND_TAG_DAILY_CAP bond per user per day (day in TIMEZONE);
+                a tag that exceeds what is left is cut to the remainder; only bond actually added is counted.
+    Returns the applied delta (0.0 if skipped).
     """
     user_id = int(user_id)
     delta = max(BOND_TAG_MIN, min(BOND_TAG_MAX, float(delta)))
     if delta == 0.0:
         return 0.0
     now = time.monotonic()
+    day = _day_key()
+    daily = None
     with _cache_lock:
-        if now - _last_adjust.get(user_id, -1e9) < BOND_TAG_COOLDOWN:
-            console.log(f"[bond] adjust user={user_id} {delta:+.1f} skipped (cooldown)", "DEBUG")
-            return 0.0
+        if delta < 0:
+            if now - _last_adjust.get(user_id, -1e9) < BOND_TAG_COOLDOWN:
+                console.log(f"[bond] adjust user={user_id} {delta:+.1f} skipped (cooldown)", "DEBUG")
+                return 0.0
+            _last_adjust[user_id] = now
+            gained = 0.0
+        else:
+            row = _daily.get(user_id)
+            gained = row[1] if row and row[0] == day else 0.0
+            room = BOND_TAG_DAILY_CAP - gained
+            if room <= 0:
+                console.log(f"[bond] adjust user={user_id} {delta:+.1f} skipped (daily cap {BOND_TAG_DAILY_CAP:g} reached)", "DEBUG")
+                return 0.0
+            delta = min(delta, room)
         current = _cache.get(user_id, 0.0)
         new_val = max(0.0, min(100.0, current + delta))
+        applied = new_val - current
         _cache[user_id] = new_val
-        _last_adjust[user_id] = now
+        if delta > 0 and applied > 0:
+            _daily[user_id] = [day, gained + applied]
+            daily = (user_id, day, gained + applied)
     console.log(f"[bond] adjust user={user_id}: {current:.2f} -> {new_val:.2f} (tag {delta:+.1f})", "INFO")
     _schedule_flush(user_id, new_val)
-    return new_val - current
+    if daily is not None:
+        try:
+            task = asyncio.get_running_loop().create_task(_flush_daily(*daily))
+            _pending_flushes.add(task)
+            task.add_done_callback(lambda t: _pending_flushes.discard(t))
+        except RuntimeError:
+            pass
+    return applied
 
 
 async def decay_once() -> int:

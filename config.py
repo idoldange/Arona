@@ -188,8 +188,124 @@ BOND_DECAY_CHECK_SECS = 3600.0
 
 # Model-driven bond change via <bond>N</bond> (clamped, per-user cooldown)
 BOND_TAG_MIN      = -8.0
-BOND_TAG_MAX      =  3.0
-BOND_TAG_COOLDOWN = 300.0   # seconds between applied tags per user
+BOND_TAG_MAX      =  5.0
+
+# Special relationship (saved-info key `relationship`, see affection/special.py)
+SPECIAL_MIN_BOND      = 25.0   # bond needed before the model may set it
+SPECIAL_STRAINED_BOND = 15.0   # below this it is shown as strained and loses its effects
+SPECIAL_LABEL_MAX     = 30
+SPECIAL_DESC_MAX      = 80
+SPECIAL_DECAY_MULT    = 0.5    # bond idle decay x this
+SPECIAL_LEAK_MULT     = 1.5    # share of the user's mood leaking into the global mood x this
+SPECIAL_WARMTH_BONUS  = 0.05   # extra warmth toward this user
+BOND_TAG_COOLDOWN = 300.0   # seconds between applied NEGATIVE tags per user (positive tags have no cooldown)
+BOND_TAG_DAILY_CAP = 15.0   # max total bond gained per user per day through positive <bond> tags (day in TIMEZONE)
+
+# ── Emotion vector (affection/mood.py) ───────────────────────
+TIMEZONE = "Asia/Ho_Chi_Minh"   # used for the daily bond cap and night-time fatigue
+
+EMOTIONS = ("joy", "warmth", "excitement", "sadness", "anger", "anxiety", "surprise", "fatigue", "curiosity")
+POSITIVE_EMOS = ("joy", "warmth", "excitement", "curiosity")
+NEGATIVE_EMOS = ("sadness", "anger", "anxiety")
+
+# Resting level of each emotion (0..1). valence() is measured relative to this, so baseline == valence 0.
+EMO_BASELINE = {
+    "joy": 0.25, "warmth": 0.30, "excitement": 0.10, "sadness": 0.05, "anger": 0.02,
+    "anxiety": 0.05, "surprise": 0.0, "fatigue": 0.05, "curiosity": 0.20,
+}
+# Half-life (seconds) of the pull back to baseline for the GLOBAL vector.
+EMO_HALFLIFE = {
+    "joy": 40 * 60, "warmth": 90 * 60, "excitement": 20 * 60, "sadness": 120 * 60, "anger": 60 * 60,
+    "anxiety": 45 * 60, "surprise": 60, "fatigue": 180 * 60, "curiosity": 30 * 60,
+}
+# Contribution of each emotion to the legacy single-number mood (valence). surprise is arousal, not valence.
+VALENCE_WEIGHTS = {
+    "joy": 1.0, "warmth": 0.7, "excitement": 0.5, "curiosity": 0.2,
+    "sadness": -1.0, "anger": -1.0, "anxiety": -0.5, "fatigue": -0.2, "surprise": 0.0,
+}
+
+# Interference: (source, target, coefficient per 10s tick x source salience). Salience = level - baseline (>= 0).
+# Anything not listed is 0 — do not add rules implicitly.
+EMO_INTERACTIONS = [
+    ("anger", "joy", -0.004), ("anger", "warmth", -0.002), ("anger", "curiosity", -0.002),
+    ("warmth", "anger", -0.003),
+    ("joy", "sadness", -0.003), ("joy", "anxiety", -0.001), ("joy", "curiosity", +0.001),
+    ("sadness", "joy", -0.0015), ("sadness", "anxiety", +0.002),
+    ("anxiety", "curiosity", -0.002),
+    ("excitement", "curiosity", +0.001),
+    ("fatigue", "excitement", -0.003), ("fatigue", "curiosity", -0.002), ("fatigue", "joy", -0.0015),
+]
+
+# CPU temperature (existing TEMP_*_DELTA values, in old mood units) -> emotion pressure per tick.
+TEMP_ANXIETY_COEF = 0.0005   # x |negative delta|
+TEMP_ANGER_COEF   = 0.0004   # x |negative delta|
+TEMP_WARMTH_COEF  = 0.0004   # x positive delta
+
+# Tags: <mood>joy+8 anxiety+3 | reason</mood>   (1 unit = 0.01 intensity)
+EMO_UNIT = 0.01
+EMO_TAG_MAX = 15            # per emotion, in units
+EMO_TAG_MAX_COUNT = 3       # emotions per tag
+LEGACY_TAG_SCALE = 0.15 / 30.0   # legacy <mood>N</mood> (N in -30..30) -> intensity (N=30 -> 0.15)
+TAG_DEDUPE_WINDOW = 120.0   # seconds; same (turn, tag) applied once
+
+# Offline (sleeping / user silent) decay: multiplies the half-life, so < 1 means "fades faster".
+OFFLINE_DECAY_MULT = {"anger": 0.4, "anxiety": 0.4, "sadness": 0.7}
+
+# Per-user emotion offset layer
+USER_OFFSET_MAX = 0.6
+USER_HALFLIFE = {
+    "joy": 90 * 60, "warmth": 180 * 60, "excitement": 60 * 60, "sadness": 150 * 60, "anger": 120 * 60,
+    "anxiety": 90 * 60, "surprise": 120, "curiosity": 60 * 60,
+}
+USER_IDLE_PURGE = 24 * 3600.0
+LEAK_POSITIVE = 0.25         # share of a user's positive delta that also reaches the global vector
+LEAK_NEGATIVE = 0.10         # same for negative emotions (anger/sadness/anxiety)
+LEAK_HOURLY_CAP = 0.10       # max total leak per emotion per hour into the global vector
+# Bond coupling (mood is temporary, bond is durable)
+BOND_FORGIVE_DIV = 250.0     # negative-emotion deltas are scaled by 1 - min(BOND_FORGIVE_MAX, bond / BOND_FORGIVE_DIV)
+BOND_FORGIVE_MAX = 0.4
+BOND_WARMTH_PER_POINT = 0.002  # personal warmth bonus = min(BOND_WARMTH_MAX, bond * this)
+BOND_WARMTH_MAX = 0.2
+WARMTH_FLOOR_PER_BOND = 0.001  # personal warmth offset never decays below bond * this
+
+# Collapse (which emotions are "shown"), with override on big swings
+COLLAPSE_MIN = 30.0
+COLLAPSE_MAX = 60.0
+COLLAPSE_TEMP = 0.15
+COLLAPSE_SECOND_MIN = 0.12            # a 2nd emotion is shown only if its salience >= this ...
+COLLAPSE_SECOND_RATIO = 0.5           # ... and >= this fraction of the first
+COLLAPSE_OVERRIDE_DELTA = 0.12        # cumulative gain since the last collapse that forces a re-collapse
+COLLAPSE_OVERRIDE_SURPRISE = 0.4      # surprise at/above this always re-collapses
+COLLAPSE_OVERRIDE_MARGIN = 0.2        # a new top emotion beating the shown one by this re-collapses
+COLLAPSE_OVERRIDE_MIN_GAP = 10.0      # seconds between two overrides
+
+# Cause journal (why does Arona feel this way)
+CAUSE_REASON_MAX = 60
+CAUSE_MIN_DELTA = 0.03       # smaller deltas are not logged as causes
+CAUSE_SHOW_MIN = 0.05        # a cause is shown while its decayed contribution is >= this
+CAUSE_PRUNE_MIN = 0.01       # ... and deleted below this
+CAUSE_MAX_AGE = 48 * 3600.0
+CAUSE_MAX_PER_EMO = 3        # per (user, emotion)
+CAUSE_TOTAL_MAX = 200
+
+# Fatigue (backend-driven): relaxes toward a target made of base + night + recent activity
+FATIGUE_RISE_HALFLIFE = 45 * 60
+FATIGUE_SLEEP_HALFLIFE = 30 * 60
+FATIGUE_ACTIVITY_WINDOW = 1800.0
+FATIGUE_ACTIVITY_FULL = 60       # messages in the window that give the full activity bonus
+FATIGUE_ACTIVITY_MAX = 0.30
+FATIGUE_NIGHT_BONUS = 0.30       # local 23:00-06:00
+FATIGUE_LATE_BONUS = 0.10        # local 22:00-23:00 and 06:00-07:00
+FATIGUE_WAKE_BUMP = 0.15
+SLEEP_JOY_REGEN_PER_TICK = 0.001 # while asleep, joy regenerates up to SLEEP_JOY_CAP
+SLEEP_JOY_CAP = 0.45
+
+# Label readout (dominant emotion -> halo/label). Below its threshold an emotion maps to "default".
+LABEL_THRESHOLDS = {"surprise": 0.30, "anger": 0.12, "sadness": 0.12, "excitement": 0.15, "joy": 0.12, "warmth": 0.10}  # level ABOVE baseline
+LABEL_DELIGHTED_JOY = 0.65     # absolute joy level
+EMO_DRIFT_STD = 0.002        # per-tick random drift on joy/curiosity/anxiety (keeps her from being static)
+MOOD_LABEL_DESC = {lbl: desc for _lo, _hi, lbl, desc in MOOD_LEVELS}
+MOOD_LABEL_DESC["shocked"] = "Arona is genuinely shocked, caught completely off guard."
 
 
 # ── Database ─────────────────────────────────────────────────

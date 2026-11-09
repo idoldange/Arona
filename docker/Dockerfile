@@ -6,7 +6,7 @@ RUN printf 'deb http://mirror.sg.gs/debian bookworm main\ndeb http://mirror.sg.g
 # 1. System dependencies & Fontconfig
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl wget git libssl-dev libffi-dev \
-    dnsutils iputils-ping unzip zip ffmpeg procps psmisc neofetch \
+    dnsutils iputils-ping unzip zip ffmpeg procps psmisc neofetch tmux \
     fontconfig locales proxychains4 \
     binutils gdb file strace ltrace \
     clang llvm cmake pkg-config p7zip-full jq \
@@ -88,7 +88,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
     duckdb pyarrow \
     pyyaml python-dotenv tabulate \
     "qrcode[pil]" faker \
-    gdown
+    gdown \
+    playwright
 
 # 7b. Node.js & npm (LTS via NodeSource)
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
@@ -103,6 +104,19 @@ RUN npm install -g \
     tsx \
     yarn \
     pnpm
+
+# 7f. Playwright + Chromium baked into the image.
+# Browsers live under /opt (image layer, executable) instead of
+# ~/.cache/ms-playwright, because docker-compose mounts /home/sandboxuser
+# and /tmp as tmpfs with noexec. Keeping them in the image preserves the
+# noexec hardening while still letting sandbox code drive a real browser.
+# NOTE: with cap_drop ALL + no-new-privileges, Chromium must run with
+# --no-sandbox (Playwright's chromiumSandbox defaults to false anyway).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN mkdir -p /opt/ms-playwright \
+    && python -m playwright install --with-deps chromium \
+    && chmod -R 755 /opt/ms-playwright \
+    && rm -rf /var/lib/apt/lists/*
 
 # 7d. sandboxuser npm prefix — lets sandboxuser run `npm install -g` without root.
 #     All user-global packages go to ~/.npm-global instead of /usr/lib/node_modules.

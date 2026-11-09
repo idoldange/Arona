@@ -216,6 +216,9 @@ database/longterm_memory
 database/vector_db
 database/files
 database/todos
+# .db files
+*.db
+
 # all .db in database/
 database/*.db
 games/*.json

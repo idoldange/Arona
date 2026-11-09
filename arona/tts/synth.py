@@ -61,7 +61,7 @@ _SF_FAMILY = {
 }
 
 # Tham so gui len server /synth (con lai la tham so rieng cua bot)
-SERVER_PARAMS = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang"}
+SERVER_PARAMS = {"transpose", "auto_octave", "voice_center", "temperature", "top_k", "text_lang", "seed"}
 DEFAULT_INST_PCT = 75.0  # do to instrument so voi vocal (% RMS; 100 = ngang vocal, 75 = -2.5 dB) khi ghep chung; doi bang option inst_vol=<%>
 DEFAULT_SYNTH_TEMPERATURE = 0.5   # temperature mac dinh gui len /synth (ca .ust lan vocal track cua .ustx) khi khong set temperature=
 FLUID_RATE = 44100
@@ -228,6 +228,7 @@ class UTrack:
     drums: bool = False
     sf_hint: str | None = None   # tu tag sf=... trong ten track
     preset: str | None = None    # ten nhac cu that su (tag preset=violin hoac sf=weeds:violin) -> tim trong catalog cua cac soundfont
+    vol_curve: list = field(default_factory=list)  # [(tick, 0..200, 100 = binh thuong)] tu curves vol cua voice_part
     fixed: bool = False          # role/program/drums da biet san (track tu file MIDI) -> classify_track khong doan lai
 
 
@@ -362,6 +363,12 @@ def parse_ustx(body: bytes) -> UProject:
         if not (0 <= ti < len(tracks)):
             continue
         base = int(part.get("position", 0))
+        for cv in part.get("curves") or []:
+            try:
+                if str((cv or {}).get("abbr")) == "vol":
+                    tracks[ti].vol_curve += [(base + int(x), float(y)) for x, y in zip(cv.get("xs") or [], cv.get("ys") or [])]
+            except Exception:
+                pass
         for n in part.get("notes") or []:
             try:
                 dur = int(n["duration"])
@@ -378,6 +385,7 @@ def parse_ustx(body: bytes) -> UProject:
                 continue
     for t in tracks:
         t.notes.sort(key=lambda x: x.pos)
+        t.vol_curve.sort(key=lambda p: p[0])
 
     if doc.get("wave_parts"):
         console.log(f"USTX: {len(doc['wave_parts'])} wave_part(s) (audio nhung ngoai) bi bo qua", "WARN")
@@ -978,6 +986,40 @@ def _prep(seg: AudioSegment, gain_db: float, pan: float) -> AudioSegment:
     return seg
 
 
+def _tick_to_ms(proj, tick: int) -> float:
+    """tick -> ms theo tempo map cua project."""
+    res = max(1, proj.resolution)
+    ms, last_t, bpm = 0.0, 0, proj.tempos[0][1]
+    for pos, b in proj.tempos:
+        if pos >= tick:
+            break
+        ms += (pos - last_t) * 60000.0 / (bpm * res)
+        last_t, bpm = pos, b
+    return ms + (tick - last_t) * 60000.0 / (bpm * res)
+
+
+def _apply_vol_curve(seg: AudioSegment, curve: list, proj) -> AudioSegment:
+    """Ap duong volume (CC7 / curves vol) len audio: noi tuyen tinh giua cac diem, giu gia tri o hai dau."""
+    if not curve:
+        return seg
+    try:
+        import numpy as np
+        xs = np.array([_tick_to_ms(proj, int(t)) for t, _ in curve], dtype=np.float64)
+        ys = np.array([v / 100.0 for _, v in curve], dtype=np.float64)
+        if np.allclose(ys, 1.0):
+            return seg
+        ch = seg.channels
+        arr = np.array(seg.get_array_of_samples(), dtype=np.float64).reshape(-1, ch)
+        t_ms = np.arange(arr.shape[0]) * 1000.0 / seg.frame_rate
+        gain = np.interp(t_ms, xs, ys)[:, None]
+        out = np.clip(arr * gain, -(2 ** (8 * seg.sample_width - 1)), 2 ** (8 * seg.sample_width - 1) - 1)
+        dt = arr.dtype
+        return seg._spawn(out.astype({1: np.int8, 2: np.int16, 4: np.int32}[seg.sample_width]).tobytes())
+    except Exception as e:
+        console.log(f"USTX: ap volume curve loi: {e}", "WARN")
+        return seg
+
+
 def _inst_params(params) -> tuple[float, float]:
     """-> (inst_vol %, inst_db). inst_vol: do to instrument so voi vocal (100 = ngang vocal, mac dinh 50); inst_db: chinh them theo dB."""
     params = params or {}
@@ -1137,6 +1179,7 @@ async def _synth_project(proj: UProject, params: dict, timeout_s: int, raw: bool
         if first_transpose is None:
             first_transpose = transpose
         seg = await asyncio.to_thread(AudioSegment.from_file, io.BytesIO(audio), "wav")
+        seg = await asyncio.to_thread(_apply_vol_curve, seg.set_frame_rate(MIX_RATE).set_channels(2), t.vol_curve, proj)
         layers.append(_prep(seg, t.volume_db, t.pan))
         desc.append(f"{t.name}→vocal")
         await _pdone(f"Vocal '{t.name}' synthesized", key=f"vocal:{t.name}")

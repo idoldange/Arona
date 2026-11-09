@@ -82,6 +82,7 @@ from uuid import uuid4
 from collections import OrderedDict, deque
 from utils.scheduler import *
 from utils.memory import memory
+from affection import special as _special
 from utils.migration_keys import get_or_create_key, reset_key, resolve_id, link_account, unlink_account, is_linked, delete_key
 from utils import apikeys
 from utils.discord_ui_apikeys import build_addkey_embed, build_listkeys_embed
@@ -156,6 +157,7 @@ from utils.impression import build_impression_block, update_impression
 from utils.youtube import get_video_info as get_youtube_info, format_for_gemini as format_youtube, get_transcript as get_youtube_transcript
 # Docker helper to run untrusted code inside a controlled container
 from utils.docker import AronaDocker
+from utils.daemon import DaemonManager
 from console.command import * 
 from typing import Dict, Tuple, Union, List, Any
 from games.chess import chess_manager
@@ -586,6 +588,7 @@ _intentional_disconnect: bool = False          # set True when user explicitly c
 
 # Instantiate a Docker runner for executing code/commands (used by Gemini functions)
 docker_runner: AronaDocker = AronaDocker()
+daemon_manager = DaemonManager(docker_runner)
 # Deferred cleanup registry: keyed by Discord message.id (str)
 # Workspace keys here are deleted only AFTER the final bot reply is sent (temp=True)
 _deferred_cleanups: Dict[str, List[str]] = {}
@@ -2623,6 +2626,17 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
 
 
 
+    elif function_name in ("start_daemon", "read_daemon_output", "send_daemon_input", "stop_daemon", "list_daemons"):
+      channel_id = str(message.channel.id) if message else None
+      if not channel_id:
+        return "Error: no channel context available."
+      try:
+        return await daemon_manager.handle(function_name, args, channel_id, str(message.author.id), getattr(message, "id", None))
+      except Exception as e:
+        console.log(f"{function_name} handler error: {e}", "ERROR")
+        return f"Error: {e}"
+
+
     elif function_name == "cleanup_sandbox":
       # Wipe the persistent per-channel docker workspace (temp=false workspaces).
       # Model should call this when it's done with a multi-step task.
@@ -2630,6 +2644,7 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
       if not channel_id:
         return "Error: no channel context available."
       workspace_key = docker_runner._sanitize_msg_id(channel_id)
+      await daemon_manager.stop_all(channel_id)
       await docker_runner.cleanup_by_msg_id(workspace_key)
       return f"Sandbox workspace for channel {channel_id} has been cleaned up."
 
@@ -2692,6 +2707,11 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
         user_id, _si_err = _saved_info_target(args, message)
         if _si_err:
           return _si_err
+        if _special.is_key(key):
+          _rel_err, content = _special.validate(user_id, content)
+          if _rel_err:
+            return _rel_err
+          _special.invalidate(user_id)
         return memory.edit(user_id, key, content)
       if action == "add":
         key = args.get("key", "")
@@ -2699,12 +2719,18 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
         user_id, _si_err = _saved_info_target(args, message)
         if _si_err:
           return _si_err
+        if _special.is_key(key):
+          _rel_err, content = _special.validate(user_id, content)
+          if _rel_err:
+            return _rel_err
+          _special.invalidate(user_id)
         return memory.add(user_id, key, content)
       if action == "delete":
         key = args.get("key", "")
         user_id, _si_err = _saved_info_target(args, message)
         if _si_err:
           return _si_err
+        _special.invalidate(user_id)
         return memory.delete(user_id, key)
     
     
@@ -4033,6 +4059,17 @@ def _affection_uid(message):
   """Resolved user id for <bond> tags (None when there is no human speaker)."""
   try:
     return resolve_id(message.author.id) if message is not None else None
+  except Exception:
+    return None
+
+
+def _affection_scope(message):
+  """Where a message came from. Routes mood to the speaker and keeps reasons that come from DMs private."""
+  try:
+    if message is None:
+      return None
+    return {"is_dm": message.guild is None, "guild_id": getattr(message.guild, "id", None),
+            "channel_id": message.channel.id}
   except Exception:
     return None
 
@@ -5665,7 +5702,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       has_func_call = any("functionCall" in p for p in parts_list)
       if has_func_call and text_parts and message and not gemini_ws.is_voice_session:
         combined_text = "\n".join(text_parts).strip()
-        combined_text = affection.parse_and_apply_mood_tag(combined_text, user_id=_affection_uid(message))
+        combined_text = affection.parse_and_apply_mood_tag(combined_text, user_id=_affection_uid(message), scope=_affection_scope(message), turn_id=getattr(message, "id", None))
         try:
           await send_content_or_file(channel=message.channel, content=combined_text, message=message)
         except Exception as e:
@@ -7733,7 +7770,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
         return history_data
       
       _uid = resolve_id(message.author.id)
-      _affection_task = asyncio.create_task(affection.on_interaction(_uid))
+      _affection_task = asyncio.create_task(affection.on_interaction(_uid, scope=_affection_scope(message)))
       _birthdays_task = asyncio.create_task(get_today_birthdays())
 
       history_task = fetch_full_history(message.channel, limit=15)
@@ -7976,7 +8013,7 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
             _overload_status_msgs.pop(message.channel.id, None)
       
         return
-      reply = affection.parse_and_apply_mood_tag(reply, user_id=_affection_uid(message))
+      reply = affection.parse_and_apply_mood_tag(reply, user_id=_affection_uid(message), scope=_affection_scope(message), turn_id=getattr(message, "id", None))
 
       # Stop the typing indicator loop BEFORE sending the final message.
       # Discord has no "cancel typing now" API — trigger_typing() just expires after ~10s.
@@ -8152,6 +8189,11 @@ async def on_ready():
       asyncio.create_task(console_command_loop())
       asyncio.create_task(_stale_workdir_cleanup())
       client.loop.create_task(scheduler_heartbeat(
+          client, ask_gemini, extract_gemini_text,
+          send_func=send_content_or_file,
+          mood_func=affection.parse_and_apply_mood_tag,
+      ))
+      client.loop.create_task(daemon_manager.watch_loop(
           client, ask_gemini, extract_gemini_text,
           send_func=send_content_or_file,
           mood_func=affection.parse_and_apply_mood_tag,
@@ -8581,7 +8623,7 @@ async def on_message(message):
   if message.content.lower().strip() in ("!arona bond", "!arona mood", "!arona affection"):
     console.log(f"User {message.author.display_name} used !arona bond", "INFO")
     view = AffectionView()
-    view.message = await message.channel.send(embed=build_bond_embed(message.author), view=view)
+    view.message = await message.channel.send(embed=build_bond_embed(message.author, is_dm=message.guild is None), view=view)
     return
 
   if message.content.lower() == "!arona quota":

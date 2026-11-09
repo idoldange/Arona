@@ -55,7 +55,7 @@ LOGIN_MAX_FAILS, LOGIN_WINDOW = 7, 15 * 60     # same limit as server.js: 7 wron
 EXEC_TIMEOUT = 60
 OUT_LIMIT = 200_000
 
-NAV = [("/debug", "Home"), ("/debug/call_ui", "Call UI"), ("/debug/system", "System"), ("/debug/db", "Database"),
+NAV = [("/debug", "Home"), ("/debug/call_ui", "Call UI"), ("/debug/system", "System"), ("/debug/mood", "Mood"), ("/debug/db", "Database"),
        ("/debug/ide", "IDE"), ("/debug/terminal", "Terminal")]
 TB_PREFIX = "/debug/tensorboard"
 TB_LOGDIR = os.path.join(ROOT, "logs", "tb")
@@ -316,6 +316,7 @@ async def home_page(request: web.Request) -> web.Response:
   <div class="card"><h3>Tools</h3>
     <p><a href="/debug/call_ui">Call UI</a> <span class="muted">- live voice-call window + what the bot hears</span></p>
     <p><a href="/debug/system">System</a> <span class="muted">- TensorBoard: CPU / RAM / GPU / network / bot metrics</span></p>
+    <p><a href="/debug/mood">Mood</a> <span class="muted">- graph of Arona's emotions over time + recent tags</span></p>
     <p><a href="/debug/db">Database</a> <span class="muted">- spreadsheet-style editor for the SQLite files in ./database</span></p>
     <p><a href="/debug/terminal">Terminal</a> <span class="muted">- interactive shell on this PC</span></p>
     <p><a href="/debug/ide">IDE</a> <span class="muted">- edit the bot source like VS Code, hot reload without restart, Python console inside the bot</span></p>
@@ -357,6 +358,63 @@ XTERM_FIT = "https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-
 SRI_CSS = "sha384-LJcOxlx9IMbNXDqJ2axpfEQKkAYbFjJfhXexLfiRJhjDU81mzgkiQq8rkV0j6dVh"
 SRI_JS = "sha384-/nfmYPUzWMS6v2atn8hbljz7NE0EI1iGx34lJaNzyVjWGDzMv+ciUZUeJpKA3Glc"
 SRI_FIT = "sha384-AQLWHRKAgdTxkolJcLOELg4E9rE89CPE2xMy3tIRFn08NcGKPTsELdvKomqji+DL"
+
+
+async def api_mood(request: web.Request) -> web.Response:
+    try:
+        from affection import mood
+        return web.json_response(mood.history(min(4.0, max(0.1, float(request.query.get("h", 1))))))
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+MOOD_BODY = r"""
+<div class="card"><div class="row"><h3>Emotion graph (global)</h3>
+<span><select id="win"><option value="1">1 h</option><option value="3">3 h</option><option value="4">4 h</option></select>
+<span id="val" class="muted"></span></span></div>
+<canvas id="g" style="height:340px"></canvas><div id="leg" class="row" style="flex-wrap:wrap;justify-content:flex-start;gap:12px"></div></div>
+<div class="grid" style="margin-top:12px"><div class="card"><h3>Recent emotion tags</h3><div id="ev" class="muted">-</div></div>
+<div class="card"><h3>Users (current effective mood)</h3><div id="us" class="muted">-</div></div></div>
+"""
+
+MOOD_SCRIPT = r"""
+const COL = {joy:'#f0b232',warmth:'#ff8fab',excitement:'#ff6b35',sadness:'#4ea1ff',anger:'#f23f43',anxiety:'#b07cff',surprise:'#2fd5c7',fatigue:'#8d939b',curiosity:'#23a55a'};
+const cv = document.getElementById('g'), ctx = cv.getContext('2d'), off = {};
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let D = null;
+function draw() {
+  if (!D) return; const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+  const pts = D.pts;
+  const L = 34, B = 20, T = 8, w = W - L - 8, h = H - B - T;
+  ctx.font = '11px system-ui'; ctx.fillStyle = '#949ba4'; ctx.strokeStyle = '#2b2d31'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) { const y = T + h * i / 4; ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - 8, y); ctx.stroke(); ctx.fillText((1 - i / 4).toFixed(2), 2, y + 4); }
+  if (pts.length < 2) { ctx.fillText('collecting data (one sample per tick)...', L + 10, T + 20); return; }
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t, X = t => L + w * (t - t0) / Math.max(1, t1 - t0), Y = v => T + h * (1 - Math.min(1, Math.max(0, v)));
+  for (const e of D.emos) { if (off[e]) continue; ctx.strokeStyle = COL[e] || '#fff'; ctx.lineWidth = 1.6; ctx.beginPath();
+    pts.forEach((p, i) => { const x = X(p.t), y = Y(p.v[e]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke(); }
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = '#4e5058'; ctx.lineWidth = 1;
+  for (const e of D.emos) { if (off[e]) continue; const y = Y(D.base[e]); ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - 8, y); ctx.stroke(); } ctx.setLineDash([]);
+  for (const ev of D.events) { if (ev.t < t0) continue; const x = X(ev.t); ctx.strokeStyle = 'rgba(255,255,255,.18)'; ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, T + h); ctx.stroke(); }
+  ctx.fillStyle = '#949ba4'; const fm = t => new Date(t * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  ctx.fillText(fm(t0), L, H - 4); ctx.textAlign = 'right'; ctx.fillText(fm(t1), W - 8, H - 4); ctx.textAlign = 'left';
+  const last = pts[pts.length - 1]; document.getElementById('val').textContent = ' valence ' + (last.val > 0 ? '+' : '') + last.val.toFixed(1);
+}
+function legend() { const l = document.getElementById('leg'); l.innerHTML = '';
+  for (const e of D.emos) { const s = document.createElement('span'); s.style.cssText = 'cursor:pointer;user-select:none;opacity:' + (off[e] ? .35 : 1);
+    s.innerHTML = '<b style="color:' + COL[e] + '">&#9632;</b> ' + e; s.onclick = () => { off[e] = !off[e]; legend(); draw(); }; l.appendChild(s); } }
+function lists() {
+  const ago = t => { const s = Math.max(0, D.now - t); return s < 90 ? Math.round(s) + 's' : s < 5400 ? Math.round(s / 60) + 'm' : (s / 3600).toFixed(1) + 'h'; };
+  document.getElementById('ev').innerHTML = D.events.slice(-14).reverse().map(e => '<div>' + ago(e.t) + ' ago &middot; ' + (e.dm ? '[DM] ' : '') + 'u' + esc(e.uid) + ' &middot; ' +
+    Object.entries(e.d).map(([k, v]) => '<b style="color:' + COL[k] + '">' + esc(k) + (v > 0 ? '+' : '') + Math.round(v * 100) + '</b>').join(' ') + (e.r ? ' &middot; ' + esc(e.r) : '') + '</div>').join('') || '-';
+  document.getElementById('us').innerHTML = D.users.map(u => '<div>u' + esc(u.uid) + (u.rel ? ' &middot; ♥ ' + esc(u.rel) : '') + ' &middot; valence ' + u.valence + ' &middot; ' + u.top.map(t => esc(t[0]) + ' ' + t[1]).join(', ') + '</div>').join('') || '-'; }
+async function tick() { try { D = await (await fetch('/debug/api/mood?h=' + document.getElementById('win').value)).json(); if (D.error) return; if (!document.getElementById('leg').children.length) legend(); draw(); lists(); } catch (e) {} }
+document.getElementById('win').onchange = tick; window.onresize = draw; setInterval(tick, 5000); tick();
+"""
+
+
+async def mood_page(request: web.Request) -> web.Response:
+    return page("Mood", "/debug/mood", MOOD_BODY, MOOD_SCRIPT)
 
 
 async def terminal_page(request: web.Request) -> web.Response:
@@ -1033,6 +1091,7 @@ def add_routes(app: web.Application) -> None:
         web.get("/debug/api/voice", api_voice),
         web.get("/debug", home_page), web.get("/debug/", home_page),
         web.get("/debug/login", login_page), web.post("/debug/login", login_post), web.get("/debug/logout", logout),
+        web.get("/debug/mood", mood_page), web.get("/debug/api/mood", api_mood),
         web.get("/debug/system", system_page), web.get("/debug/terminal", terminal_page), web.get("/debug/python", python_redirect),
         web.get("/debug/api/stats", api_stats), web.post("/debug/api/exec", api_exec), web.get("/debug/api/vars", api_vars),
         web.get("/debug/ws/terminal", ws_terminal),

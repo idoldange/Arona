@@ -204,6 +204,16 @@ def _parse_track(body: dict):
     from arona.tts import synth as S
     params = {k: v for k, v in (body.get("params") or {}).items() if k in S.SERVER_PARAMS}
     params.setdefault("temperature", S.DEFAULT_SYNTH_TEMPERATURE)
+    if "temperature" in params:
+        params["temperature"] = chunking._temp(params["temperature"]) or S.DEFAULT_SYNTH_TEMPERATURE
+    if "seed" in params:
+        seed = chunking._seed(params["seed"])
+        if seed is None:
+            del params["seed"]
+        else:
+            params["seed"] = seed
+    if str((body.get("params") or {}).get("align", "")) == "stretch":
+        params["syllable_align"] = 0      # track o che do "Even stretch": bo canh am tiet (hash doi theo)
     # Lock one transpose for the whole track. Letting /synth auto-transpose each chunk
     # independently makes the octave jump between phrases (different median per chunk).
     if "transpose" not in params and params.get("auto_octave", True):
@@ -266,6 +276,35 @@ async def h_plan(request):
         return _deny(400, str(e))
     out = [dict(c.info(), cached=_fresh(c.hash)) for c in chunks]
     return web.json_response({"chunks": out, "dirty": sum(1 for c in out if not c["cached"])})
+
+
+async def h_alignview(request):
+    """Canh tay: sinh lai take TTS (seed co dinh theo lyric) cua chunk chua note `at` (tick), tra audio goc + bien am tiet."""
+    try:
+        body = await request.json()
+        chunks, _, params = _parse_track(body)
+        at = int(body.get("at"))
+        ppq = max(1, int(body.get("ppq", 480)))
+        tempos = chunking.normalize_tempos(body.get("tempos") or [[0, 120]])
+    except (ValueError, KeyError, TypeError) as e:
+        return _deny(400, str(e))
+    chunk = next((c for c in chunks if any(n.pos == at for n in c.notes)), None)
+    if chunk is None:
+        return _deny(404, "no chunk at that note")
+    ust = chunking.chunk_to_ust(chunk, ppq, tempos, "align", with_pos=True)
+    from arona.tts import synth as S
+    q = dict(chunking.chunk_params(params, chunk))
+    q["align_info"] = 1
+    async with S.synth_lock:
+        raw, _, err = await S._post_synth(ust, "application/octet-stream", q, SYNTH_TIMEOUT_S)
+    if not raw:
+        return _deny(502, str(err) or "align view failed")
+    try:
+        info = json.loads(raw)
+    except ValueError:
+        return _deny(502, "bad align view response")
+    info["chunk"] = chunk.info()
+    return web.json_response(info)
 
 
 def _prune_cache() -> None:
@@ -655,6 +694,41 @@ async def h_save(request):
             tracks = {str(int(k)): v for k, v in list(raw.items())[:64] if v in SAVE_LANGS and v != "auto"}
     except (ValueError, TypeError):
         tracks = {}
+    def _save_gen(v) -> dict:
+        if not isinstance(v, dict):
+            return {}
+        out = {}
+        temp = chunking._temp(v.get("temperature"))
+        if temp is not None:
+            out["temperature"] = temp
+        seed = chunking._seed(v.get("seed"))
+        if seed is not None:
+            out["seed"] = seed
+        return out
+
+    vmeta = {}
+    try:
+        raw = json.loads(request.headers.get("X-Save-Meta", "{}"))
+        if isinstance(raw, dict):
+            vmeta = {
+                "vocal": [int(i) for i in list(raw.get("vocal") or [])[:64]],
+                "transpose": {str(int(k)): float(v) for k, v in list((raw.get("transpose") or {}).items())[:64]},
+            }
+            gen = _save_gen(raw.get("gen"))
+            if gen:
+                vmeta["gen"] = gen
+            track_gen = {}
+            for k, v in list((raw.get("trackGen") or {}).items())[:64]:
+                g = _save_gen(v)
+                if g:
+                    track_gen[str(int(k))] = g
+            if track_gen:
+                vmeta["trackGen"] = track_gen
+            stretch = [int(i) for i in list(raw.get("stretch") or [])[:64]]
+            if stretch:
+                vmeta["stretch"] = stretch
+    except (ValueError, TypeError, AttributeError):
+        vmeta = {}
     d = os.path.join(SAVE_DIR, str(s.channel_id))
     os.makedirs(d, exist_ok=True)
     stamp = int(time.time() * 1000)
@@ -663,7 +737,7 @@ async def h_save(request):
         f.write(body)
     os.replace(base + ".mid.tmp", base + ".mid")
     with open(base + ".json", "w", encoding="utf-8") as f:
-        json.dump({"name": name, "user": uid, "lang": lang, "tracks": tracks}, f)
+        json.dump({"name": name, "user": uid, "lang": lang, "tracks": tracks, "meta": vmeta}, f)
     _prune_saves(s.channel_id)
     return web.json_response({"ok": True, "saved_at": stamp})
 
@@ -682,7 +756,8 @@ def _save_response(path: str) -> web.Response:
         "X-Save-Name": quote(str(meta.get("name", ""))), "X-Saved-At": os.path.basename(path)[:-4],
         "X-Saved-By": str(user), "X-Save-Lang": lang if lang in SAVE_LANGS else "auto",
         "X-Save-Tracks": json.dumps(tracks),
-        "Access-Control-Expose-Headers": "X-Save-Name,X-Saved-At,X-Saved-By,X-Save-Lang,X-Save-Tracks"})
+        "X-Save-Meta": json.dumps(meta.get("meta") if isinstance(meta.get("meta"), dict) else {}),
+        "Access-Control-Expose-Headers": "X-Save-Name,X-Saved-At,X-Saved-By,X-Save-Lang,X-Save-Tracks,X-Save-Meta"})
 
 
 async def h_save_latest(request):
@@ -1320,6 +1395,7 @@ def make_app() -> web.Application:
         web.get("/api/save/{save_id}", h_save_get),
         web.post("/api/vocal/plan", h_plan),
         web.post("/api/vocal/chunk", h_chunk),
+        web.post("/api/vocal/alignview", h_alignview),
         web.post("/api/vocal/cancel", h_cancel),
         web.get("/api/chess/state", h_chess_state),
         web.post("/api/chess/move", h_chess_move),

@@ -32,6 +32,9 @@ class Note:
     lyric: str
     pitch: dict | None = None    # pitch bend cua note (xem arona/activity/pitch.py)
     lang: str | None = None      # ngon ngu hat cua note (None = tu nhan dien / theo request)
+    temp: float | None = None    # temperature rieng cua note (ghi de track/project)
+    seed: int | None = None      # seed rieng cua note
+    nudge: int = 0               # ms: dich diem bat dau am tiet cua note trong audio TTS (+ = tre hon), canh tay
 
 
 @dataclass
@@ -81,6 +84,30 @@ def tick_to_sec(tick: int, ppq: int, tempos: list[tuple[int, float]]) -> float:
     return sec + (tick - prev_t) * 60.0 / (prev_b * ppq)
 
 
+def _temp(v) -> float | None:
+    try:
+        return None if v is None else max(0.05, min(1.5, round(float(v), 2)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _seed(v) -> int | None:
+    try:
+        return None if v is None else max(0, min(2147483646, int(v)))
+    except (TypeError, ValueError):
+        return None
+
+
+MAX_NUDGE_MS = 3000
+
+
+def _nudge(v) -> int:
+    try:
+        return max(-MAX_NUDGE_MS, min(MAX_NUDGE_MS, int(round(float(v)))))
+    except (TypeError, ValueError):
+        return 0
+
+
 def clean_notes(raw_notes) -> list[Note]:
     """Sap xep, cat phan chong len nhau (giong ustx_track_to_ust), bo note rong."""
     out, cursor = [], 0
@@ -91,8 +118,9 @@ def clean_notes(raw_notes) -> list[Note]:
             continue
         lyric = str(n.get("lyric", "")).replace("\n", " ").strip() or "a"
         lang = n.get("lang")
+        n_temp, n_seed = _temp(n.get("temp")), _seed(n.get("seed"))
         out.append(Note(start, end - start, max(0, min(127, int(n["tone"]))), lyric, pitchmod.normalize(n.get("pitch")),
-                        lang if lang in LANGS else None))
+                        lang if lang in LANGS else None, n_temp, n_seed, _nudge(n.get("nudge"))))
         cursor = end
     return out
 
@@ -129,6 +157,14 @@ def apply_track_transpose(raw_notes, base: int):
     return out
 
 
+_MELISMA = re.compile(r"^\+[~*\d]*$")
+
+
+def is_melisma(lyric: str) -> bool:
+    """"+" (OpenUtau: keo dai am tiet truoc; "+~", "+*", "+1" cung vay) - khong phai am tiet moi."""
+    return bool(_MELISMA.match((lyric or "").strip()))
+
+
 def _split_long(notes: list[Note], ppq: int, tempos) -> list[list[Note]]:
     """Cat chunk qua dai o khoang lang lon nhat ben trong (de quy)."""
     def too_long(ns):
@@ -141,6 +177,14 @@ def _split_long(notes: list[Note], ppq: int, tempos) -> list[list[Note]]:
     best_gap, cut = max(gaps)
     if best_gap <= 0:            # lien tuc khong nghi -> cat o giua chunk
         cut = len(notes) // 2 - 1
+        # khong cat ngay truoc note "+": no phai di cung am tiet truoc no (lui lai, het cach thi tien toi)
+        c0 = cut
+        while cut > 0 and is_melisma(notes[cut + 1].lyric):
+            cut -= 1
+        if cut == 0 and is_melisma(notes[1].lyric):
+            cut = c0
+            while cut < len(notes) - 2 and is_melisma(notes[cut + 1].lyric):
+                cut += 1
     return _split_long(notes[:cut + 1], ppq, tempos) + _split_long(notes[cut + 1:], ppq, tempos)
 
 
@@ -165,24 +209,30 @@ def split_chunks(notes: list[Note], ppq: int, tempos) -> list[Chunk]:
     return chunks
 
 
-def chunk_to_ust(chunk: Chunk, ppq: int, tempos, name: str = "chunk") -> bytes:
+def chunk_to_ust(chunk: Chunk, ppq: int, tempos, name: str = "chunk", with_pos: bool = False) -> bytes:
     """UST (UTF-8, giong dinh dang ustx_track_to_ust) cho 1 chunk; bat dau tu note dau, rest giua note giu nguyen."""
     tempos = normalize_tempos(tempos)
     k = UST_PPQ / ppq
+    pos_of = {}      # chi so note UST -> tick tuyet doi (chi de ve waveform canh tay, KHONG dua vao hash)
     notes, cursor, prev_tone = [], chunk.start_tick, None     # prev_tone: tone note truoc neu sat nhau (cho snapFirst)
     for n in chunk.notes:
         if n.pos > cursor:
-            notes.append(("R", 60, n.pos - cursor, cursor, None, None))
+            notes.append(("R", 60, n.pos - cursor, cursor, None, None, 0))
             prev_tone = None
-        notes.append((n.lyric, n.tone, n.dur, n.pos, n.pitch, prev_tone))
+        notes.append((n.lyric, n.tone, n.dur, n.pos, n.pitch, prev_tone, n.nudge))
+        pos_of[len(notes) - 1] = n.pos
         prev_tone = n.tone
         cursor = n.pos + n.dur
     first_bpm = tempo_at(tempos, chunk.start_tick)
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", name) or "chunk"
     out = ["[#VERSION]", "UST Version1.2", "[#SETTING]", f"Tempo={first_bpm:.2f}", "Tracks=1", f"ProjectName={safe}"]
     cur_bpm = first_bpm
-    for i, (ly, tone, dur, start, pit, prev) in enumerate(notes):
+    for i, (ly, tone, dur, start, pit, prev, ndg) in enumerate(notes):
         out += [f"[#{i:04d}]", f"Length={max(1, int(round(dur * k)))}", f"Lyric={ly}", f"NoteNum={tone}"]
+        if ndg:
+            out.append(f"Nudge={ndg}")
+        if with_pos and i in pos_of:
+            out.append(f"Pos={pos_of[i]}")
         out += pitchmod.to_ust_lines(pit, tone, prev)
         bpm = tempo_at(tempos, start)
         if abs(bpm - cur_bpm) > 1e-6:
@@ -195,6 +245,12 @@ def chunk_to_ust(chunk: Chunk, ppq: int, tempos, name: str = "chunk") -> bytes:
 def chunk_params(params: dict | None, chunk: Chunk) -> dict:
     """Params gui cho synth: ngon ngu cua chunk (neu co) thang ngon ngu chung."""
     out = dict(params or {})
+    # temperature / seed cua note (nhat la note dau co gia tri) ghi de track/project: moi chunk gen 1 lan
+    for key, attr in (("temperature", "temp"), ("seed", "seed")):
+        for n in chunk.notes:
+            if getattr(n, attr) is not None:
+                out[key] = getattr(n, attr)
+                break
     if chunk.lang:
         out["text_lang"] = chunk.lang
     return out

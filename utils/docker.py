@@ -751,11 +751,15 @@ class AronaDocker:
             # regardless of the host OS's default newline translation.
             with open(os.path.join(host_w, safe_filename), "w", encoding="utf-8", newline='\n') as f:
                 f.write(final_code)
+
+            # Same per-workspace uid as run_shell / daemons, so every tool sees the same files
+            uid = self._get_sandbox_uid(workspace_key)
+            await self._prepare_sandbox_workdir(host_w, docker_cwd, uid)
                 
             # Execute via Docker Exec
             cmd = [
                 "docker", "exec",
-                "-u", "sandboxuser",
+                "-u", str(uid),
                 "-e", f"OUTPUT_DIR={docker_out}",
                 "-e", f"VIEW_DIR={docker_view}",
                 "-e", "HOME=/home/sandboxuser",

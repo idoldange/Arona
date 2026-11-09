@@ -1,0 +1,8 @@
+workdir/
+output/
+data/
+venv/
+utils/
+__pycache__/
+*.pyc
+*.log
