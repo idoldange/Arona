@@ -8587,7 +8587,6 @@ async def on_message(message):
       "- `!arona ignoredchannel add/remove [id]`: Manage ignored channels — Arona won't process any messages there; defaults to the current channel if no id is given (requires `Manage Channels` permission)\n"
       "- `!arona clear`: Clear Arona's memory in this channel — messages before this point will be ignored (requires `Manage Messages` permission or DM)\n"
       "- `!arona forgetme`: Permanently delete all data Arona has stored about you (saved info, message history, account key)\n"
-      "- Privacy & Terms: https://arona.hangdongwibu.io/privacy\n"
       "- `!arona tracking opt-out`: Stop presence tracking and delete your stored game history\n"
       "- `!arona tracking opt-in`: Resume presence tracking for new game sessions\n"
       "- `!arona addkey`: Add your own Gemini API key(s) via an embed/modal, no daily limit\n"
@@ -8604,6 +8603,7 @@ async def on_message(message):
       "- You can mention Arona in any message to get a response.\n"
       "- You can also set specific channels for Arona to respond in using the channel commands.\n"
       "- Referencing to a message will provide context to Arona for a more informed response.\n"
+      "- Privacy & Terms: https://arona.hangdongwibu.io/privacy | https://arona.hangdongwibu.io/tos\n"
       "**For more information, please visit [the GitHub repository](https://github.com/idoldange/arona-ai)**"
     )
     for help_part in split_message(help_message):
