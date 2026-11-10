@@ -9,6 +9,12 @@ ADMINS           = [1048484561966866462]     # User IDs with admin access
 IGNORE           = []                        # Ignore messages mentioning these role IDs
 INFLIGHT_DELAY   = 10.0                      # seconds to consider a follow-up message as part of the same request
 
+# Channel that gets the bot's start / online / offline notices (0 = disabled).
+# If it is an announcement (news) channel the notice is also published (crossposted).
+STATUS_CHANNEL_ID = 1569599450333061150
+STATUS_PUBLISH = True
+
+
 # ── Gemini API ───────────────────────────────────────────────
 
 DEFAULT_MODEL       = "gemini-3.6-flash"

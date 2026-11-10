@@ -8422,6 +8422,7 @@ async def on_ready():
       await restore_board_views(client)
       console.log(f"Bot logged in: {client.user}", "INFO")
       elapsed = time.time() - server_start_time
+      await _status_notice(f"🟢 Arona is online ({elapsed:.1f}s).")
       console.log(f"Done ({elapsed:.3f}s)! For help, type '\033[33mhelp\033[0m'", "INFO")
 
     if debug_enabled:
@@ -9701,7 +9702,22 @@ command_queue = asyncio.Queue()
 async def enqueue_command(cmd: str):
   await command_queue.put(cmd)
 
+async def _status_notice(text: str) -> None:
+  """Post a status line to STATUS_CHANNEL_ID (published/crossposted when it is an announcement channel)."""
+  cid = int(globals().get("STATUS_CHANNEL_ID", 0) or 0)
+  if not cid:
+    return
+  try:
+    ch = await asyncio.wait_for(client.fetch_channel(cid), 10)
+    msg = await ch.send(text)
+    if globals().get("STATUS_PUBLISH", True) and getattr(ch, "is_news", lambda: False)():
+      await msg.publish()
+  except Exception as e:
+    console.log(f"Status notice failed: {e}", "WARN")
+
+
 async def graceful_shutdown(exit_code=0):
+  await _status_notice("🔴 Arona is going offline.")
   console.log("\033[31m[SHUTDOWN] Shutting down bot...\033[0m", "INFO")
   try:
     async with asyncio.timeout(30):
@@ -10082,7 +10098,9 @@ async def main():
   else:
     console.log("Discord Token Missing!", "ERROR")
   try:
-    await client.start(DISCORD_TOKEN)
+    await client.login(DISCORD_TOKEN)
+    await _status_notice("🟡 Arona is starting up...")
+    await client.connect(reconnect=True)
   finally:
     console.log("Main loop exited.", "INFO")
     if browser:

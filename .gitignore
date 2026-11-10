@@ -234,7 +234,8 @@ audit.log
 #test file
 test.py
 test_live.py
-
+check_tools.py
+rebuild.err
 
 #node modules
 node_modules/
@@ -257,6 +258,7 @@ temp_audio/
 
 #backup
 *.bak
+*.bak_*
 .bak
 # rvc
 arona/voice_changer/

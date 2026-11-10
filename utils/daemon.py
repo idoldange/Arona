@@ -21,6 +21,7 @@ MAX_TOTAL = 8
 MAX_READ = 16000
 SENTINEL = "@@wake@@"
 MAX_WAKES = 100            # per daemon, lifetime
+MAX_TAGS_PER_MIN = 10      # <discord_send> posts per daemon per minute
 MAX_WAKES_PER_HOUR = 20    # per daemon
 WAKE_COOLDOWN = 10         # seconds between wakes of one daemon
 WAKE_COALESCE = 2          # seconds to batch hits before waking
@@ -30,6 +31,17 @@ _NEWCOLS = {"msg_id": "TEXT", "wake_on": "TEXT", "wake_exit": "INTEGER DEFAULT 1
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b[=>]")
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_+\-]{0,23}$")
+
+_TAG = re.compile(r"<discord_send(?:\s+files=(?:\"([^\"]*)\"|'([^']*)'))?\s*>(.*?)</discord_send>", re.S)
+
+
+def split_discord_tags(text):
+    """<discord_send files="a.png, sub/b.txt">msg</discord_send> -> (text without tags, [(msg, [files])])."""
+    text = text or ""
+    sends = [(m.group(3).strip(), [f.strip() for f in (m.group(1) or m.group(2) or "").split(",") if f.strip()])
+             for m in _TAG.finditer(text)]
+    return _TAG.sub("", text).strip(), sends
+
 
 # ───────────────────────── tool schemas (group "daemon") ─────────────────────────
 DAEMON_GROUP_DESC = (
@@ -48,7 +60,7 @@ DAEMON_TOOLS = [
         "You are woken automatically (a new turn in this channel) when the process exits, when it prints a line starting "
         "with `@@wake@@`, or when a line matches a `wake_on` regex. So after starting, tell the user it is running and END "
         "your turn: do not poll or sleep-wait. Wakes are rate-limited: print `@@wake@@` only for events that need your "
-        "attention (never per line or in a loop) and keep wake_on patterns specific. "
+        "attention (never per line or in a loop) and keep wake_on patterns specific. A program can also print <discord_send files='a.png'>text</discord_send> on stdout to post straight to Discord without waking you. "
         "Stop daemons you no longer need."),
      "parameters": {"type": "object", "properties": {
          "shell_cmd": {"type": "string", "description": "Shell command (use this or code)"},
@@ -560,6 +572,40 @@ class DaemonManager:
             out.append(f"{self._head(r, st, code)} unread={unread}B")
         return "\n".join(out)
 
+    def _attach_path(self, ws, p):
+        base = os.path.realpath(os.path.join(self.r.host_workdir_base, ws))
+        q, dbase = str(p).strip().replace("\\", "/"), f"{self.r.docker_workdir_base}/{ws}"
+        if q == dbase or q.startswith(dbase + "/"):
+            host = os.path.join(base, q[len(dbase):].lstrip("/"))
+        elif re.match(r"^[A-Za-z]:/", q):
+            host = q
+        elif q.startswith("/"):
+            return None
+        else:
+            host = os.path.join(base, q)
+        host = os.path.realpath(host)
+        ok = os.path.normcase(host).startswith(os.path.normcase(base) + os.sep) and os.path.isfile(host)
+        return host if ok else None
+
+    async def discord_send(self, channel, ws, text, files=None):
+        import discord
+        text, objs, bad = str(text or "").strip(), [], []
+        for f in (files or [])[:10]:
+            h = self._attach_path(ws, f)
+            if h and os.path.getsize(h) <= 24 * 1024 * 1024:
+                objs.append(discord.File(h, filename=os.path.basename(h)))
+            else:
+                bad.append(str(f))
+        miss = f" Could not attach (needs a file inside this channel's workspace, <=24MB): {', '.join(bad)}." if bad else ""
+        if not text and not objs:
+            return "Error: nothing to send." + miss
+        try:
+            await channel.send(content=text[:2000] or None, files=objs or None,
+                               allowed_mentions=discord.AllowedMentions.none())
+        except Exception as e:
+            return f"Error: {e}"
+        return "Sent." + miss
+
     async def stop_all(self, channel_id):
         """Kill every running daemon of a channel and forget them (used by cleanup_sandbox)."""
         for r in _q("SELECT * FROM daemons WHERE channel_id=? AND status='running'", (str(channel_id),), "all"):
@@ -574,6 +620,7 @@ class DaemonManager:
         self._cx = (client, ask_func, extract_func, send_func, mood_func)
         self._pend, self._last, self._hist, self._muted = {}, {}, {}, set()
         self._live_t, self._rx, self._locks, self._tasks = {}, {}, {}, set()
+        self._tagh, self._tagwarn = {}, {}
         console.log("[daemon] watcher started", "INFO")
         while True:
             try:
@@ -594,7 +641,7 @@ class DaemonManager:
         return self._rx[row["id"]]
 
     def _scan(self, row, p, done):
-        hits, upd, regs = [], {}, self._regs(row)
+        hits, upd, sends, regs = [], {}, [], self._regs(row)
         for fn, col in (("out.log", "scan_out"), ("err.log", "scan_err")):
             if row["tty"] and fn == "err.log":
                 continue
@@ -616,12 +663,20 @@ class DaemonManager:
             if not done and cut < 0 and len(data) < 65536:
                 continue                                  # partial line: wait for the newline
             chunk = data if (done or cut < 0) else data[:cut + 1]
+            if not done:
+                o = chunk.rfind(b"<discord_send")
+                if o >= 0 and b"</discord_send>" not in chunk[o:] and len(chunk) - o < 100000:
+                    chunk = chunk[:o]            # open tag: wait for its closing tag
+                    if not chunk:
+                        continue
             upd[col] = start + len(chunk)
-            for line in _clean(chunk).split("\n"):
+            text, found = split_discord_tags(_clean(chunk))
+            sends += found
+            for line in text.split("\n"):
                 l = line.strip()[:1000]
                 if l and (l.startswith(SENTINEL) or any(rx.search(l) for rx in regs)):
                     hits.append(l)
-        return hits, upd
+        return hits, upd, sends
 
     @staticmethod
     def _tail_lines(path, n=15, maxc=1500):
@@ -644,9 +699,13 @@ class DaemonManager:
                 self._live_t[did] = now
             st, code = await self._state(row, live)
             done = st != "running"
-            hits, upd = self._scan(row, p, done)
+            hits, upd, sends = self._scan(row, p, done)
             for col, v in upd.items():
                 _q(f"UPDATE daemons SET {col}=? WHERE id=?", (v, did))
+            if sends:       # <discord_send> in stdout/stderr: posted directly, no model call
+                t = asyncio.create_task(self._safe(self._send_tags(row, sends)))
+                self._tasks.add(t)
+                t.add_done_callback(self._tasks.discard)
             pend = self._pend.setdefault(did, {"lines": [], "t0": 0.0})
             if hits:
                 pend["lines"] = (pend["lines"] + hits)[-20:]
@@ -689,6 +748,29 @@ class DaemonManager:
         task = asyncio.create_task(self._dispatch(row, reason, "\n\n".join(body)[-2500:]))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    @staticmethod
+    async def _safe(coro):
+        try:
+            await coro
+        except Exception as e:
+            console.log(f"[daemon] background task error: {e}", "ERROR")
+
+    async def _send_tags(self, row, sends):
+        ch = self._cx[0].get_channel(int(row["channel_id"]))
+        if ch is None:
+            return
+        now, did = time.time(), row["id"]
+        h = self._tagh.setdefault(did, [])
+        h[:] = [t for t in h if now - t < 60]
+        for text, files in sends:
+            if len(h) >= MAX_TAGS_PER_MIN:
+                if now - self._tagwarn.get(did, 0) > 60:
+                    self._tagwarn[did] = now
+                    await ch.send(f"⚠ daemon `{did}` posts too many <discord_send> messages; extra ones are dropped.")
+                return
+            h.append(now)
+            await self.discord_send(ch, row["ws"], text, files)
 
     async def _plain(self, row, text):
         ch = self._cx[0].get_channel(int(row["channel_id"]))
