@@ -43,6 +43,18 @@ MAX_LINES = 14
 IMG_MAX_W, IMG_MAX_H = 330, 200
 MAX_IMG_BYTES = 25 * 1024 * 1024
 
+try:
+    from config import WINDOW_RES as _WRES
+except Exception:
+    _WRES = 1080
+S = max(1.0, min(3.0, float(_WRES) / H))      # device pixels per logical (720p) pixel; 1.5 -> 1920x1080
+DW, DH = int(round(W * S)), int(round(H * S))
+
+
+def _P(x, y):
+    """Logical coordinates -> device pixel position (for Image.paste)."""
+    return (int(round(x * S)), int(round(y * S)))
+
 COL_SIDE = (43, 45, 49)
 CALL_BG = (17, 18, 20)
 TILE_COLORS = [(228, 184, 166), (199, 196, 226), (166, 200, 188), (214, 170, 200), (170, 190, 226), (222, 210, 160)]
@@ -188,7 +200,7 @@ _EMOJI_PX = 109          # NotoColorEmoji (CBDT) only exists as a 109px strike; 
 _EMOJI_EM = 1.25         # emoji width on screen = font size * this
 
 
-def _font(size: int, bold: bool = False, role: str = "base"):
+def _font_raw(size: int, bold: bool = False, role: str = "base"):
     # Segoe UI is the base font. CJK / Nerd fonts are used only for strings that contain such glyphs,
     # and every chain ends in Segoe UI so a missing font never drops to PIL's bitmap default
     # (which has no Vietnamese diacritics).
@@ -224,6 +236,25 @@ def _font(size: int, bold: bool = False, role: str = "base"):
     return font
 
 
+class _SFont:
+    """A font created at device size (size * S) that reports logical (720p) lengths, so layout code is unchanged."""
+    __slots__ = ("real", "s")
+
+    def __init__(self, real, s):
+        self.real, self.s = real, s
+
+    def getlength(self, text, *a, **k):
+        return self.real.getlength(text, *a, **k) / self.s
+
+    def getmetrics(self):
+        asc, desc = self.real.getmetrics()
+        return asc / self.s, desc / self.s
+
+
+def _font(size: int, bold: bool = False, role: str = "base"):
+    return _SFont(_font_raw(max(1, int(round(size * S))), bold, role), S)
+
+
 def _role(ch: str) -> str:
     if _EMOJI.match(ch):
         return "emoji"
@@ -257,16 +288,16 @@ class _FontStack:
 
     def __init__(self, size: int, bold: bool = False) -> None:
         self.size, self.bold = size, bold
-        self.base = _font(size, bold)
+        self.base = _font_raw(size, bold)
         self._ek = size * _EMOJI_EM / 136.0      # 136 = NotoColorEmoji advance at 109px
 
     def _run_font(self, role: str):
         if role == "emoji":
-            ef = _font(_EMOJI_PX, False, "emoji")
+            ef = _font_raw(_EMOJI_PX, False, "emoji")
             if ef is not None:
                 return ef
             return self.base
-        return _font(self.size, self.bold, role)
+        return _font_raw(self.size, self.bold, role)
 
     def _run_len(self, role: str, s: str) -> float:
         f = self._run_font(role)
@@ -312,17 +343,47 @@ class _FontStack:
         return adv * k
 
 
+def _sxy(xy):
+    if len(xy) and isinstance(xy[0], (tuple, list)):
+        return [(x * S, y * S) for x, y in xy]
+    return [v * S for v in xy]
+
+
+def _sw(width):
+    return max(1, int(round(width * S))) if width else width
+
+
 class _Draw(ImageDraw.ImageDraw):
+    """Draws in logical (720p) coordinates onto a device-resolution (S x) image."""
+
+    def rectangle(self, xy, fill=None, outline=None, width=1):
+        super().rectangle(_sxy(xy), fill, outline, _sw(width))
+
+    def rounded_rectangle(self, xy, radius=0, fill=None, outline=None, width=1, **kw):
+        super().rounded_rectangle(_sxy(xy), radius * S, fill, outline, _sw(width), **kw)
+
+    def ellipse(self, xy, fill=None, outline=None, width=1):
+        super().ellipse(_sxy(xy), fill, outline, _sw(width))
+
+    def line(self, xy, fill=None, width=0, joint=None):
+        super().line(_sxy(xy), fill, _sw(width), joint)
+
+    def polygon(self, xy, fill=None, outline=None, width=1):
+        super().polygon(_sxy(xy), fill, outline, _sw(width))
+
     def text(self, xy, text, fill=None, font=None, *args, **kwargs):
-        if isinstance(font, _FontStack):
-            font.draw(self, xy, text, fill)
-            return
+        xy = (xy[0] * S, xy[1] * S)
+        if isinstance(font, _SFont):
+            font = font.real
+            if isinstance(font, _FontStack):
+                font.draw(self, xy, text, fill)
+                return
         super().text(xy, text, fill, font, *args, **kwargs)
 
 
 def _tfont(text: str, size: int, bold: bool = False):
     if _SPECIAL.search(text or ""):
-        return _FontStack(size, bold)
+        return _SFont(_FontStack(max(1, int(round(size * S))), bold), S)
     return _font(size, bold)
 
 
@@ -759,7 +820,7 @@ class VirtualDiscordWindow:
         ax = PAD + 38
         av = self._avatar(e.author_id, 24)
         if av:
-            view.paste(av, (ax, y), av)
+            view.paste(av, _P(ax, y), av)
         else:
             vd.ellipse((ax, y, ax + 24, y + 24), fill=BLURPLE)
         nf = _tfont(e.name, 18, True)
@@ -780,7 +841,7 @@ class VirtualDiscordWindow:
                 im = im.convert("RGB")
                 im.thumbnail((4096, 4096))
                 th = im.copy()
-                th.thumbnail((IMG_MAX_W, IMG_MAX_H))
+                th.thumbnail((int(IMG_MAX_W * S), int(IMG_MAX_H * S)))
                 return im, th
             item["img"], item["thumb"] = await asyncio.to_thread(_decode)
         except Exception as e:
@@ -819,7 +880,7 @@ class VirtualDiscordWindow:
             return None
         key = (uid, size)
         if key not in self._av_cache:
-            self._av_cache[key] = _circle(src, size)
+            self._av_cache[key] = _circle(src, max(1, int(round(size * S))))
         return self._av_cache[key]
 
     # ── state helpers (event-loop thread) ──
@@ -918,7 +979,7 @@ class VirtualDiscordWindow:
 
     # ── rendering (worker thread) ──
     def _render(self, snap: Dict[str, Any]) -> bytes:
-        frame = Image.new("RGB", (W, H), CALL_BG)
+        frame = Image.new("RGB", (DW, DH), CALL_BG)
         d = _Draw(frame)
 
         # ---------- LEFT: the voice call ----------
@@ -982,13 +1043,13 @@ class VirtualDiscordWindow:
         d.rounded_rectangle((tx, ty, tx + tw, ty + th), 10, fill=TILE_COLORS[m["id"] % len(TILE_COLORS)] if kind == "camera" else (24, 25, 28))
         vid = snap["frames"].get((m["id"], kind))
         if vid is not None:
-            frame.paste(_cover(vid, tw, th), (tx, ty))
+            frame.paste(_cover(vid, int(round(tw * S)), int(round(th * S))), _P(tx, ty))
         else:
             size = max(36 if compact else 48, min(int(th * 0.5), 150))
             av = self._avatar(m["id"], size)
             ax, ay = tx + (tw - size) // 2, ty + (th - size) // 2 - (4 if compact else 10)
             if av:
-                frame.paste(av, (ax, ay), av)
+                frame.paste(av, _P(ax, ay), av)
             else:
                 d.ellipse((ax, ay, ax + size, ay + size), fill=BLURPLE)
         if speaking:
@@ -1052,13 +1113,13 @@ class VirtualDiscordWindow:
         m = ft["m"]
         vid = snap["frames"].get((m["id"], ft["kind"]))
         if vid is not None:
-            im = _contain(vid, bw, bh)
-            frame.paste(im, (bx0 + (bw - im.width) // 2, by0 + (bh - im.height) // 2))
+            im = _contain(vid, int(round(bw * S)), int(round(bh * S)))
+            frame.paste(im, _P(bx0 + (bw - im.width / S) / 2, by0 + (bh - im.height / S) / 2))
         else:
             size = max(64, min(bh // 2, 220))
             av = self._avatar(m["id"], size)
             if av:
-                frame.paste(av, (bx0 + (bw - size) // 2, by0 + (bh - size) // 2 - 14), av)
+                frame.paste(av, _P(bx0 + (bw - size) // 2, by0 + (bh - size) // 2 - 14), av)
             msg = "No video received yet"
             mf = _font(20, True)
             d.text((bx0 + (bw - mf.getlength(msg)) // 2, by0 + (bh + size) // 2 - 4), msg, font=mf, fill=MUTED)
@@ -1096,8 +1157,8 @@ class VirtualDiscordWindow:
             try:
                 im = Image.open(io.BytesIO(p["frame"])).convert("RGB")
                 s = min((fx1 - fx0) / im.width, (fy1 - fy0) / im.height)
-                im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
-                frame.paste(im, (fx0 + (fx1 - fx0 - im.width) // 2, fy0 + (fy1 - fy0 - im.height) // 2))
+                im = im.resize((max(1, int(im.width * s * S)), max(1, int(im.height * s * S))), Image.LANCZOS)
+                frame.paste(im, _P(fx0 + (fx1 - fx0 - im.width / S) / 2, fy0 + (fy1 - fy0 - im.height / S) / 2))
             except Exception:
                 pass
         elif p["kind"] == "audio":
@@ -1129,8 +1190,8 @@ class VirtualDiscordWindow:
         top = min(max(v["cy"] * ih - ch / 2, 0), ih - ch)
         v["cx"], v["cy"] = (left + cw / 2) / iw, (top + ch / 2) / ih
         crop = im.crop((int(left), int(top), max(int(left) + 1, int(left + cw)), max(int(top) + 1, int(top + ch))))
-        out = crop.resize((max(1, int(cw * s)), max(1, int(ch * s))), Image.LANCZOS)
-        frame.paste(out, (x0 + (x1 - x0 - out.width) // 2, y0 + 8 + (ah - out.height) // 2))
+        out = crop.resize((max(1, int(cw * s * S)), max(1, int(ch * s * S))), Image.LANCZOS)
+        frame.paste(out, _P(x0 + (x1 - x0 - out.width / S) / 2, y0 + 8 + (ah - out.height / S) / 2))
         cap = f"{v['label']}  |  zoom x{v['level']:.1f}  |  center ({v['cx']:.2f}, {v['cy']:.2f})  |  window_close_view to close"
         d.text((x0 + 20, y1 - 34), cap, font=_tfont(cap, 16), fill=TEXT)
 
@@ -1140,7 +1201,7 @@ class VirtualDiscordWindow:
         h = (22 if e.reply else 0) + 26 + len(lines) * 24
         for it in e.items:
             if it["kind"] == "image":
-                h += (it["thumb"].height if it["thumb"] else 60) + 8
+                h += (int(round(it["thumb"].height / S)) if it["thumb"] else 60) + 8
             else:
                 h += 32
         return max(h, AV + 10) + 14
@@ -1170,7 +1231,7 @@ class VirtualDiscordWindow:
         top = maxtop if self.at_bottom else max(0, self.scroll_top)
         self.scroll_top = top
 
-        view = Image.new("RGB", (mw, vh), COL_MAIN)
+        view = Image.new("RGB", (int(round(mw * S)), int(round(vh * S))), COL_MAIN)
         vd = _Draw(view)
         vis, above, below = [], 0, 0
         for e, by, h, lines, f in blocks:
@@ -1184,7 +1245,7 @@ class VirtualDiscordWindow:
                 vis.append(e.num)
             self._draw_block(view, vd, e, by - top, lines, f, tx, tw)
         self._vis = (min(vis), max(vis), above, below) if vis else (0, 0, above, below)
-        frame.paste(view, (x0, y0))
+        frame.paste(view, _P(x0, y0))
 
     def _draw_block(self, view, vd, e: _Entry, by: int, lines, f, tx: int, tw: int) -> None:
         if e.system:
@@ -1197,7 +1258,7 @@ class VirtualDiscordWindow:
             cy += 22
         av = self._avatar(e.author_id, AV)
         if av:
-            view.paste(av, (PAD, cy + 2), av)
+            view.paste(av, _P(PAD, cy + 2), av)
         else:
             vd.ellipse((PAD, cy + 2, PAD + AV, cy + 2 + AV), fill=BLURPLE)
         nf = _tfont(e.name, 19, True)
@@ -1213,10 +1274,10 @@ class VirtualDiscordWindow:
             if it["kind"] == "image":
                 th = it["thumb"]
                 if th:
-                    view.paste(th, (tx, cy))
+                    view.paste(th, _P(tx, cy))
                     vd.rectangle((tx, cy, tx + 30, cy + 22), fill=(0, 0, 0))
                     vd.text((tx + 8, cy + 1), str(it["idx"]), font=_font(17, True), fill=TEXT)
-                    cy += th.height + 8
+                    cy += int(round(th.height / S)) + 8
                 else:
                     msg = "image failed to load" if it["fail"] else "loading image..."
                     vd.rectangle((tx, cy, tx + 240, cy + 52), fill=COL_SIDE)

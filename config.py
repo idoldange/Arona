@@ -440,3 +440,7 @@ TTS_REF = {
     "prompt_text": "どうですか先生? 頑張れそうですか?",
     "prompt_lang": "ja"
 }
+
+# Voice window frame height sent to Gemini Live (width = 16:9). 1080 = Full HD rendered natively,
+# 720 = the old layout. Lower it on a weak machine.
+WINDOW_RES = 1080
