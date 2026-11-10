@@ -93,6 +93,13 @@ services:
       - ./output:/app/output
       - ./executor-entrypoint.sh:/usr/local/bin/executor-entrypoint.sh
       - ./resolv.conf:/etc/resolv.conf:ro
+      # neofetch: logo bad_apple. Mount de len ~/.config/neofetch (tmpfs) nen
+      # song sot qua restart ma KHONG can rebuild image. Config sinh tu
+      # `neofetch --print_config` + override image_source.
+      - ./neofetch:/home/sandboxuser/.config/neofetch:ro
+      # Wrapper loc bo ma ANSI (mau + di chuyen con tro) de output sach cho
+      # model/Discord, van giu ascii art.
+      - ./neofetch/neofetch-wrapper.sh:/usr/local/bin/neofetch:ro
     entrypoint: ["/bin/sh", "/usr/local/bin/executor-entrypoint.sh"]
     command: ["tail", "-f", "/dev/null"]
     # PID 1 starts root only long enough to run executor-entrypoint.sh, which
