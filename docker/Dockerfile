@@ -42,6 +42,19 @@ RUN mkdir -p /usr/share/fonts/truetype/jetbrains \
     && unzip JetBrainsMono.zip -d /usr/share/fonts/truetype/jetbrains \
     && rm JetBrainsMono.zip
 
+# 3b. neofetch: dung bad_apple ascii art lam logo mac dinh.
+# - Art copy vao /etc/neofetch (image layer -> song sot restart; home la tmpfs).
+# - Sinh config day du tu `neofetch --print_config` (khong phu thuoc ban Debian
+#   co patch /etc/neofetch/config.conf hay khong), roi chen 2 dong override.
+# - Wrapper /usr/local/bin/neofetch ep dung config nay, nen goi `neofetch`
+#   tran la ra logo bad_apple luon.
+COPY neofetch/bad_apple.txt /etc/neofetch/bad_apple.txt
+RUN mkdir -p /etc/neofetch \
+    && neofetch --print_config > /etc/neofetch/arona.conf 2>/dev/null \
+    && printf '\nimage_backend="ascii"\nimage_source="/etc/neofetch/bad_apple.txt"\n' >> /etc/neofetch/arona.conf \
+    && printf '#!/bin/sh\nexec /usr/bin/neofetch --config /etc/neofetch/arona.conf "$@"\n' > /usr/local/bin/neofetch \
+    && chmod +x /usr/local/bin/neofetch
+
 # 4. Set Nerd Font as System Default
 RUN echo '<?xml version="1.0"?>\n\
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n\
