@@ -2531,8 +2531,6 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
     
     
     elif function_name == "run_code":
-      if getattr(message, "from_live", False) and message.author.id not in ADMINS:
-        return "Error: sandbox tools are only available to admins in voice."
       # Unified executor callable by Gemini. Use args.action to pick 'run_code' (python) or 'run_shell' (shell).
       action = args.get("action", "run_code")
       # Normalize action aliases — model sometimes hallucinates the parameter name
@@ -2660,8 +2658,6 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
       if not channel_id:
         return "Error: no channel context available."
       _live = bool(getattr(message, "from_live", False))
-      if _live and message.author.id not in ADMINS:
-        return "Error: sandbox tools are only available to admins in voice."
       fname = function_name
       if fname == "daemon":
         _act = str(args.get("action", "")).lower()

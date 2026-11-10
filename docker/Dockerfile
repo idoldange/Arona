@@ -185,6 +185,13 @@ RUN setcap -r /usr/bin/ping 2>/dev/null || true
 ENV PIP_USER=1
 
 # 8. Networking & Proxy
+# Virtual desktop (Xvfb + xfwm4 + xfce4-panel + thunar + terminal) for sandbox GUI apps / Gemini Live screen.
+# Kept as a late layer so the heavy earlier layers stay cached.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb xauth x11-utils x11-xserver-utils xdotool wmctrl xclip dbus-x11 \
+    xfwm4 xfce4-panel xfce4-terminal thunar adwaita-icon-theme libgl1-mesa-dri \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV HTTP_PROXY=http://127.0.0.1:8888 \
     HTTPS_PROXY=http://127.0.0.1:8888 \
     NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 \

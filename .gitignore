@@ -328,3 +328,4 @@ activity/client/node_modules/
 tests/
 
 .mcp.json
+main_.py
