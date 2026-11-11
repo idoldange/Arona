@@ -16,9 +16,18 @@ jobs:
             if (msg.length > 1800) {
               msg = msg.substring(0, 1800) + '...';
             }
+            const repoUrl = `https://github.com{context.repo.owner}/${context.repo.repo}`;
+            const commitUrl = context.payload.head_commit.url || `${repoUrl}/commit/${context.sha}`;
+            const actorUrl = `https://github.com{context.actor}`;
+            
             const payload = {
               username: "GitHub Monitor",
-              content: `🔨 **New commit on [${context.repo.owner}/${context.repo.repo}]** by *${context.actor}*\n\n${msg}`
+              embeds: [{
+                title: `🔨 New commit on [${context.repo.owner}/${context.repo.repo}]`,
+                url: repoUrl,
+                description: `**Author:** [${context.actor}](${actorUrl})\n**Commit:** [${context.sha.substring(0, 7)}](${commitUrl})\n\n${msg}`,
+                color: 5814783
+              }]
             };
             const res = await fetch(process.env.DISCORD_WEBHOOK_URL, {
               method: 'POST',
