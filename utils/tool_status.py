@@ -410,7 +410,13 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
     elif func_name == "escalate":
         return "-# <:escalate:1484030883764633783> Thinking deeper..."
 
-    # tool group loading
+    elif func_name == "daemon":
+        return f"-# <:schedule:1484030910960767137> Daemon: {func_args.get('action', '')}..."
+
+    elif func_name == "desktop":
+        return f"-# <:run_shell:1484030905503842324> Desktop: {func_args.get('action', '')}..."
+
+        # tool group loading
     elif func_name == "load_tools":
         groups = func_args.get("groups", [])
         names = ", ".join(groups) if groups else "tools"

@@ -7,6 +7,7 @@ from config import DEFAULT_MODEL
 from games.chess import chess_manager
 from utils import tool_groups
 from utils.daemon import DAEMON_TOOLS, DAEMON_GROUP_DESC, VOICE_SANDBOX_TOOLS
+from utils.desktop import DESKTOP_TOOL
 
 GROUP_DESCRIPTIONS = {
     "chess": "Play chess against Sensei (includes: get_chess_board, make_chess_move, promote_pawn, reset_chess_game, send_chess_board_image).",
@@ -177,7 +178,13 @@ def get_gemini_tools(
         always_on = _build_groups(turn_info="")  # no live channel turn_info available in voice
         for group_name in VOICE_ALWAYS_ON_GROUPS:
             tools += always_on.get(group_name, [])
-        tools += list(VOICE_SANDBOX_TOOLS)  # slim run_code + daemon dispatcher (admin-only, checked in execute_function)
+        tools += list(VOICE_SANDBOX_TOOLS)  # slim run_code + daemon dispatcher
+        try:
+            import config as _cfg
+            if getattr(_cfg, "DESKTOP_ENABLED", True):
+                tools.append(DESKTOP_TOOL)
+        except Exception:
+            pass
     else:
         # load_tools/unload_tools only make sense with a real channel to track TTL against
         tools += _group_meta_tools()

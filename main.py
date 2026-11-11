@@ -2679,6 +2679,16 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
       except Exception as e:
         console.log(f"{function_name} handler error: {e}", "ERROR")
         return f"Error: {e}"
+    elif function_name == "desktop":
+      if desktop_manager is None:
+        return "Error: the desktop is disabled (DESKTOP_ENABLED = False in config.py)."
+      if not getattr(message, "from_live", False):
+        return "Error: the desktop is only available in voice calls."
+      try:
+        return await desktop_manager.handle(args, str(message.channel.id))
+      except Exception as e:
+        console.log(f"desktop handler error: {e}", "ERROR")
+        return f"Error: {e}"
     elif function_name == "cleanup_sandbox":
       # Wipe the persistent per-channel docker workspace (temp=false workspaces).
       # Model should call this when it's done with a multi-step task.
