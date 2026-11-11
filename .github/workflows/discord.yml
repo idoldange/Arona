@@ -15,9 +15,9 @@ jobs:
             const msg = context.payload.head_commit.message || '';
             const cleanMsg = msg.length > 1800 ? msg.substring(0, 1800) + '...' : msg;
             
-            const repoUrl = `https://github.com{context.repo.owner}/${context.repo.repo}`;
-            const commitUrl = context.payload.head_commit.url || `${repoUrl}/commit/${context.sha}`;
-            const actorUrl = `https://github.com{context.actor}`;
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            const commitUrl = `${repoUrl}/commit/${context.sha}`;
+            const actorUrl = `https://github.com/${context.actor}`;
             
             const payload = {
               username: "GitHub Monitor",
