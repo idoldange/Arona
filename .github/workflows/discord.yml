@@ -12,10 +12,8 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         with:
           script: |
-            let msg = context.payload.head_commit.message || '';
-            if (msg.length > 1500) {
-              msg = msg.substring(0, 1500) + '...';
-            }
+            const msg = context.payload.head_commit.message || '';
+            const cleanMsg = msg.length > 1800 ? msg.substring(0, 1800) + '...' : msg;
             
             const repoUrl = `https://github.com{context.repo.owner}/${context.repo.repo}`;
             const commitUrl = context.payload.head_commit.url || `${repoUrl}/commit/${context.sha}`;
@@ -26,17 +24,32 @@ jobs:
               embeds: [{
                 title: `🔨 New commit on ${context.repo.owner}/${context.repo.repo}`,
                 url: repoUrl,
-                description: `**Author:** [${context.actor}](${actorUrl})\n**Commit:** [${context.sha.substring(0, 7)}](${commitUrl})\n\n${msg}`,
+                description: `**Author:** [${context.actor}](${actorUrl})\n**Commit:** [${context.sha.substring(0, 7)}](${commitUrl})\n\n${cleanMsg}`,
                 color: 5814783
               }]
             };
+
+            const https = require('https');
+            const url = new URL(process.env.DISCORD_WEBHOOK_URL);
             
-            const response = await require('crypto').global.fetch(process.env.DISCORD_WEBHOOK_URL, {
+            const options = {
+              hostname: url.hostname,
+              path: url.pathname + url.search,
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            };
+
+            await new Promise((resolve, reject) => {
+              const req = https.request(options, (res) => {
+                if (res.statusCode >= 200 && res.statusCode < 300) {
+                  resolve();
+                } else {
+                  reject(new Error(`Discord Webhook failed with status ${res.statusCode}`));
+                }
+              });
+              req.on('error', (e) => reject(e));
+              req.write(JSON.stringify(payload));
+              req.end();
             });
-            
-            if (!response.ok) {
-              throw new Error(`Discord Webhook failed with status ${response.status}`);
-            }
