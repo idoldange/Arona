@@ -20,7 +20,7 @@ jobs:
             const actorUrl = `https://github.com/${context.actor}`;
             
             const payload = {
-              username: "GitHub Monitor",
+              username: "Arona Update",
               embeds: [{
                 title: `🔨 New commit on ${context.repo.owner}/${context.repo.repo}`,
                 url: repoUrl,
@@ -43,13 +43,27 @@ jobs:
 
             await new Promise((resolve, reject) => {
               const req = https.request(options, (res) => {
-                if (res.statusCode >= 200 && res.statusCode < 300) {
-                  resolve();
-                } else {
-                  reject(new Error(`Discord Webhook failed with status ${res.statusCode}`));
-                }
+                res.on('error', (e) => {
+                  clearTimeout(timeout);
+                  reject(e);
+                });
+                res.on('end', () => {
+                  clearTimeout(timeout);
+                  if (res.statusCode >= 200 && res.statusCode < 300) {
+                    resolve();
+                  } else {
+                    reject(new Error(`Discord Webhook failed with status ${res.statusCode}`));
+                  }
+                });
+                res.resume();
               });
-              req.on('error', (e) => reject(e));
+              const timeout = setTimeout(() => {
+                req.destroy(new Error('Discord webhook request timed out after 15 seconds'));
+              }, 15000);
+              req.on('error', (e) => {
+                clearTimeout(timeout);
+                reject(e);
+              });
               req.write(JSON.stringify(payload));
               req.end();
             });

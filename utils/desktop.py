@@ -16,6 +16,52 @@ from console import console
 
 W, H = 1920, 1080
 SOI, EOI = b"\xff\xd8", b"\xff\xd9"
+
+_TINT2RC = """rounded = 0
+border_width = 0
+background_color = #1f2937 100
+border_color = #1f2937 100
+
+rounded = 4
+border_width = 0
+background_color = #374151 100
+border_color = #374151 100
+
+rounded = 4
+border_width = 0
+background_color = #2563eb 100
+border_color = #2563eb 100
+
+panel_monitor = all
+panel_position = bottom center horizontal
+panel_size = 100% 36
+panel_margin = 0 0
+panel_padding = 6 3 6
+panel_dock = 0
+wm_menu = 0
+panel_layer = top
+panel_background_id = 1
+panel_items = TC
+taskbar_mode = single_desktop
+taskbar_padding = 0 0 4
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 240 28
+task_padding = 8 3 4
+task_font = sans 10
+task_font_color = #ffffff 100
+task_active_font_color = #ffffff 100
+task_background_id = 2
+task_active_background_id = 3
+task_urgent_background_id = 3
+task_iconified_background_id = 2
+time1_format = %H:%M
+time1_font = sans bold 11
+clock_font_color = #ffffff 100
+clock_padding = 8 0
+clock_background_id = 0
+"""
 _KEEP_ENV = ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "NO_AT_BRIDGE", "GIO_USE_VFS", "GTK_A11Y")
 
 
@@ -72,12 +118,18 @@ class DesktopManager:
             info["last"] = time.time()
 
     async def _alive(self, info):
-        rc, _ = await self._dx(["sh", "-c", f"kill -0 $(cat {info['run']}/pid) 2>/dev/null"], user=info["uid"], timeout=8)
+        rc, _ = await self._dx(["sh", "-c", self._live(info["run"])], user=info["uid"], timeout=8)
         return rc == 0
+
+    @staticmethod
+    def _live(run):
+        """Shell snippet: exit 0 only if the session leader exists and is not a zombie."""
+        return (f'P=$(cat {run}/pid 2>/dev/null) || exit 1; S=$(ps -o stat= -p "$P" 2>/dev/null); '
+                'case "$S" in ""|Z*) exit 1;; esac')
 
     async def _adopt(self, ws):
         g = self._geo(ws)
-        rc, out = await self._dx(["sh", "-c", f"test -f {g['run']}/ready && kill -0 $(cat {g['run']}/pid) && cat {g['run']}/env"],
+        rc, out = await self._dx(["sh", "-c", f"test -f {g['run']}/ready && ({self._live(g['run'])}) && cat {g['run']}/env"],
                                  user=g["uid"], timeout=8)
         env = self._parse_env(out.decode("utf-8", "replace")) if rc == 0 else {}
         if not env.get("DISPLAY"):
@@ -98,16 +150,21 @@ echo $$ > $R/pid
 export XAUTHORITY=$R/xauth
 : > $XAUTHORITY
 xauth -f $XAUTHORITY add :$D . $(mcookie)
+rm -f /tmp/.X11-unix/X$D /tmp/.X$D-lock
 Xvfb :$D -screen 0 {W}x{H}x24 -nolisten tcp -auth $XAUTHORITY -noreset > $R/xvfb.log 2>&1 &
 XP=$!
 i=0
-while [ ! -S /tmp/.X11-unix/X$D ] && [ $i -lt 80 ]; do sleep 0.1; i=$((i+1)); done
+while [ $i -lt 100 ]; do
+  [ -S /tmp/.X11-unix/X$D ] && xdpyinfo -display :$D >/dev/null 2>&1 && break
+  sleep 0.1; i=$((i+1))
+done
+if [ $i -ge 100 ]; then echo "Xvfb did not come up" >> $R/xvfb.log; kill $XP 2>/dev/null; exit 1; fi
 export DISPLAY=:$D
 export NO_AT_BRIDGE=1 GTK_A11Y=none GIO_USE_VFS=local DBUS_SESSION_BUS_ADDRESS=disabled:
 xsetroot -solid '#2b3a55'
 openbox > $R/wm.log 2>&1 &
 sleep 0.5
-tint2 > $R/panel.log 2>&1 &
+tint2 -c $HOME/.config/tint2/tint2rc > $R/panel.log 2>&1 &
 sleep 0.5
 {{ echo "DISPLAY=$DISPLAY"; echo "XAUTHORITY=$XAUTHORITY"; echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"; echo "NO_AT_BRIDGE=1"; echo "GIO_USE_VFS=local"; echo "GTK_A11Y=none"; }} > $R/env
 echo ready > $R/ready
@@ -137,13 +194,18 @@ wait $XP
                 os.makedirs(host_home, exist_ok=True)
                 with open(os.path.join(host_home, "desk.sh"), "w", encoding="utf-8", newline="\n") as f:
                     f.write(self._script(ws, g))
+                os.makedirs(os.path.join(host_home, ".config", "tint2"), exist_ok=True)
+                with open(os.path.join(host_home, ".config", "tint2", "tint2rc"), "w", encoding="utf-8", newline="\n") as f:
+                    f.write(_TINT2RC)
             except OSError as e:
                 return False, f"Could not prepare the desktop: {e}"
             await self.r._prepare_sandbox_workdir(os.path.join(self.r.host_workdir_base, ws), g["dw"], g["uid"])
-            await self._dx(["sh", "-c", f"mkdir -p /tmp/.X11-unix /tmp/desk; chmod 1777 /tmp/.X11-unix; chmod 711 /tmp/desk; "
-                            f"rm -rf {g['run']}; mkdir -p {g['run']}; chmod 700 {g['run']}; chown {g['uid']}:1000 {g['run']}; "
+            await self._dx(["sh", "-c", f"rm -rf {g['run']}"], user=g["uid"], timeout=15)      # stale state of an older session
+            await self._dx(["sh", "-c", f"mkdir -p /tmp/.X11-unix /tmp/desk; chmod 1777 /tmp/.X11-unix /tmp/desk; "
+                            f"mkdir -p {g['run']}; chmod 700 {g['run']}; chown {g['uid']}:1000 {g['run']}; "
                             f"chown -R {g['uid']}:1000 {g['dw']}/.desktop"], user=0)
-            rc, out = await self._dx(["setsid", "sh", f"{g['dw']}/.desktop/desk.sh"], user=g["uid"], detach=True)
+            rc, out = await self._dx(["sh", "-c", f"setsid sh {g['dw']}/.desktop/desk.sh >/dev/null 2>&1 &"],
+                                     user=g["uid"], detach=True)     # backgrounded: tini (PID 1) adopts and reaps it
             if rc != 0:
                 return False, f"Could not start the desktop: {out.decode('utf-8', 'replace')[:200]}"
             for _ in range(40):
@@ -160,7 +222,7 @@ wait $XP
 
     async def _kill(self, ws, g):
         await self._dx(["sh", "-c", f"P=$(cat {g['run']}/pid 2>/dev/null); [ -n \"$P\" ] && kill -s KILL -- -$P 2>/dev/null; "
-                        "pkill -f 'ffmpeg.*x11grab' 2>/dev/null; "
+                        "pkill -f '[f]fmpeg.*x11grab' 2>/dev/null; "
                         f"rm -rf {g['run']}; true"], user=g["uid"], timeout=15)
 
     async def close(self, channel_id):
@@ -279,7 +341,7 @@ wait $XP
                 except Exception:
                     pass
                 try:    # killing the docker client does not stop ffmpeg inside the container
-                    await self._dx(["sh", "-c", "pkill -f 'ffmpeg.*x11grab' 2>/dev/null; true"], user=info["uid"], timeout=8)
+                    await self._dx(["sh", "-c", "pkill -f '[f]fmpeg.*x11grab' 2>/dev/null; true"], user=info["uid"], timeout=8)
                 except BaseException:
                     pass
             fails = 0 if got else fails + 1

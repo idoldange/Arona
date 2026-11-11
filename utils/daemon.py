@@ -358,7 +358,7 @@ class DaemonManager:
         _q("INSERT INTO daemons (id,channel_id,ws,user_id,name,tty,cmd,uid,started,status,msg_id,wake_on,wake_exit) VALUES (?,?,?,?,?,?,?,?,?,'running',?,?,?)",
            (did, channel_id, ws, user_id, name, int(tty), cmd[:500], uid, time.time(), msg_id, json.dumps(wake_on), wake_exit))
         console.log(f"EXEC | user={user_id} | action=start_daemon | id={did} | tty={tty}")
-        rc, out = await self._dx(["setsid", "sh", f"{p['dj']}/run.sh"], user=uid, detach=True)
+        rc, out = await self._dx(["sh", "-c", f"setsid sh {p['dj']}/run.sh >/dev/null 2>&1 &"], user=uid, detach=True)
         if rc != 0:
             _q("UPDATE daemons SET status='lost' WHERE id=?", (did,))
             return f"Error: failed to launch: {out[:300]}"
