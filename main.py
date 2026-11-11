@@ -609,6 +609,7 @@ if getattr(_config, "DESKTOP_ENABLED", True):
   desktop_manager = DesktopManager(docker_runner, getattr(_config, "DESKTOP_MAX", 2), getattr(_config, "DESKTOP_IDLE_MINUTES", 15))
   docker_runner.env_provider = desktop_manager.env_for
   daemon_manager.env_provider = desktop_manager.env_for
+  desktop_manager.window_getter = lambda: getattr(globals().get("gemini_ws"), "window", None)
 # Deferred cleanup registry: keyed by Discord message.id (str)
 # Workspace keys here are deleted only AFTER the final bot reply is sent (temp=True)
 _deferred_cleanups: Dict[str, List[str]] = {}

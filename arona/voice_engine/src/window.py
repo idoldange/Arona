@@ -15,6 +15,7 @@ from functools import lru_cache
 import re
 import shutil
 import time
+import zlib
 from typing import Any, Dict, List, Optional
 
 import discord
@@ -36,6 +37,7 @@ VIDEO_STALE = 3.0             # seconds after which a camera frame counts as gon
 RENDER_FPS = 30
 RENDER_MIN_INTERVAL = 1.0 / RENDER_FPS
 FRAME_MIN_INTERVAL = 1.0      # seconds between screenshots sent to the Live API
+KEEPALIVE = 10.0              # an unchanged frame is only re-sent this often (saves video tokens)
 SPEAK_HOLD = 0.6              # seconds a member stays "speaking" after the last loud audio
 MAX_MSGS = 150
 HISTORY_LOAD = 40
@@ -624,6 +626,8 @@ class VirtualDiscordWindow:
         self.bot_id = 0
         self.entries: List[_Entry] = []
         self._counter = 0
+        self.desktop = None             # dict while the sandbox desktop is shown instead of the call view
+        self._last_crc, self._last_real = None, 0.0
         self._by_id: Dict[int, int] = {}
         self._users: Dict[int, Any] = {}
         self.avatars: Dict[int, Image.Image] = {}
@@ -686,6 +690,7 @@ class VirtualDiscordWindow:
             self.player = None
         self.view = None
         self.focus = None
+        self.desktop = None
         self._vframes.clear()
         self.last_jpg, self.frame_seq = None, self.frame_seq + 1
 
@@ -968,17 +973,25 @@ class VirtualDiscordWindow:
         async with self._lock:
             if self.last_jpg is None:
                 return
+            now, crc = time.monotonic(), zlib.crc32(self.last_jpg)
+            self._last_sent = now
+            if crc == self._last_crc and now - self._last_real < KEEPALIVE:
+                return              # nothing changed
+            self._last_crc, self._last_real = crc, now
             await self.ws.send_video_frame(self.last_jpg)
             vm.frames_sent += 1
             self._last_sent = time.monotonic()
 
     async def _push(self) -> None:
         """Refresh and send immediately after a window tool changes the view."""
+        self._last_crc = None
         await self._render_latest()
         await self._send_latest()
 
     # ── rendering (worker thread) ──
     def _render(self, snap: Dict[str, Any]) -> bytes:
+        if self.desktop is not None:
+            return self._render_desktop(snap)
         frame = Image.new("RGB", (DW, DH), CALL_BG)
         d = _Draw(frame)
 
@@ -1028,6 +1041,110 @@ class VirtualDiscordWindow:
 
         buf = io.BytesIO()
         frame.save(buf, "JPEG", quality=82)
+        return buf.getvalue()
+
+    # ───────── desktop mode: the whole frame is the sandbox desktop, cameras float on top ─────────
+    def set_desktop(self, on: bool) -> None:
+        self.desktop = {"jpg": None, "img": None, "src": None, "zoom": None, "marks": [], "cams": []} if on else None
+        self.dirty = self._force = True
+
+    def set_desktop_frame(self, jpg: bytes) -> None:
+        if self.desktop is not None:
+            self.desktop["jpg"] = jpg
+            self.dirty = True
+
+    def desktop_mark(self, nx, ny) -> None:
+        """Red ring where the model just clicked (drawn only on the frame it sees, for ~1.5 s)."""
+        if self.desktop is not None:
+            self.desktop["marks"] = (self.desktop["marks"] + [(float(nx), float(ny), time.monotonic())])[-6:]
+            self.dirty = True
+
+    def camera(self, action, user, x=None, y=None, w=None, h=None) -> str:
+        ds = self.desktop
+        if ds is None:
+            return "Error: open the desktop first."
+        members = list(self.voice_channel.members) if self.voice_channel else []
+        q = str(user or "").strip().lower()
+        m = None
+        if q.isdigit():
+            m = next((mm for mm in members if mm.id == int(q)), None)
+        if m is None and q:
+            m = next((mm for mm in members if q in mm.display_name.lower() or q in mm.name.lower()), None)
+        if m is None:
+            return "Error: no such member in the voice channel (give a name or id as 'user')."
+
+        def num(v, d, lo, hi):
+            try:
+                return max(lo, min(hi, int(v)))
+            except (TypeError, ValueError):
+                return d
+        cams = ds["cams"]
+        cur = next((c for c in cams if c["uid"] == m.id), None)
+        if action == "hide":
+            if cur:
+                cams.remove(cur)
+            self.dirty = True
+            return f"Camera of {m.display_name} hidden."
+        if action not in ("show", "move", "resize", "front"):
+            return "Error: cam must be show, hide, move, resize or front."
+        if cur is None:
+            if action != "show":
+                return "Error: that camera is not shown (use cam=show first)."
+            cur = {"uid": m.id, "x": 730, "y": 40, "w": 250, "h": 250}
+            cams.append(cur)
+        if w is not None or h is not None:
+            cur["w"] = num(w if w is not None else h, cur["w"], 60, 1000)
+            cur["h"] = num(h if h is not None else w, cur["h"], 60, 1000)
+        if x is not None:
+            cur["x"] = num(x, cur["x"], 0, 1000)
+        if y is not None:
+            cur["y"] = num(y, cur["y"], 0, 1000)
+        cur["x"], cur["y"] = min(cur["x"], 1000 - cur["w"]), min(cur["y"], 1000 - cur["h"])
+        if action == "front":
+            cams.remove(cur)
+            cams.append(cur)
+        self.dirty = True
+        return (f"Camera of {m.display_name}: x={cur['x']} y={cur['y']} w={cur['w']} h={cur['h']} "
+                "(0-1000 of the screen; w=h keeps 16:9; always on top).")
+
+    def _render_desktop(self, snap):
+        ds = self.desktop
+        if ds["jpg"] is not None and ds["src"] is not ds["jpg"]:
+            try:
+                ds["img"], ds["src"] = Image.open(io.BytesIO(ds["jpg"])).convert("RGB"), ds["jpg"]
+            except Exception:
+                ds["img"] = None
+        img, zoom = ds["img"], ds["zoom"]
+        if img is None:
+            frame = Image.new("RGB", (DW, DH), (20, 24, 32))
+            _Draw(frame).text((W // 2 - 110, H // 2 - 12), "Starting desktop...", font=_font(24), fill=MUTED)
+        else:
+            iw, ih = img.size
+            if zoom:
+                x0, y0, x1, y1 = zoom
+                frame = img.crop((int(x0 / 1000 * iw), int(y0 / 1000 * ih), int(x1 / 1000 * iw), int(y1 / 1000 * ih))).resize((DW, DH), Image.LANCZOS)
+            else:
+                frame = img.resize((DW, DH), Image.LANCZOS) if img.size != (DW, DH) else img.copy()
+        d = _Draw(frame)
+        now = time.monotonic()
+        ds["marks"] = [mk for mk in ds["marks"] if now - mk[2] < 1.5]
+        for nx, ny, _t in ds["marks"]:
+            if zoom:
+                nx, ny = (nx - zoom[0]) * 1000 / max(1, zoom[2] - zoom[0]), (ny - zoom[1]) * 1000 / max(1, zoom[3] - zoom[1])
+            if 0 <= nx <= 1000 and 0 <= ny <= 1000:
+                lx, ly = nx / 1000 * W, ny / 1000 * H
+                d.ellipse((lx - 16, ly - 16, lx + 16, ly + 16), outline=(255, 60, 60), width=3)
+                d.ellipse((lx - 4, ly - 4, lx + 4, ly + 4), fill=(255, 60, 60))
+        if ds["marks"]:
+            self.dirty = True                      # keep redrawing until the ring expires
+        by_id = {m["id"]: m for m in snap["members"]}
+        for c in ds["cams"]:                       # list order = z-order, always above the desktop
+            m = by_id.get(c["uid"])
+            if m:
+                self._draw_tile(frame, d, snap, {"m": m, "kind": "camera"}, int(c["x"] / 1000 * W), int(c["y"] / 1000 * H),
+                                int(c["w"] / 1000 * W), int(c["h"] / 1000 * H), compact=True)
+        buf = io.BytesIO()
+        frame.save(buf, "JPEG", quality=85)
         return buf.getvalue()
 
     def _tiles(self, snap):
