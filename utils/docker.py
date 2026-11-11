@@ -710,6 +710,15 @@ class AronaDocker:
             console.log(f"Core execution error: {str(e)}", "DEBUG")
             return {"status": "error", "log": str(e), "files": [], "code": code_content if 'code_content' in locals() else '', "msg_id": msg_id}
     
+    env_provider = None   # set by main: callable(workspace_key) -> {"DISPLAY": ...} while a virtual desktop is open
+
+    def _desk_env_args(self, workspace_key):
+        try:
+            env = self.env_provider(workspace_key) if self.env_provider else {}
+        except Exception:
+            env = {}
+        return [x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}")]
+
     async def run_code(self, code: str, msg_id: str, filename: str = "exec_code.py", message=None, timeout: int = 120, channel_id: str | None = None) -> dict:
         """Execute a code string in the container.
 
@@ -784,6 +793,7 @@ class AronaDocker:
                 "-u", str(uid),
                 "-e", f"OUTPUT_DIR={docker_out}",
                 "-e", f"VIEW_DIR={docker_view}",
+                *self._desk_env_args(workspace_key),
                 "-e", "HOME=/home/sandboxuser",
                 self.container,
                 "sh", "-c",
@@ -896,6 +906,7 @@ class AronaDocker:
                 "docker", "exec", "-u", str(uid),
                 "-e", f"OUTPUT_DIR={docker_out}",
                 "-e", f"VIEW_DIR={docker_view}",
+                *self._desk_env_args(workspace_key),
                 "-e", "HOME=/home/sandboxuser",
                 self.container,
                 "sh", "-c", f"mkdir -p {docker_out} {docker_view} && cd {docker_cwd} && sh command.sh"

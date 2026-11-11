@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import sqlite3
 import time
 import uuid
@@ -206,6 +207,7 @@ class DaemonManager:
     def __init__(self, runner):
         self.r = runner                 # utils.docker.AronaDocker
         self.c = runner.container
+        self.env_provider = None        # callable(ws) -> env dict (virtual desktop DISPLAY etc.)
         self.voice_notify = None        # async (text) -> bool: speak a wake through the Gemini Live session
 
     # ── plumbing ──
@@ -275,11 +277,12 @@ class DaemonManager:
                 + f" up={up}s{' tty' if row['tty'] else ''}]")
 
     @staticmethod
-    def _runner_script(did, p, tty, cols, rows, run_for):
+    def _runner_script(did, p, tty, cols, rows, run_for, env=None):
         to = f"timeout -k 5 {int(run_for)} " if run_for else ""
         head = (f"#!/bin/sh\nJ={p['run']}\nW={p['dj']}\ncd {p['dw']} || exit 1\necho $$ > $W/pid\n"
                 f"export PYTHONUNBUFFERED=1 DAEMON_ID={did} OUTPUT_DIR={p['dw']}/outputs VIEW_DIR={p['dw']}/view "
                 f"HOME=/home/sandboxuser\ntrap ':' INT TERM HUP\n")
+        head += "".join(f"export {k}={shlex.quote(str(v))}\n" for k, v in (env or {}).items())
         if not tty:
             return head + (f"mkfifo $J/in\nexec 3<>$J/in\ntrap 'exec 3<&-' USR1\n"
                            f"{to}sh $W/cmd.sh <$J/in >$W/out.log 2>$W/err.log 3<&- &\nC=$!\n"
@@ -345,7 +348,7 @@ class DaemonManager:
                 _w(os.path.join(p["host"], "main.py"), code)
                 cmd = f"python3 -u {p['dj']}/main.py"
             _w(os.path.join(p["host"], "cmd.sh"), cmd + "\n")
-            _w(os.path.join(p["host"], "run.sh"), self._runner_script(did, p, tty, cols, rows, run_for))
+            _w(os.path.join(p["host"], "run.sh"), self._runner_script(did, p, tty, cols, rows, run_for, self.env_provider(ws) if self.env_provider else None))
         except OSError as e:
             return f"Error: could not prepare daemon files: {e}"
         await self.r._prepare_sandbox_workdir(os.path.join(self.r.host_workdir_base, ws), p["dw"], uid)

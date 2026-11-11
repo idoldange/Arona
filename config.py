@@ -444,3 +444,8 @@ TTS_REF = {
 # Voice window frame height sent to Gemini Live (width = 16:9). 1080 = Full HD rendered natively,
 # 720 = the old layout. Lower it on a weak machine.
 WINDOW_RES = 1080
+
+# Virtual desktop (Xvfb + xfwm4 + panel) for the voice model. False = nothing is started (saves RAM/CPU).
+DESKTOP_ENABLED = True
+DESKTOP_MAX = 2              # desktops open at the same time
+DESKTOP_IDLE_MINUTES = 15    # close a desktop nothing has used for this long

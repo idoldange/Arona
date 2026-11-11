@@ -158,6 +158,7 @@ from utils.youtube import get_video_info as get_youtube_info, format_for_gemini 
 # Docker helper to run untrusted code inside a controlled container
 from utils.docker import AronaDocker
 from utils.daemon import DaemonManager, DAEMON_HELP, VOICE_ACTIONS
+from utils.desktop import DesktopManager
 from console.command import * 
 from typing import Dict, Tuple, Union, List, Any
 from games.chess import chess_manager
@@ -601,6 +602,13 @@ async def _daemon_voice_notify(text: str) -> bool:
 
 
 daemon_manager.voice_notify = _daemon_voice_notify
+
+import config as _config
+desktop_manager = None
+if getattr(_config, "DESKTOP_ENABLED", True):
+  desktop_manager = DesktopManager(docker_runner, getattr(_config, "DESKTOP_MAX", 2), getattr(_config, "DESKTOP_IDLE_MINUTES", 15))
+  docker_runner.env_provider = desktop_manager.env_for
+  daemon_manager.env_provider = desktop_manager.env_for
 # Deferred cleanup registry: keyed by Discord message.id (str)
 # Workspace keys here are deleted only AFTER the final bot reply is sent (temp=True)
 _deferred_cleanups: Dict[str, List[str]] = {}
@@ -2679,6 +2687,8 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
         return "Error: no channel context available."
       workspace_key = docker_runner._sanitize_msg_id(channel_id)
       await daemon_manager.stop_all(channel_id)
+      if desktop_manager:
+        await desktop_manager.close(channel_id)
       await docker_runner.cleanup_by_msg_id(workspace_key)
       return f"Sandbox workspace for channel {channel_id} has been cleaned up."
 
@@ -8413,6 +8423,8 @@ async def on_ready():
           send_func=send_content_or_file,
           mood_func=affection.parse_and_apply_mood_tag,
       ))
+      if desktop_manager:
+        client.loop.create_task(desktop_manager.reaper_loop())
       client.loop.create_task(daemon_manager.watch_loop(
           client, ask_gemini, extract_gemini_text,
           send_func=send_content_or_file,
@@ -9718,6 +9730,8 @@ async def _status_notice(text: str) -> None:
 
 async def graceful_shutdown(exit_code=0):
   await _status_notice("🔴 Arona is going offline.")
+  if desktop_manager:
+    await desktop_manager.close_all()
   console.log("\033[31m[SHUTDOWN] Shutting down bot...\033[0m", "INFO")
   try:
     async with asyncio.timeout(30):

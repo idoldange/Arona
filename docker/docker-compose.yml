@@ -66,6 +66,7 @@ services:
   arona-executor:
     build: .
     container_name: arona_worker
+    init: true            # tini as PID 1: reaps zombies left by desktops / daemons
     network_mode: "service:warp"
     # Run as unprivileged user (drop root at runtime via `user:`)
     privileged: false
