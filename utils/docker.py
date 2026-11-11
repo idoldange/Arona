@@ -87,6 +87,18 @@ async def _check_proxy_once(proxy_url: str = "http://127.0.0.1:8888") -> bool:
         console.log("[docker] Proxy not available — network calls inside sandbox may fail", "WARN")
     return _proxy_ready
 
+def sandbox_user_env() -> dict:
+    """Env that makes the sandbox's dynamic uids resolve to the user name "arona" (nss_wrapper + /etc/nss_passwd in the image)."""
+    try:
+        from config import SANDBOX_USER_ARONA as on
+    except Exception:
+        on = True
+    if not on:
+        return {}
+    return {"LD_PRELOAD": "libnss_wrapper.so", "NSS_WRAPPER_PASSWD": "/etc/nss_passwd", "NSS_WRAPPER_GROUP": "/etc/group",
+            "USER": "arona", "LOGNAME": "arona"}
+
+
 class AronaDocker:
     """Manage execution of arbitrary code/commands inside a Docker container.
 
@@ -668,6 +680,7 @@ class AronaDocker:
                 "-u", str(uid),
                 "-e", f"OUTPUT_DIR={docker_out}",
                 "-e", "HOME=/home/sandboxuser",
+                *[x for k, v in sandbox_user_env().items() for x in ("-e", f"{k}={v}")],
                 self.container,
                 "sh", "-c",
                 f"mkdir -p {docker_out} && cd {docker_cwd} && python3 exec_code.py"
@@ -717,7 +730,7 @@ class AronaDocker:
             env = self.env_provider(workspace_key) if self.env_provider else {}
         except Exception:
             env = {}
-        return [x for k, v in (env or {}).items() for x in ("-e", f"{k}={v}")]
+        return [x for k, v in {**sandbox_user_env(), **(env or {})}.items() for x in ("-e", f"{k}={v}")]
 
     async def run_code(self, code: str, msg_id: str, filename: str = "exec_code.py", message=None, timeout: int = 120, channel_id: str | None = None) -> dict:
         """Execute a code string in the container.

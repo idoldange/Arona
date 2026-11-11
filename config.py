@@ -449,3 +449,6 @@ WINDOW_RES = 1080
 DESKTOP_ENABLED = True
 DESKTOP_MAX = 2              # desktops open at the same time
 DESKTOP_IDLE_MINUTES = 15    # close a desktop nothing has used for this long
+
+# Name the sandbox's per-workspace uids "arona" (whoami / prompt) through nss_wrapper baked into the image.
+SANDBOX_USER_ARONA = True

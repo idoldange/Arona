@@ -14,6 +14,7 @@ import shlex
 import time
 
 from console import console
+from utils.docker import sandbox_user_env
 
 W, H = 1920, 1080
 SOI, EOI = b"\xff\xd8", b"\xff\xd9"
@@ -87,7 +88,7 @@ class DesktopManager:
 
     async def _dx(self, args, user=None, env=None, detach=False, timeout=20):
         cmd = ["docker", "exec"] + (["-d"] if detach else []) + (["-u", str(user)] if user is not None else [])
-        for k, v in (env or {}).items():
+        for k, v in {**sandbox_user_env(), **(env or {})}.items():
             cmd += ["-e", f"{k}={v}"]
         p = await asyncio.create_subprocess_exec(*cmd, self.c, *args, stdin=asyncio.subprocess.DEVNULL,
                                                  stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
@@ -146,7 +147,7 @@ class DesktopManager:
 R={g['run']}
 D={g['n']}
 export HOME={g['dw']}/.desktop
-export XDG_CONFIG_HOME=$HOME/.config XDG_CACHE_HOME=$HOME/.cache XDG_DATA_HOME=$HOME/.local/share XDG_RUNTIME_DIR=$R/run
+{''.join(f'export {k}={v}' + chr(10) for k, v in sandbox_user_env().items())}export XDG_CONFIG_HOME=$HOME/.config XDG_CACHE_HOME=$HOME/.cache XDG_DATA_HOME=$HOME/.local/share XDG_RUNTIME_DIR=$R/run
 mkdir -p $XDG_CONFIG_HOME $XDG_CACHE_HOME $XDG_DATA_HOME $XDG_RUNTIME_DIR
 chmod 700 $XDG_RUNTIME_DIR
 echo $$ > $R/pid
@@ -273,7 +274,7 @@ wait $XP
     # ── capture ──
     def _ffmpeg(self, info, extra, mouse=1):
         env = []
-        for k, v in info["env"].items():
+        for k, v in {**sandbox_user_env(), **info["env"]}.items():
             env += ["-e", f"{k}={v}"]
         return (["docker", "exec", "-u", str(info["uid"])] + env + [self.c, "ffmpeg", "-loglevel", "error", "-f", "x11grab",
                 "-draw_mouse", str(mouse), "-video_size", f"{W}x{H}"] + extra[0] + ["-i", info["env"]["DISPLAY"]] + extra[1])

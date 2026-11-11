@@ -5,6 +5,7 @@ services:
   warp:
     image: caomingjun/warp:latest
     container_name: arona_warp
+    hostname: shittim_chest   # also seen by arona_worker (network_mode: service:warp)
     privileged: true
     restart: always
     cap_add:

@@ -310,7 +310,7 @@ class DaemonManager:
         return f"Error: unknown tool {name}"
 
     async def start(self, channel_id, user_id, a, msg_id=None):
-        from utils.docker import rate_limiter
+        from utils.docker import rate_limiter, sandbox_user_env
         cmd = str(a.get("shell_cmd") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
         code = str(a.get("code") or "")
         if not cmd and not code:
@@ -348,7 +348,8 @@ class DaemonManager:
                 _w(os.path.join(p["host"], "main.py"), code)
                 cmd = f"python3 -u {p['dj']}/main.py"
             _w(os.path.join(p["host"], "cmd.sh"), cmd + "\n")
-            _w(os.path.join(p["host"], "run.sh"), self._runner_script(did, p, tty, cols, rows, run_for, self.env_provider(ws) if self.env_provider else None))
+            _w(os.path.join(p["host"], "run.sh"), self._runner_script(did, p, tty, cols, rows, run_for,
+                                          {**sandbox_user_env(), **((self.env_provider(ws) if self.env_provider else None) or {})}))
         except OSError as e:
             return f"Error: could not prepare daemon files: {e}"
         await self.r._prepare_sandbox_workdir(os.path.join(self.r.host_workdir_base, ws), p["dw"], uid)
