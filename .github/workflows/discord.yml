@@ -1,0 +1,17 @@
+name: Discord Commit Notification
+
+on: [push]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Full Commit Message to Discord
+        uses: sinoroc/discord-webhook-action@v2
+        with:
+          url: ${{ secrets.DISCORD_WEBHOOK_URL }} 
+          username: "GitHub Monitor"
+          description: |
+            🔨 **New commit on [${{ github.repository }}]** by *${{ github.actor }}*
+            
+            ${{ length(github.event.head_commit.message) > 1800 && format('{0}...', slice(github.event.head_commit.message, 0, 1800)) || github.event.head_commit.message }}
