@@ -6,6 +6,20 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
+      - name: Format and Truncate Commit Message
+        id: format_msg
+        run: |
+          MSG=$(cat << 'EOF'
+          ${{ github.event.head_commit.message }}
+          EOF
+          )
+          if [ ${#MSG} -gt 1800 ]; then
+            MSG="${MSG:0:1800}..."
+          fi
+          echo "CLEAN_MSG<<EOF" >> $GITHUB_ENV
+          echo "$MSG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Send Full Commit Message to Discord
         uses: sinoroc/discord-webhook-action@v2
         with:
@@ -14,4 +28,4 @@ jobs:
           description: |
             🔨 **New commit on [${{ github.repository }}]** by *${{ github.actor }}*
             
-            ${{ length(github.event.head_commit.message) > 1800 && format('{0}...', slice(github.event.head_commit.message, 0, 1800)) || github.event.head_commit.message }}
+            ${{ env.CLEAN_MSG }}
