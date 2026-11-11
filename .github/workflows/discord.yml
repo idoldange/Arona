@@ -18,7 +18,7 @@ jobs:
             }
             const payload = {
               username: "GitHub Monitor",
-              description: `🔨 **New commit on [${context.repo.owner}/${context.repo.repo}]** by *${context.actor}*\n\n${msg}`
+              content: `🔨 **New commit on [${context.repo.owner}/${context.repo.repo}]** by *${context.actor}*\n\n${msg}`
             };
             const res = await fetch(process.env.DISCORD_WEBHOOK_URL, {
               method: 'POST',
