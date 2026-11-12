@@ -8673,6 +8673,30 @@ async def on_message(message):
       except Exception: pass
       return
     
+  if message.content.lower().startswith("!sudo arona jobs"):
+    sub_args = message.content[16:].strip().split()
+    sub = sub_args[0].lower() if sub_args else "list"
+    console.log(f"Admin {message.author.display_name} used !sudo arona jobs {sub}", "INFO")
+    try:
+      if sub == "list":
+        text = await daemon_manager.admin_list()
+        if desktop_manager and desktop_manager.d:
+          text += "\nDesktops: " + ", ".join(f"{k} (up {int(time.time() - v['opened']) // 60}m)" for k, v in desktop_manager.d.items())
+      elif sub == "stop" and len(sub_args) > 1:
+        text = await daemon_manager.admin_stop(sub_args[1])
+      elif sub == "stopall":
+        text = await daemon_manager.admin_stop_all()
+      elif sub == "closedesktop" and desktop_manager:
+        n_desk = len(desktop_manager.d)
+        await desktop_manager.close_all()
+        text = f"Closed {n_desk} desktop(s)."
+      else:
+        text = "Usage: `!sudo arona jobs` (list), `!sudo arona jobs stop <daemon_id>`, `!sudo arona jobs stopall`, `!sudo arona jobs closedesktop`"
+    except Exception as e:
+      text = f"Error: {e}"
+    await send_with_retry(message.channel, text[:1900])
+    return
+
   if message.content.lower().startswith("!sudo arona channel"):
     if message.author.id not in ADMINS:
       msg = await send_with_retry(message.channel, "You need Shittim Chest admin permissions to use this command.")

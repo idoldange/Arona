@@ -8,6 +8,7 @@ Registry: database/daemons.db. Same workspace/uid as run_code(temp=false) for th
 import asyncio
 import json
 import os
+import random
 import re
 import shlex
 import sqlite3
@@ -28,7 +29,7 @@ WAKE_COOLDOWN = 10         # seconds between wakes of one daemon
 WAKE_COALESCE = 2          # seconds to batch hits before waking
 _MIG = False
 _NEWCOLS = {"msg_id": "TEXT", "wake_on": "TEXT", "wake_exit": "INTEGER DEFAULT 1", "scan_out": "INTEGER DEFAULT 0",
-            "scan_err": "INTEGER DEFAULT 0", "notified": "INTEGER DEFAULT 0", "wakes": "INTEGER DEFAULT 0"}
+            "scan_err": "INTEGER DEFAULT 0", "notified": "INTEGER DEFAULT 0", "wakes": "INTEGER DEFAULT 0", "port": "INTEGER"}
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|\x1b[=>]")
 _CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_+\-]{0,23}$")
@@ -61,7 +62,7 @@ DAEMON_TOOLS = [
         "You are woken automatically (a new turn in this channel) when the process exits, when it prints a line starting "
         "with `@@wake@@`, or when a line matches a `wake_on` regex. So after starting, tell the user it is running and END "
         "your turn: do not poll or sleep-wait. Wakes are rate-limited: print `@@wake@@` only for events that need your "
-        "attention (never per line or in a loop) and keep wake_on patterns specific. A program can also print <discord_send files='a.png'>text</discord_send> on stdout to post straight to Discord without waking you. "
+        "attention (never per line or in a loop) and keep wake_on patterns specific. A program can also print <discord_send files='a.png'>text</discord_send> on stdout to post straight to Discord without waking you. port=true gives $DAEMON_PORT: listen on 127.0.0.1 only; it is reachable only inside the sandbox but by every workspace there, so keep secrets out of it; $DAEMON_SOCK is always a private unix socket path (only this workspace can connect). "
         "Stop daemons you no longer need."),
      "parameters": {"type": "object", "properties": {
          "shell_cmd": {"type": "string", "description": "Shell command (use this or code)"},
@@ -71,7 +72,8 @@ DAEMON_TOOLS = [
          "cols": {"type": "integer", "default": 120}, "rows": {"type": "integer", "default": 30},
          "run_for_seconds": {"type": "integer", "description": "Optional deadline; omit to run until stopped"},
          "wake_on": {"type": "array", "items": {"type": "string"}, "description": "Optional regexes (max 5): wake you when an output line matches"},
-         "wake_on_exit": {"type": "boolean", "default": True}}}},
+         "wake_on_exit": {"type": "boolean", "default": True},
+         "port": {"type": "boolean", "description": "Allocate $DAEMON_PORT (TCP, 127.0.0.1, sandbox-internal)"}}}},
     {"name": "read_daemon_output", "description": (
         "Read output produced since your last read (stream: stdout|stderr|both, max_chars default 4000, cap 16000). Also "
         "reports state (running/exited/stopped/lost), exit code and uptime. view='screen' (tty only) returns the current "
@@ -109,7 +111,7 @@ VOICE_ACTIONS = {"start": "start_daemon", "read": "read_daemon_output", "send": 
                  "stop": "stop_daemon", "list": "list_daemons", "status": "daemon_status"}
 DAEMON_HELP = "\n\n".join(
     f"action={a}: " + next(t["description"] for t in DAEMON_TOOLS if t["name"] == n) for a, n in VOICE_ACTIONS.items()
-) + ("\n\nParameters per action: start(shell_cmd|code, name, tty, cols, rows, run_for_seconds, wake_on[], wake_on_exit); "
+) + ("\n\nParameters per action: start(shell_cmd|code, name, tty, cols, rows, run_for_seconds, wake_on[], wake_on_exit, port); "
      "read(daemon_id, stream, max_chars, view, scrollback); send(daemon_id, text, newline, keys[], close_stdin, cols, rows); "
      "stop(daemon_id, signal); status(daemon_id optional); list().")
 _VP = {k: v for t in DAEMON_TOOLS for k, v in t["parameters"]["properties"].items()}
@@ -331,6 +333,13 @@ class DaemonManager:
             except re.error as e:
                 return f"Error: invalid wake_on regex {x!r}: {e}"
         wake_exit = 0 if a.get("wake_on_exit") in (False, "false", 0) else 1
+        port = None
+        if a.get("port") in (True, "true", 1):
+            used = {r["port"] for r in _q("SELECT port FROM daemons WHERE status='running' AND port IS NOT NULL", fetch="all")}
+            free = [x for x in range(20000, 21000) if x not in used]
+            if not free:
+                return "Error: no free daemon port left; stop a daemon that uses one."
+            port = random.choice(free)
         live_ch = live_all = 0
         for r in _q("SELECT * FROM daemons WHERE status='running'", fetch="all"):
             if (await self._state(r))[0] == "running":
@@ -349,15 +358,16 @@ class DaemonManager:
                 cmd = f"python3 -u {p['dj']}/main.py"
             _w(os.path.join(p["host"], "cmd.sh"), cmd + "\n")
             _w(os.path.join(p["host"], "run.sh"), self._runner_script(did, p, tty, cols, rows, run_for,
-                                          {**sandbox_user_env(), **((self.env_provider(ws) if self.env_provider else None) or {})}))
+                                          {**sandbox_user_env(), **((self.env_provider(ws) if self.env_provider else None) or {}),
+                                           "DAEMON_SOCK": f"{p['run']}/app.sock", **({"DAEMON_PORT": str(port)} if port else {})}))
         except OSError as e:
             return f"Error: could not prepare daemon files: {e}"
         await self.r._prepare_sandbox_workdir(os.path.join(self.r.host_workdir_base, ws), p["dw"], uid)
         await self._dx(["sh", "-c", f"mkdir -p /tmp/jobs; chmod 711 /tmp/jobs; mkdir -p {p['run']}; chmod 700 {p['run']}; "
                         f"chown {uid}:1000 {p['run']}; chmod 755 {p['dw']}/jobs {p['dj']}; "
                         f"chown -R {uid}:1000 {p['dw']}/jobs"], user=0)
-        _q("INSERT INTO daemons (id,channel_id,ws,user_id,name,tty,cmd,uid,started,status,msg_id,wake_on,wake_exit) VALUES (?,?,?,?,?,?,?,?,?,'running',?,?,?)",
-           (did, channel_id, ws, user_id, name, int(tty), cmd[:500], uid, time.time(), msg_id, json.dumps(wake_on), wake_exit))
+        _q("INSERT INTO daemons (id,channel_id,ws,user_id,name,tty,cmd,uid,started,status,msg_id,wake_on,wake_exit,port) VALUES (?,?,?,?,?,?,?,?,?,'running',?,?,?,?)",
+           (did, channel_id, ws, user_id, name, int(tty), cmd[:500], uid, time.time(), msg_id, json.dumps(wake_on), wake_exit, port))
         console.log(f"EXEC | user={user_id} | action=start_daemon | id={did} | tty={tty}")
         rc, out = await self._dx(["sh", "-c", f"setsid sh {p['dj']}/run.sh >/dev/null 2>&1 &"], user=uid, detach=True)
         if rc != 0:
@@ -373,6 +383,8 @@ class DaemonManager:
         if st != "running":
             t, _, _ = _tail_new(os.path.join(p["host"], "out.log"), 0, 500)
             extra = f"\n{t.strip()}" if t.strip() else ""
+        if port:
+            extra = f"\nport={port} -> env DAEMON_PORT (bind 127.0.0.1; sandbox-internal, reachable by every workspace). Private socket: $DAEMON_SOCK." + extra
         return f"Started {self._head(row, st, code_)}{extra}"
 
     async def read(self, channel_id, a):
@@ -495,9 +507,8 @@ class DaemonManager:
             if st != "running" or sig != "TERM" or attempt:
                 break
             await self._kill(row, p, "KILL")       # TERM ignored for ~5s -> escalate
-        if st == "stopped" or (st == "running" and sig in ("TERM", "KILL")):
-            _q("UPDATE daemons SET status='stopped' WHERE id=? AND status='running'", (row["id"],))
-            st = "stopped" if st == "stopped" else st
+        if st in ("stopped", "lost") or (st == "running" and sig in ("TERM", "KILL")):
+            _q("UPDATE daemons SET status='stopped' WHERE id=? AND status IN ('running','lost')", (row["id"],))
         row = self._get(row["id"], channel_id)
         st, code = await self._state(row)
         return self._head(row, st, code)
@@ -542,6 +553,8 @@ class DaemonManager:
                 sz = 0
             logs.append(f"{fn[:-4]} {sz}B (unread {max(0, sz - (row[col] or 0))}B)")
         out.append("logs: " + ", ".join(logs))
+        if row.get("port"):
+            out.append(f"port: {row['port']} (127.0.0.1, sandbox-internal) | socket: {p['run']}/app.sock")
         try:
             pats = json.loads(row.get("wake_on") or "[]")
         except Exception:
@@ -609,6 +622,30 @@ class DaemonManager:
         except Exception as e:
             return f"Error: {e}"
         return "Sent." + miss
+
+    async def admin_list(self):
+        rows = _q("SELECT * FROM daemons WHERE status='running' OR started>? ORDER BY started DESC LIMIT 30", (time.time() - 86400,), "all")
+        if not rows:
+            return "No daemons."
+        out = []
+        for r in rows:
+            st, code = await self._state(r)
+            out.append(f"{self._head(r, st, code)} channel={r['channel_id']} user={r['user_id']}" + (f" port={r['port']}" if r.get("port") else ""))
+        return "\n".join(out)
+
+    async def admin_stop(self, did):
+        row = _q("SELECT * FROM daemons WHERE id=?", (str(did),), "one")
+        if not row:
+            return "Unknown daemon id."
+        return await self.stop(row["channel_id"], {"daemon_id": row["id"], "signal": "KILL"})
+
+    async def admin_stop_all(self):
+        n = 0
+        for r in _q("SELECT * FROM daemons WHERE status='running'", fetch="all"):
+            if (await self._state(r))[0] == "running":
+                await self.stop(r["channel_id"], {"daemon_id": r["id"], "signal": "KILL"})
+                n += 1
+        return f"Stopped {n} daemon(s)."
 
     async def stop_all(self, channel_id):
         """Kill every running daemon of a channel and forget them (used by cleanup_sandbox)."""
