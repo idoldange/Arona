@@ -64,7 +64,8 @@ clock_font_color = #ffffff 100
 clock_padding = 8 0
 clock_background_id = 0
 """
-_KEEP_ENV = ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "NO_AT_BRIDGE", "GIO_USE_VFS", "GTK_A11Y")
+_KEEP_ENV = ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "NO_AT_BRIDGE", "GIO_USE_VFS", "GTK_A11Y",
+             "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR")
 
 
 class DesktopManager:
@@ -170,7 +171,7 @@ openbox > $R/wm.log 2>&1 &
 sleep 0.5
 tint2 -c $HOME/.config/tint2/tint2rc > $R/panel.log 2>&1 &
 sleep 0.5
-{{ echo "DISPLAY=$DISPLAY"; echo "XAUTHORITY=$XAUTHORITY"; echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"; echo "NO_AT_BRIDGE=1"; echo "GIO_USE_VFS=local"; echo "GTK_A11Y=none"; }} > $R/env
+{{ echo "DISPLAY=$DISPLAY"; echo "XAUTHORITY=$XAUTHORITY"; echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"; echo "NO_AT_BRIDGE=1"; echo "GIO_USE_VFS=local"; echo "GTK_A11Y=none"; echo "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"; echo "XDG_CACHE_HOME=$XDG_CACHE_HOME"; echo "XDG_DATA_HOME=$XDG_DATA_HOME"; echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"; }} > $R/env
 echo ready > $R/ready
 wait $XP
 """

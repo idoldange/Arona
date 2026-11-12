@@ -725,14 +725,34 @@ class AronaDocker:
     
     env_provider = None   # set by main: callable(workspace_key) -> {"DISPLAY": ...} while a virtual desktop is open
 
-    def _desk_env_args(self, workspace_key):
-        try:
-            env = self.env_provider(workspace_key) if self.env_provider else {}
-        except Exception:
-            env = {}
+    def _desk_context(self, workspace_key, desk_key=None):
+        """Resolve (uid, env) for an exec, preferring a desktop opened for desk_key.
+
+        The virtual desktop is keyed by channel_id while temp=True runs use an
+        ephemeral msg workspace. When the channel has a desktop open we must use
+        both its DISPLAY/XAUTHORITY and its uid: the Xvfb cookie is created for
+        that uid (dir is chmod 700), so another workspace uid cannot read it.
+        """
+        uid = self._get_sandbox_uid(workspace_key)
+        keys = []
+        if desk_key:
+            keys.append(self._sanitize_msg_id(str(desk_key)))
+        if workspace_key not in keys:
+            keys.append(workspace_key)
+        for k in keys:
+            try:
+                env = self.env_provider(k) if self.env_provider else {}
+            except Exception:
+                env = {}
+            if (env or {}).get("DISPLAY"):
+                return self._get_sandbox_uid(k), env
+        return uid, {}
+
+    def _desk_env_args(self, workspace_key, desk_key=None):
+        _, env = self._desk_context(workspace_key, desk_key)
         return [x for k, v in {**sandbox_user_env(), **(env or {})}.items() for x in ("-e", f"{k}={v}")]
 
-    async def run_code(self, code: str, msg_id: str, filename: str = "exec_code.py", message=None, timeout: int = 120, channel_id: str | None = None) -> dict:
+    async def run_code(self, code: str, msg_id: str, filename: str = "exec_code.py", message=None, timeout: int = 120, channel_id: str | None = None, desk_key: str | None = None) -> dict:
         """Execute a code string in the container.
 
         Workspace key priority: channel_id (if given) > msg_id.
@@ -796,17 +816,19 @@ class AronaDocker:
             with open(os.path.join(host_w, safe_filename), "w", encoding="utf-8", newline='\n') as f:
                 f.write(final_code)
 
-            # Same per-workspace uid as run_shell / daemons, so every tool sees the same files
-            uid = self._get_sandbox_uid(workspace_key)
+            # Prefer the channel desktop's uid + env when one is open, so GUI
+            # programs (Playwright headed, tkinter, ...) land on the voice
+            # desktop even when temp=true uses an ephemeral msg workspace.
+            uid, desk_env = self._desk_context(workspace_key, desk_key)
             await self._prepare_sandbox_workdir(host_w, docker_cwd, uid)
-                
+
             # Execute via Docker Exec
             cmd = [
                 "docker", "exec",
                 "-u", str(uid),
                 "-e", f"OUTPUT_DIR={docker_out}",
                 "-e", f"VIEW_DIR={docker_view}",
-                *self._desk_env_args(workspace_key),
+                *[x for k, v in {**sandbox_user_env(), **desk_env}.items() for x in ("-e", f"{k}={v}")],
                 "-e", "HOME=/home/sandboxuser",
                 self.container,
                 "sh", "-c",
@@ -854,7 +876,7 @@ class AronaDocker:
             console.log(f"Core execution error: {str(e)}", "ERROR")
             return {"status": "error", "log": str(e), "files": [], "view_files": [], "code": code, "msg_id": msg_id}
     
-    async def run_shell(self, shell_cmd: str, msg_id: str, message=None, timeout: int = 120, channel_id: str | None = None) -> dict:
+    async def run_shell(self, shell_cmd: str, msg_id: str, message=None, timeout: int = 120, channel_id: str | None = None, desk_key: str | None = None) -> dict:
         """Execute a shell command inside the container.
 
         Workspace key priority: channel_id (if given) > msg_id.
@@ -909,7 +931,9 @@ class AronaDocker:
             with open(os.path.join(host_w, "command.sh"), "w", encoding="utf-8", newline='\n') as f:
                 f.write(shell_cmd_normalized)
 
-            # Lock workdir to sandbox UID (must be after all host-side writes)
+            # Lock workdir to sandbox UID (must be after all host-side writes).
+            # Prefer the channel desktop's uid + env when one is open.
+            uid, desk_env = self._desk_context(workspace_key, desk_key)
             await self._prepare_sandbox_workdir(host_w, docker_cwd, uid)
 
             # Execute via Docker using exec (no shell wrapper on host).
@@ -919,7 +943,7 @@ class AronaDocker:
                 "docker", "exec", "-u", str(uid),
                 "-e", f"OUTPUT_DIR={docker_out}",
                 "-e", f"VIEW_DIR={docker_view}",
-                *self._desk_env_args(workspace_key),
+                *[x for k, v in {**sandbox_user_env(), **desk_env}.items() for x in ("-e", f"{k}={v}")],
                 "-e", "HOME=/home/sandboxuser",
                 self.container,
                 "sh", "-c", f"mkdir -p {docker_out} {docker_view} && cd {docker_cwd} && sh command.sh"

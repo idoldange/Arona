@@ -642,7 +642,7 @@ _task_msgs: Dict[Tuple[int, int], List[Any]] = {}  # accumulated discord.Message
 
 
 # § CODE EXECUTION  (run_code → docker_runner sandbox)
-async def run_code(code: str = "", action: str = "run_code", shell_cmd: str = "", msg_id: str = None, message=None, filename: str = None, send_output: bool = True, send_code: bool = True, send_logs: bool = False, timeout: int = 60, channel_id: str | None = None) -> dict:
+async def run_code(code: str = "", action: str = "run_code", shell_cmd: str = "", msg_id: str = None, message=None, filename: str = None, send_output: bool = True, send_code: bool = True, send_logs: bool = False, timeout: int = 60, channel_id: str | None = None, desk_key: str | None = None) -> dict:
     """Unified executor for running Python code or shell commands in the sandbox.
 
     Parameters:
@@ -676,10 +676,10 @@ async def run_code(code: str = "", action: str = "run_code", shell_cmd: str = ""
 
         # Execute action
         if action == "run_shell":
-            res = await docker_runner.run_shell(shell_cmd or "", msg_id, message=docker_message, timeout=timeout, channel_id=channel_id)
+            res = await docker_runner.run_shell(shell_cmd or "", msg_id, message=docker_message, timeout=timeout, channel_id=channel_id, desk_key=desk_key)
         else:
             # default: run_code
-            res = await docker_runner.run_code(code or "", msg_id, filename=filename or "exec_code.py", message=docker_message, timeout=timeout, channel_id=channel_id)
+            res = await docker_runner.run_code(code or "", msg_id, filename=filename or "exec_code.py", message=docker_message, timeout=timeout, channel_id=channel_id, desk_key=desk_key)
 
         # Ensure output directory exists under the per-channel workspace: ./workdir/{channel_id}/outputs
         workspace_key = docker_runner._sanitize_msg_id(str(channel_id)) if channel_id else (res.get('msg_id') or msg_id)
@@ -2573,9 +2573,9 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
         #        user_specified_filename = match.group(1)
 
         if action == "run_shell":
-          res = await run_code(code="", action="run_shell", shell_cmd=shell_cmd, msg_id=msg_id, message=message_for_run, send_code=send_code, send_logs=send_logs, timeout=timeout, channel_id=effective_channel_id)
+          res = await run_code(code="", action="run_shell", shell_cmd=shell_cmd, msg_id=msg_id, message=message_for_run, send_code=send_code, send_logs=send_logs, timeout=timeout, channel_id=effective_channel_id, desk_key=channel_id)
         else:
-          res = await run_code(code=code, action="run_code", shell_cmd="", msg_id=msg_id, message=message_for_run, filename=user_specified_filename, send_code=send_code, send_logs=send_logs, timeout=timeout, channel_id=effective_channel_id)
+          res = await run_code(code=code, action="run_code", shell_cmd="", msg_id=msg_id, message=message_for_run, filename=user_specified_filename, send_code=send_code, send_logs=send_logs, timeout=timeout, channel_id=effective_channel_id, desk_key=channel_id)
         
         # Prepare response: return log as main text, and check for output files.
         workspace_key = docker_runner._sanitize_msg_id(effective_channel_id) if effective_channel_id else (res.get('msg_id') or msg_id)
