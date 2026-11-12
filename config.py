@@ -188,8 +188,8 @@ BASE_EXP_MAX = 4.4
 
 # Bond decay (idle): each whole day beyond the grace period costs BOND_DECAY_PER_DAY,
 # never dropping below the lower bound of the user's current rank.
-BOND_DECAY_GRACE_DAYS = 7.0
-BOND_DECAY_PER_DAY    = 0.5
+BOND_DECAY_GRACE_DAYS = 30.0
+BOND_DECAY_PER_DAY    = 0.1
 BOND_DECAY_CHECK_SECS = 3600.0
 
 # Model-driven bond change via <bond>N</bond> (clamped, per-user cooldown)

@@ -409,6 +409,8 @@ class PresenceTracker:
         async with self._update_lock:
             for guild in self.bot.guilds:
                 for member in guild.members:
+                    if member.bot:
+                        continue
                     if member.id in self.opted_out_users:
                         continue
                     if not self._user_is_known(member.id):
@@ -435,6 +437,14 @@ class PresenceTracker:
     ) -> None:
         await self._ensure_database()
         async with self._update_lock:
+            if after.bot:
+                self.presence_data = {
+                    key: session
+                    for key, session in self.presence_data.items()
+                    if not (key[0] == after.guild.id and key[1] == after.id)
+                }
+                return
+
             if after.id in self.opted_out_users:
                 self.presence_data = {
                     key: session
@@ -492,7 +502,7 @@ class PresenceTracker:
         started_at: datetime,
     ) -> None:
         """Keep the active session in memory until it ends."""
-        if not self._user_is_known(member.id):
+        if member.bot or not self._user_is_known(member.id):
             return
         key = (member.guild.id, member.id, activity.name)
         self.presence_data[key] = ActivePresence(
@@ -565,7 +575,7 @@ class PresenceTracker:
         """Return current playing activities and known session start times."""
         guild_id = member.guild.id
         user_id = member.id
-        if user_id in self.opted_out_users:
+        if member.bot or user_id in self.opted_out_users:
             return []
         activities = self._playing_activities(member)
         result = []
@@ -656,7 +666,7 @@ class PresenceTracker:
         currently_playing: dict[str, set[int]] = {}
         guild_members = guild.members.values() if isinstance(guild.members, dict) else guild.members
         for member in guild_members:
-            if member.id in self.opted_out_users:
+            if member.bot or member.id in self.opted_out_users:
                 continue
             for game_name in self._playing_activities(member):
                 currently_playing.setdefault(game_name, set()).add(member.id)
