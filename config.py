@@ -22,7 +22,7 @@ FALLBACK_MODEL      = "gemini-3.5-flash-lite"# 503
 RATE_LIMIT_MODEL    = "gemini-3.5-flash-lite"# 429
 RATE_LIMIT_MODEL_   = "gemini-3.8-flash"     # 429 on RATE_LIMIT_MODEL
 LITE_MODEL          = "gemini-3.5-flash-lite"
-LIVE_MODEL          = "gemini-2.5-flash-native-audio-preview-12-2025"
+LIVE_MODEL          = "gemini-3.8-live"
 DEFAULT_TEMPERATURE = 1.0
 MAX_RETRIES         = 1                      # rounds
 # Hard cap on the number of HTTP requests a single ask_gemini() call may send to the
@@ -443,7 +443,7 @@ TTS_REF = {
 
 # Voice window frame height sent to Gemini Live (width = 16:9). 1080 = Full HD rendered natively,
 # 720 = the old layout. Lower it on a weak machine.
-WINDOW_RES = 1080
+WINDOW_RES = 720
 
 # Virtual desktop (Xvfb + xfwm4 + panel) for the voice model. False = nothing is started (saves RAM/CPU).
 DESKTOP_ENABLED = True
@@ -452,3 +452,9 @@ DESKTOP_IDLE_MINUTES = 15    # close a desktop nothing has used for this long
 
 # Name the sandbox's per-workspace uids "arona" (whoami / prompt) through nss_wrapper baked into the image.
 SANDBOX_USER_ARONA = True
+
+# Used automatically (for ~30 min) when LIVE_MODEL is rejected, e.g. keys without quota for it.
+LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
+# Live context compression: compress when the session holds this many tokens, down to the target.
+LIVE_COMPRESS_TRIGGER = 24000
+LIVE_COMPRESS_TARGET = 12000

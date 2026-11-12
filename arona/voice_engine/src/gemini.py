@@ -39,6 +39,7 @@ class GeminiWebSocket:
         self._key_idx = None
         self._closing = False
         self._reconnect_task = None
+        self._quota_fails = 0
         self.voice_client: Optional[VoiceClient] = None
         self.receive_task: Optional[asyncio.Task] = None
         self.audio_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
@@ -125,6 +126,13 @@ class GeminiWebSocket:
         while self._connecting:
             await asyncio.sleep(0.05)
 
+    def _active_model(self) -> str:
+        """config.LIVE_MODEL, or LIVE_MODEL_FALLBACK while the primary was recently rejected (quota / unavailable)."""
+        fb = getattr(config, "LIVE_MODEL_FALLBACK", "")
+        if fb and _MODEL_BAD.get(config.LIVE_MODEL, 0) > time.monotonic():
+            return fb
+        return config.LIVE_MODEL
+
     async def _connect_inner(self) -> None:
         if self.ws and self.ws.protocol.state.name == "OPEN":
             return
@@ -172,6 +180,14 @@ class GeminiWebSocket:
                     return
                 except Exception as e:
                     console.log(f"Failed to connect to Gemini (Key {i+1}): {e}", "WARN")
+                    _em = str(e).lower()
+                    if self._active_model() == config.LIVE_MODEL and getattr(config, "LIVE_MODEL_FALLBACK", "") \
+                            and any(k in _em for k in ("quota", "not found", "not supported", "unavailable")):
+                        self._quota_fails += 1
+                        if self._quota_fails >= 3:       # the model itself is the problem, not one key
+                            _MODEL_BAD[config.LIVE_MODEL] = time.monotonic() + 1800
+                            self._quota_fails = 0
+                            console.log(f"[Gemini Live] {config.LIVE_MODEL} rejected on 3 keys, using {config.LIVE_MODEL_FALLBACK} for 30 min", "WARN")
                     if resumed:
                         console.log("[Gemini Live] Resume failed, next attempt starts a fresh session", "WARN")
                         self._resume_handle = None
@@ -188,12 +204,13 @@ class GeminiWebSocket:
             tools_config.append({"function_declarations": WINDOW_TOOLS})
         setup_msg = {
             "setup": {
-                "model": f"models/{config.LIVE_MODEL}", #"models/gemini-2.5-flash-native-audio-preview-12-2025", # use 3.1 now
+                "model": f"models/{self._active_model()}", #"models/gemini-2.5-flash-native-audio-preview-12-2025", # use 3.1 now
                 "generation_config": self.config["generation_config"],
                 "system_instruction": {"parts": [{"text": self.persona + WINDOW_PROMPT}]},
                 "tools": tools_config,
                 # audio+video sessions are capped at ~2 min without compression
-                "context_window_compression": {"sliding_window": {}},
+                "context_window_compression": {"trigger_tokens": int(getattr(config, "LIVE_COMPRESS_TRIGGER", 24000)),
+                                               "sliding_window": {"target_tokens": int(getattr(config, "LIVE_COMPRESS_TARGET", 12000))}},
                 "session_resumption": ({"handle": self._resume_handle} if self._resume_handle else {}),
                 # Allow model to call multiple functions in parallel
                 "tool_config": {
@@ -544,7 +561,7 @@ class GeminiWebSocket:
         if not self.ws or not self.ws.protocol.state.name == 'OPEN':
             return
         try:
-            if "3.1" in config.LIVE_MODEL:
+            if re.search(r"3\.\d", self._active_model()):
                 # 3.1 live: client_content is only for seeding history, mid-session text goes through realtime input
                 msg = {"realtime_input": {"text": text}}
             else:
