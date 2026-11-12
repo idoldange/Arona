@@ -587,6 +587,7 @@ sink: AudioProcessor = None
 _voice_reconnect_user: discord.Member = None   # last user who triggered join_voice
 _voice_reconnect_text_ch = None                # last text channel for voice session
 _intentional_disconnect: bool = False          # set True when user explicitly calls leave_voice
+_VOICE_LOCK = asyncio.Lock()                   # one voice channel/session at a time (global)
 
 # Instantiate a Docker runner for executing code/commands (used by Gemini functions)
 docker_runner: AronaDocker = AronaDocker()
@@ -1069,23 +1070,42 @@ def build_voice_member_memory(member) -> str:
     return ""
 
 
-async def join_voice_channel(user: discord.Member, text_channel: discord.TextChannel, target_vc=None):
-    """Joins the user's voice channel (or target_vc if given) and starts listening."""
-    global _voice_reconnect_user, _voice_reconnect_text_ch, _intentional_disconnect
+def _active_voice_client():
+    """The bot's currently connected voice client (any guild), or None."""
+    for g in client.guilds:
+        vc = g.voice_client
+        if vc is not None and vc.is_connected():
+            return vc
+    vc = gemini_ws.voice_client
+    if vc is not None and vc.is_connected():
+        return vc
+    return None
 
+
+async def join_voice_channel(user: discord.Member, text_channel: discord.TextChannel, target_vc=None):
+    """Join a voice channel, enforcing one voice session at a time.
+
+    If Arona is already connected to a different voice channel (same or another
+    guild) this returns an error string for the model/user instead of moving her.
+    """
     vch = target_vc or (user.voice.channel if user.voice else None)
     if not vch:
         return "User not in a voice channel."
+    async with _VOICE_LOCK:
+        existing = _active_voice_client()
+        if existing is not None:
+            if existing.channel == vch:
+                return "Bot already in the correct voice channel."
+            where = getattr(existing.channel, "mention", None) or getattr(existing.channel, "name", "another voice channel")
+            guild_name = getattr(getattr(existing, "guild", None), "name", None)
+            suffix = f" in {guild_name}" if guild_name else ""
+            return f"Cannot join: Arona is already connected to {where}{suffix}. Leave that voice channel first."
+        return await _join_voice_channel_locked(user, text_channel, vch)
 
-    # Check if bot is already connected to ANY voice channel in this guild
-    if user.guild.voice_client:
-        vc = user.guild.voice_client
-        if vc.channel != vch:
-            console.log("Disconnecting from current voice channel...", "INFO")
-            await vc.disconnect(force=True)
-            await asyncio.sleep(1)
-        else:
-            return "Bot already in the correct voice channel."
+
+async def _join_voice_channel_locked(user: discord.Member, text_channel: discord.TextChannel, vch):
+    """Joins `vch`; caller holds _VOICE_LOCK and verified no other voice session is active."""
+    global _voice_reconnect_user, _voice_reconnect_text_ch, _intentional_disconnect
 
     try:
         await gemini_ws.wait_ready()
@@ -1195,6 +1215,12 @@ async def join_voice_channel(user: discord.Member, text_channel: discord.TextCha
         return f"Error joining voice channel: {e}"
       
 async def leave_voice_channel(guild: discord.Guild, user: discord.Member, text_channel: discord.TextChannel, farewell_message: str = None, from_model: bool = False):
+    """Leave the current voice channel (serialized with joins)."""
+    async with _VOICE_LOCK:
+        return await _leave_voice_channel_locked(guild, user, text_channel, farewell_message=farewell_message, from_model=from_model)
+
+
+async def _leave_voice_channel_locked(guild: discord.Guild, user: discord.Member, text_channel: discord.TextChannel, farewell_message: str = None, from_model: bool = False):
     """Leaves the current voice channel. farewell_message is sent after disconnect if provided.
     from_model: the Gemini Live model itself decided to leave (leave_voice tool call)."""
     global _intentional_disconnect
