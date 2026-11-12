@@ -3,6 +3,7 @@ import copy
 import os
 import base64
 import json
+import re
 import time
 import traceback
 from typing import Optional, Dict, Any, List
@@ -21,6 +22,9 @@ def _close_code(e: BaseException):
     """WebSocket close code carried by a websockets ConnectionClosed (None for any other error)."""
     c = getattr(getattr(e, "rcvd", None), "code", None)
     return c if c is not None else getattr(e, "code", None)
+
+
+_MODEL_BAD = {}   # model -> monotonic time until which LIVE_MODEL_FALLBACK is used instead
 
 
 class GeminiWebSocket:

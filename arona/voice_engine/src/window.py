@@ -178,6 +178,17 @@ You receive one screenshot per second of the Discord window for this call. It ha
 - Tools: window_scroll (scroll the text chat), window_focus / window_unfocus (camera view), window_zoom (open + zoom an image in the call area), window_zoom_avatar, window_close_view, window_media (play/pause/seek a video or audio file; its audio is streamed to you), window_status.
 - Every voice tile and every chat message shows that person's Discord ID in small text (e.g. "ID 1234..."). Use it as user_id in saved_information to say whose saved info you are changing.
 - After a tool call the next frame already shows the result. Frames lag by up to a second, so do not assume the view is stale or broken.
+
+[GROUNDING - do not make things up]
+- Say only what you actually heard, saw in the latest frame, or got back from a tool result. If you did not hear, see or verify something, say so or ask. Never guess names, numbers, IDs, file contents, chat messages or what is on screen.
+- An action is NOT done until a tool result says it worked. Never claim you sent, saved, ran, clicked or opened something before the result arrived; if a result says error, UNCHANGED or not found, tell the user it failed.
+- Take exact values (IDs, file names, paths, command output, window ids) from tool results, not from memory.
+- If text on screen is small or blurry, zoom in (window_zoom / desktop zoom) or say you cannot read it; never fill in words you cannot see.
+- If the audio was unclear, ask the user to repeat instead of answering something else.
+
+[DESKTOP]
+- desktop type does NOT press Enter. To run or submit, pass enter=true or call key=Return, then check the result.
+- Read each desktop result (pointer, active window, "screen UNCHANGED" = nothing happened) before the next step; do not chain blind actions.
 """
 
 
@@ -202,11 +213,11 @@ _EMOJI_PX = 109          # NotoColorEmoji (CBDT) only exists as a 109px strike; 
 _EMOJI_EM = 1.25         # emoji width on screen = font size * this
 
 
-def _font_raw(size: int, bold: bool = False, role: str = "base"):
+def _font_raw(size: int, bold: bool = False, role: str = "base", style: str = ""):
     # Segoe UI is the base font. CJK / Nerd fonts are used only for strings that contain such glyphs,
     # and every chain ends in Segoe UI so a missing font never drops to PIL's bitmap default
     # (which has no Vietnamese diacritics).
-    key = (size, bold, role)
+    key = (size, bold, role, style)
     if key in _FONT_CACHE:
         return _FONT_CACHE[key]
     segoe = ["segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"] if bold else ["segoeui.ttf", "arial.ttf", "DejaVuSans.ttf"]
@@ -222,6 +233,11 @@ def _font_raw(size: int, bold: bool = False, role: str = "base"):
         names = ["NotoColorEmoji.ttf", "seguiemj.ttf"]
     else:
         names = segoe
+        if style == "m":
+            names = (["consolab.ttf", "DejaVuSansMono-Bold.ttf"] if bold else ["consola.ttf", "DejaVuSansMono.ttf"]) + segoe
+        elif style == "i":
+            names = (["segoeuiz.ttf", "arialbi.ttf", "DejaVuSans-BoldOblique.ttf"] if bold
+                     else ["segoeuii.ttf", "ariali.ttf", "DejaVuSans-Oblique.ttf"]) + segoe
     font = None
     for d in _FONT_DIRS:
         for n in names:
@@ -253,8 +269,8 @@ class _SFont:
         return asc / self.s, desc / self.s
 
 
-def _font(size: int, bold: bool = False, role: str = "base"):
-    return _SFont(_font_raw(max(1, int(round(size * S))), bold, role), S)
+def _font(size: int, bold: bool = False, role: str = "base", style: str = ""):
+    return _SFont(_font_raw(max(1, int(round(size * S))), bold, role, style), S)
 
 
 def _role(ch: str) -> str:
@@ -288,9 +304,9 @@ class _FontStack:
     """Segoe UI with per-run fallback (CJK, Nerd/symbol, color emoji). Quacks like a PIL font for
     getlength(); drawing goes through _Draw.text so every call site stays unchanged."""
 
-    def __init__(self, size: int, bold: bool = False) -> None:
+    def __init__(self, size: int, bold: bool = False, style: str = "") -> None:
         self.size, self.bold = size, bold
-        self.base = _font_raw(size, bold)
+        self.base = _font_raw(size, bold, "base", style)
         self._ek = size * _EMOJI_EM / 136.0      # 136 = NotoColorEmoji advance at 109px
 
     def _run_font(self, role: str):
@@ -299,7 +315,7 @@ class _FontStack:
             if ef is not None:
                 return ef
             return self.base
-        return _font_raw(self.size, self.bold, role)
+        return self.base if role == "base" else _font_raw(self.size, self.bold, role)
 
     def _run_len(self, role: str, s: str) -> float:
         f = self._run_font(role)
@@ -383,10 +399,10 @@ class _Draw(ImageDraw.ImageDraw):
         super().text(xy, text, fill, font, *args, **kwargs)
 
 
-def _tfont(text: str, size: int, bold: bool = False):
+def _tfont(text: str, size: int, bold: bool = False, style: str = ""):
     if _SPECIAL.search(text or ""):
-        return _SFont(_FontStack(max(1, int(round(size * S))), bold), S)
-    return _font(size, bold)
+        return _SFont(_FontStack(max(1, int(round(size * S))), bold, style), S)
+    return _font(size, bold, "base", style)
 
 
 def _wrap(font, text: str, maxw: int) -> List[str]:
@@ -408,6 +424,161 @@ def _wrap(font, text: str, maxw: int) -> List[str]:
                 tok = tok[i:]
             cur = tok
         lines.append(cur.rstrip())
+    return lines
+
+
+COL_LINK, COL_CODE_BG, COL_QUOTE, COL_SPOILER = (0, 168, 252), (30, 31, 34), (78, 80, 88), (24, 25, 28)
+_INL = re.compile(r"\*\*\*|\*\*|__|~~|\|\||`+|\*|_|\[([^\]\n]{1,200})\]\((https?://[^)\s]+)\)|https?://[^\s<>]+")
+_FL_UNDER, _FL_STRIKE, _FL_CODE, _FL_SPOILER = 1, 2, 8, 16
+
+
+def _md_inline(text: str) -> list:
+    """Discord inline markdown -> [(text, bold, italic, underline, strike, code, link, spoiler)]; unmatched markers stay literal."""
+    out, st, i = [], {"b": False, "i": False, "u": False, "s": False, "p": False}, 0
+
+    def emit(t, code=False, link=False):
+        if t:
+            out.append((t, st["b"], st["i"], st["u"], st["s"], code, link, st["p"]))
+    while i < len(text):
+        m = _INL.search(text, i)
+        if not m:
+            emit(text[i:])
+            break
+        emit(text[i:m.start()])
+        tok, i = m.group(0), m.end()
+        if m.group(2):
+            emit(m.group(1), link=True)
+        elif tok.startswith("http"):
+            emit(tok, link=True)
+        elif tok[0] == "`":
+            end = text.find(tok, i)
+            if end == -1:
+                emit(tok)
+            else:
+                emit(text[i:end], code=True)
+                i = end + len(tok)
+        else:
+            keys = {"***": "bi", "**": "b", "__": "u", "~~": "s", "||": "p", "*": "i", "_": "i"}[tok]
+            nxt = text[i] if i < len(text) else " "
+            prev = text[m.start() - 1] if m.start() > 0 else " "
+            if st[keys[0]]:                                   # closing marker
+                if tok == "_" and nxt.isalnum():
+                    emit(tok)
+                else:
+                    for k in keys:
+                        st[k] = False
+            elif nxt.isspace() or text.find(tok, i) == -1 or (tok == "_" and prev.isalnum()):
+                emit(tok)                                     # nothing to close / snake_case: literal
+            else:
+                for k in keys:
+                    st[k] = True
+    return out
+
+
+class _MdLine:
+    """One laid-out chat line: parts = [(x, text, font, color, flags, width, y_off)]."""
+    __slots__ = ("h", "parts", "bg", "bar")
+
+    def __init__(self, h, parts=None, bg=None, bar=False):
+        self.h, self.parts, self.bg, self.bar = h, parts or [], bg, bar
+
+    def draw(self, vd, x, y, tw) -> None:
+        if self.bg:
+            vd.rectangle((x - 6, y, x + tw, y + self.h), fill=self.bg)
+        if self.bar:
+            vd.rectangle((x, y + 1, x + 3, y + self.h - 1), fill=COL_QUOTE)
+        for px, t, f, col, fl, w, yo in self.parts:
+            if fl & _FL_CODE:
+                vd.rounded_rectangle((x + px - 2, y, x + px + w + 2, y + self.h - 2), 3, fill=COL_CODE_BG)
+            elif fl & _FL_SPOILER:
+                vd.rounded_rectangle((x + px - 1, y, x + px + w + 1, y + self.h - 2), 3, fill=COL_SPOILER)
+            vd.text((x + px, y + yo), t, font=f, fill=col)
+            if fl & _FL_UNDER:
+                vd.line((x + px, y + self.h - 5, x + px + w, y + self.h - 5), fill=col, width=1)
+            if fl & _FL_STRIKE:
+                vd.line((x + px, y + self.h // 2, x + px + w, y + self.h // 2), fill=col, width=1)
+
+
+def _md_note(text: str) -> _MdLine:
+    f = _tfont(text, 14)
+    return _MdLine(20, [(0, text, f, MUTED, 0, f.getlength(text), 2)])
+
+
+def _md_layout(text: str, tw: int) -> List[_MdLine]:
+    lines: List[_MdLine] = []
+    in_code = False
+    for raw in (text or "").split("\n"):
+        s = raw.rstrip("\r")
+        if s.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:                                           # fenced code block: monospace, hard-wrapped
+            f, rest = _tfont("m" + s, 16, False, "m"), s
+            while True:
+                n = len(rest)
+                while n > 1 and f.getlength(rest[:n]) > tw - 12:
+                    n -= 1
+                lines.append(_MdLine(22, [(0, rest[:n], f, TEXT, 0, f.getlength(rest[:n]), 2)], bg=COL_CODE_BG))
+                rest = rest[n:]
+                if not rest:
+                    break
+            continue
+        if not s.strip():
+            lines.append(_MdLine(12))
+            continue
+        size, bold, color, indent, bar, prefix = 18, False, TEXT, 0, False, ""
+        m = re.match(r"^(#{1,3})\s+(.*)$", s)
+        if m:
+            size, bold, s = {1: 26, 2: 22, 3: 20}[len(m.group(1))], True, m.group(2)
+        elif s.startswith("-# "):
+            size, color, s = 14, MUTED, s[3:]
+        else:
+            m = re.match(r"^\s*>\s?(.*)$", s)
+            if m:
+                bar, indent, s = True, 14, m.group(1)
+            m = re.match(r"^(\s*)[-*+]\s+(.*)$", s)
+            if m:
+                prefix, indent, s = "\u2022", indent + 20, m.group(2)
+            else:
+                m = re.match(r"^(\s*)(\d{1,3}[.)])\s+(.*)$", s)
+                if m:
+                    prefix, indent, s = m.group(2), indent + 26, m.group(3)
+        lh = size * 4 // 3
+        yo = max(0, (lh - size * 4 // 3) // 2)
+        maxw, row, x, first = tw - indent, [], 0.0, True
+
+        def flush():
+            nonlocal row, x, first
+            parts = row
+            if first and prefix:
+                pf = _tfont(prefix, size)
+                parts = [(indent - pf.getlength(prefix) - 6, prefix, pf, color, 0, pf.getlength(prefix), yo)] + parts
+            lines.append(_MdLine(lh, parts, bar=bar))
+            row, x, first = [], 0.0, False
+        for t, b, it, un, stk, code, link, sp in _md_inline(s):
+            fsz = 16 if code else size
+            sty = "m" if code else ("i" if it else "")
+            col = COL_LINK if link else (color if not sp else (120, 124, 132))
+            fl = (_FL_UNDER if (un or link) else 0) | (_FL_STRIKE if stk else 0) | (_FL_CODE if code else 0) | (_FL_SPOILER if sp else 0)
+            for tok in re.findall(r"\S+\s*|\s+", t):
+                f = _tfont(tok, fsz, bold or b, sty)
+                w = f.getlength(tok)
+                if x + w > maxw and row:
+                    flush()
+                    if not tok.strip():
+                        continue
+                while w > maxw and len(tok) > 1:              # a single word wider than the line
+                    n = len(tok)
+                    while n > 1 and f.getlength(tok[:n]) > maxw:
+                        n -= 1
+                    row.append((indent + x, tok[:n], f, col, fl, f.getlength(tok[:n]), yo))
+                    flush()
+                    tok = tok[n:]
+                    w = f.getlength(tok)
+                row.append((indent + x, tok, f, col, fl, w, yo))
+                x += w
+        if row or first:
+            flush()
     return lines
 
 
@@ -1315,7 +1486,7 @@ class VirtualDiscordWindow:
     def _block_height(self, e: _Entry, lines: List[str]) -> int:
         if e.system:
             return 34
-        h = (22 if e.reply else 0) + 26 + len(lines) * 24
+        h = (22 if e.reply else 0) + 26 + sum(ln.h for ln in lines)
         for it in e.items:
             if it["kind"] == "image":
                 h += (int(round(it["thumb"].height / S)) if it["thumb"] else 60) + 8
@@ -1334,9 +1505,9 @@ class VirtualDiscordWindow:
                 blocks.append((e, y, 34, [], f))
                 y += 34
                 continue
-            lines = _wrap(f, e.text, tw)[:MAX_LINES] if e.text else []
-            if e.text and len(_wrap(f, e.text, tw)) > MAX_LINES:
-                lines[-1] = _ellipsize(f, lines[-1], tw - 40) + " [truncated]"
+            lines = _md_layout(e.text, tw) if e.text else []
+            if len(lines) > MAX_LINES:
+                lines = lines[:MAX_LINES - 1] + [_md_note("[truncated]")]
             h = self._block_height(e, lines)
             blocks.append((e, y, h, lines, f))
             y += h
@@ -1385,8 +1556,8 @@ class VirtualDiscordWindow:
         vd.text((nx, cy + 3), meta, font=_font(15), fill=MUTED)
         cy += 26
         for ln in lines:
-            vd.text((tx, cy), ln, font=f, fill=TEXT)
-            cy += 24
+            ln.draw(vd, tx, cy, tw)
+            cy += ln.h
         for it in e.items:
             if it["kind"] == "image":
                 th = it["thumb"]
