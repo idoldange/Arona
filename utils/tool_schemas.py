@@ -124,7 +124,14 @@ def _group_meta_tools() -> list[dict]:
     ]
 
 
-_VOICE_KEEP = {"desktop", "daemon", "run_code"}      # already compact
+_VOICE_DESCRIPTIONS = {
+    "desktop": "Open and control apps on the screen with the mouse and keyboard. Start with action=open; use action=help for options. Coordinates range from 0 to 1000.",
+    "daemon": "Start or manage a long-running or interactive task. start returns an ID; use read/send/stop with it, or list/status to find tasks. Use help for options.",
+    "run_code": "Run a short Python script or shell command. Files are kept for future commands unless temp=true. For a long-running or interactive task, use daemon.",
+    "leave_voice": "Leave this voice chat. Optionally send a goodbye message to the text channel.",
+    "send_text_message": "Send a message to the associated text channel.",
+    "escalate": "Use for unusually complex questions; choose medium or high.",
+}
 
 
 def _cut(text: str, limit: int) -> str:
@@ -148,15 +155,14 @@ def _slim_props(node, limit=70):
 
 
 def _slim_voice(tools):
-    """The Live session re-reads every tool declaration each turn (tokens per minute!): keep them short in voice."""
+    """Keep voice tool declarations focused on the choices needed to use each tool."""
     import copy
     out = []
     for d in tools:
-        if d.get("name") in _VOICE_KEEP:
-            out.append(d)
-            continue
         d = copy.deepcopy(d)
-        d["description"] = _cut(d.get("description", ""), 150)
+        d["description"] = _VOICE_DESCRIPTIONS.get(
+            d.get("name"), _cut(d.get("description", ""), 150)
+        )
         _slim_props(d.get("parameters"))
         out.append(d)
     return out
@@ -254,8 +260,8 @@ def get_gemini_tools(
             tools.append({"name": "leave_voice", "description": "Disconnect from voice channel. farewell_message sent to text channel after leaving.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string"}}, "required": []}})
     else:
         # Voice session — append voice-specific tools
-        tools.append({"name": "leave_voice", "description": "Disconnect from voice channel. farewell_message sent to text channel after leaving.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string"}}, "required": []}})
-        tools.append({"name": "send_text_message", "description": "Send text to the associated text channel during a voice session. Use for links, code, anything awkward spoken aloud.", "parameters": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]}})
+        tools.append({"name": "leave_voice", "description": "Leave this voice chat. Optionally send a goodbye message to the text channel.", "parameters": {"type": "object", "properties": {"farewell_message": {"type": "string", "description": "Optional goodbye message for the text channel."}}, "required": []}})
+        tools.append({"name": "send_text_message", "description": "Send a message to the associated text channel.", "parameters": {"type": "object", "properties": {"content": {"type": "string", "description": "Message to send."}}, "required": ["content"]}})
     #wait for lib update
     if model_name == DEFAULT_MODEL:
         # escalate thinking depth
