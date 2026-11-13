@@ -63,7 +63,7 @@ class GeminiWebSocket:
                  
                     }
                 },
-                "enable_affective_dialog": True,
+                #"enable_affective_dialog": True,
                 "media_resolution": "MEDIA_RESOLUTION_HIGH"
                 #"thinking_level": "LOW"
             }
