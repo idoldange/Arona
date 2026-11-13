@@ -236,6 +236,11 @@ test.py
 test_live.py
 check_tools.py
 rebuild.err
+patch.err
+
+# docker build artifacts
+docker/build.err
+docker/build.log
 
 #node modules
 node_modules/
