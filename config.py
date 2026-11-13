@@ -458,3 +458,9 @@ LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
 # Live context compression: compress when the session holds this many tokens, down to the target.
 LIVE_COMPRESS_TRIGGER = 16000
 LIVE_COMPRESS_TARGET = 8000
+# gemini-3.8-live gets hard-killed by the server after ~8 min (1008, no goAway) and refuses
+# resumption afterwards. Reconnect with the resumption handle before that, but only once the
+# call is idle (nobody speaking, no tool running, model has answered).
+LIVE_PROACTIVE_RECONNECT = 300
+LIVE_PROACTIVE_IDLE_QUIET = 1.5      # seconds of silence on both sides to count as idle
+LIVE_PROACTIVE_AWAIT_CAP = 30.0      # stop waiting for a model reply after this many seconds

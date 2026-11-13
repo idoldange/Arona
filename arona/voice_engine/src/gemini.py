@@ -47,6 +47,12 @@ class GeminiWebSocket:
         self._last_connect_resumed = False
         self._closing = False
         self._reconnect_task = None
+        self._proactive_task = None
+        self._tool_call_pending = False
+        self._awaiting_response = False
+        self._awaiting_since = 0.0
+        self._last_user_audio = 0.0
+        self._last_model_audio = 0.0
         self._quota_fails = 0
         self.voice_client: Optional[VoiceClient] = None
         self.receive_task: Optional[asyncio.Task] = None
@@ -101,6 +107,9 @@ class GeminiWebSocket:
         self._resume_key = None
         self._resume_model = None
         self._resume_key_val = None
+        task, self._proactive_task = self._proactive_task, None
+        if task and task is not asyncio.current_task():
+            task.cancel()
         try:
             await self.window.stop()
         except Exception as e:
@@ -206,6 +215,7 @@ class GeminiWebSocket:
                         self._resume_handle = self._resume_key = self._resume_model = self._resume_key_val = None
                         await self.send_voice_reference()
                     self.window.force_next()
+                    self._schedule_proactive_reconnect()
                     
                     return
                 except Exception as e:
@@ -326,6 +336,10 @@ class GeminiWebSocket:
             console.log(f"Error in Gemini response: {response['error']}", "ERROR")
             return
 
+        if "serverContent" in response or "toolCall" in response:
+            self._awaiting_response = False
+            self._last_model_audio = time.monotonic() if "serverContent" in response else self._last_model_audio
+
         if "sessionResumptionUpdate" in response:
             _u = response["sessionResumptionUpdate"] or {}
             if _u.get("resumable") and _u.get("newHandle"):
@@ -418,10 +432,69 @@ class GeminiWebSocket:
                 pass
         await self.connect()
 
+    def _schedule_proactive_reconnect(self) -> None:
+        """Schedule a resume before gemini-3.8-live's ~8 min hard kill (it never sends goAway)."""
+        task = self._proactive_task
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._proactive_task = asyncio.create_task(self._proactive_loop())
+
+    def _proactive_busy(self) -> bool:
+        now = time.monotonic()
+        quiet = float(getattr(config, "LIVE_PROACTIVE_IDLE_QUIET", 1.5))
+        cap = float(getattr(config, "LIVE_PROACTIVE_AWAIT_CAP", 30.0))
+        if self._tool_call_pending:
+            return True
+        if self._awaiting_response and now - self._awaiting_since < cap:
+            return True
+        if now - self._last_user_audio < quiet:
+            return True
+        if now - self._last_model_audio < quiet:
+            return True
+        if not self.audio_queue.empty():
+            return True
+        try:
+            if self.voice_client and self.voice_client.is_playing():
+                return True
+        except Exception:
+            pass
+        return False
+
+    async def _proactive_loop(self) -> None:
+        delay = float(getattr(config, "LIVE_PROACTIVE_RECONNECT", 300))
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        if self._closing or not self.ws or self.ws.protocol.state.name != "OPEN":
+            return
+        if not self._resume_handle:
+            console.log("[Gemini Live] Proactive reconnect skipped: no resumption handle", "WARN")
+            return
+        _wait_logged = False
+        while not self._closing and self.ws and self.ws.protocol.state.name == "OPEN":
+            if not self._proactive_busy():
+                break
+            if not _wait_logged:
+                console.log("[Gemini Live] Proactive reconnect due but call is busy; waiting for idle", "INFO")
+                _wait_logged = True
+            try:
+                await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                return
+        if self._closing or not self.ws or self.ws.protocol.state.name != "OPEN":
+            return
+        console.log(f"[Gemini Live] Proactive reconnect after {delay:.0f}s to avoid the ~8 min hard kill", "WARN")
+        self._proactive_task = None
+        await self._reconnect_now()
+        if not self.ws or self.ws.protocol.state.name != "OPEN":
+            self._schedule_reconnect()
+
     async def play_audio(self, audio_data: bytes) -> None:
         if not self.voice_client or not self.voice_client.is_connected():
             return
         
+        self._last_model_audio = time.monotonic()
         await self.audio_queue.put(audio_data)
         
         if not self.voice_client.is_playing():
@@ -465,6 +538,9 @@ class GeminiWebSocket:
         if _now - self._tx_t0 >= 5.0:
             self._flush_tx_log() 
         self._tap_audio(audio_data)
+        self._last_user_audio = _now
+        self._awaiting_response = True
+        self._awaiting_since = _now
         msg = {
             "realtime_input": {
                 "audio": {
@@ -611,6 +687,8 @@ class GeminiWebSocket:
                 # 2.5 native audio: regular user turn
                 msg = {"client_content": {"turns": [{"role": "user", "parts": [{"text": text}]}], "turn_complete": True}}
             await self.ws.send(json.dumps(msg))
+            self._awaiting_response = True
+            self._awaiting_since = time.monotonic()
         except Exception as e:
             console.log(f"[Gemini] Send realtime text error: {e}", "ERROR")
 
@@ -648,8 +726,17 @@ class GeminiWebSocket:
             }
         }
         await self.ws.send(json.dumps(msg))
+        self._awaiting_response = True
+        self._awaiting_since = time.monotonic()
 
     async def handle_tool_use(self, tool_use: Dict[str, Any]) -> None:
+        self._tool_call_pending = True
+        try:
+            await self._handle_tool_use_inner(tool_use)
+        finally:
+            self._tool_call_pending = False
+
+    async def _handle_tool_use_inner(self, tool_use: Dict[str, Any]) -> None:
         func_calls = tool_use.get("functionCalls", [])
         function_responses = []
 
@@ -692,3 +779,5 @@ class GeminiWebSocket:
             }
             if self.ws:
                 await self.ws.send(json.dumps(msg))
+            self._awaiting_response = True
+            self._awaiting_since = time.monotonic()
