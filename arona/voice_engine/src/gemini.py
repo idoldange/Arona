@@ -40,7 +40,11 @@ class GeminiWebSocket:
         self.current_guild = None
         self._resume_handle = None      # Live session resumption handle
         self._resume_key = None         # key index that produced the handle
+        self._resume_model = None       # model that issued the handle (handles are scoped to it)
+        self._resume_key_val = None     # actual key that issued the handle (indices shift on rotation)
+        self._key_val = None            # key used by the current connection
         self._key_idx = None
+        self._last_connect_resumed = False
         self._closing = False
         self._reconnect_task = None
         self._quota_fails = 0
@@ -95,6 +99,8 @@ class GeminiWebSocket:
         self._closing = True
         self._resume_handle = None
         self._resume_key = None
+        self._resume_model = None
+        self._resume_key_val = None
         try:
             await self.window.stop()
         except Exception as e:
@@ -159,12 +165,27 @@ class GeminiWebSocket:
         
         if not self.ws:
             order = list(range(len(api_keys)))
-            if self._resume_handle and self._resume_key in order:
-                order.remove(self._resume_key)
-                order.insert(0, self._resume_key)   # handle may be tied to its key
+            if self._resume_handle:
+                # A resumption handle is scoped to the API key AND model that issued it.
+                # Suspended keys are removed from GEMINI_API_KEY (indices shift) and the
+                # model can switch to LIVE_MODEL_FALLBACK, so an old handle must not be
+                # reused blindly: that makes the server answer 1008 "session not found".
+                _same_model = self._resume_model in (None, self._active_model())
+                if _same_model and self._resume_key_val in api_keys:
+                    _idx = api_keys.index(self._resume_key_val)
+                    order.remove(_idx)
+                    order.insert(0, _idx)
+                else:
+                    console.log("[Gemini Live] Resume handle is tied to an old key/model; starting a fresh session", "INFO")
+                    self._resume_handle = self._resume_key = self._resume_model = self._resume_key_val = None
             for i in order:
                 api_key = api_keys[i]
-                resumed = bool(self._resume_handle)
+                # The handle belongs to ONE key; other keys must start fresh, otherwise
+                # their setup carries a foreign handle and the server answers 1008.
+                resumed = bool(self._resume_handle) and (
+                    self._resume_key_val == api_key
+                    or (self._resume_key_val is None and self._resume_key == i)
+                )
                 try:
                     uri = f"{base_url}{endpoint}?key={api_key}"
                     self.ws = await connect(
@@ -174,22 +195,31 @@ class GeminiWebSocket:
                         ping_timeout=10
                     )
                     console.log(f"Connected to Gemini WebSocket (Key {i+1})", "INFO")
-                    await self.setup()
-                    self.receive_task = asyncio.create_task(self.listen())
                     self._key_idx = i
+                    self._key_val = api_key
+                    await self.setup(self._resume_handle if resumed else None)
+                    self.receive_task = asyncio.create_task(self.listen())
+                    self._last_connect_resumed = resumed
                     if not resumed:
+                        # This connection started a brand-new session: any older handle is
+                        # unusable now (and may belong to another key/model).
+                        self._resume_handle = self._resume_key = self._resume_model = self._resume_key_val = None
                         await self.send_voice_reference()
                     self.window.force_next()
                     
                     return
                 except Exception as e:
-                    if resumed and any(k in str(e).lower() for k in ("session not found", "expired", "1008", "policy violation")):
-                        console.log("[Gemini Live] Resume handle expired; starting a fresh session", "INFO")
-                        self._resume_handle = self._resume_key = None
+                    _em = str(e).lower()
+                    if resumed and any(k in _em for k in ("session not found", "session not resumable", "expired", "1008", "policy violation")):
+                        # Docs: a resumption token stays valid for 2h AFTER the session
+                        # terminates, so an immediate refusal is NOT real expiry. The server
+                        # simply refuses to resume after abnormal drops (e.g. 1011 internal
+                        # errors) and some races; the only recovery is a brand-new session.
+                        console.log("[Gemini Live] Server refused session resumption (session no longer resumable); starting a fresh session", "WARN")
+                        self._resume_handle = self._resume_key = self._resume_model = self._resume_key_val = None
                         order.append(i)                  # retry this key without the handle
                         continue
                     console.log(f"Failed to connect to Gemini (Key {i+1}): {e}", "WARN")
-                    _em = str(e).lower()
                     if self._active_model() == config.LIVE_MODEL and getattr(config, "LIVE_MODEL_FALLBACK", "") \
                             and any(k in _em for k in ("quota", "not found", "not supported", "unavailable")):
                         self._quota_fails += 1
@@ -198,12 +228,13 @@ class GeminiWebSocket:
                             self._quota_fails = 0
                             console.log(f"[Gemini Live] {config.LIVE_MODEL} rejected on 3 keys, using {config.LIVE_MODEL_FALLBACK} for 30 min", "WARN")
                     if resumed:
-                        console.log("[Gemini Live] Resume failed, next attempt starts a fresh session", "WARN")
-                        self._resume_handle = None
+                        # Transient failure (network/timeout), NOT a refusal: keep the handle
+                        # so a later reconnect can still resume this session on its own key.
+                        console.log("[Gemini Live] Resume attempt failed (transient); keeping the handle for its key", "INFO")
                     self.ws = None
             console.log("All API keys failed to connect to Gemini WebSocket.", "ERROR")
             
-    async def setup(self) -> None:
+    async def setup(self, resumption_handle: Optional[str] = None) -> None:
         tools_config = copy.deepcopy(self.tools) if self.tools else [{'google_search': {}}]
         # Virtual Discord window tools (scroll / zoom / media control)
         _decl = next((t for t in tools_config if isinstance(t, dict) and "function_declarations" in t), None)
@@ -220,7 +251,7 @@ class GeminiWebSocket:
                 # audio+video sessions are capped at ~2 min without compression
                 "context_window_compression": {"trigger_tokens": int(getattr(config, "LIVE_COMPRESS_TRIGGER", 24000)),
                                                "sliding_window": {"target_tokens": int(getattr(config, "LIVE_COMPRESS_TARGET", 12000))}},
-                "session_resumption": ({"handle": self._resume_handle} if self._resume_handle else {}),
+                "session_resumption": ({"handle": resumption_handle} if resumption_handle else {}),
                 # Allow model to call multiple functions in parallel
                 "tool_config": {
                     "function_calling_config": {"mode": "AUTO"}
@@ -298,7 +329,10 @@ class GeminiWebSocket:
         if "sessionResumptionUpdate" in response:
             _u = response["sessionResumptionUpdate"] or {}
             if _u.get("resumable") and _u.get("newHandle"):
-                self._resume_handle, self._resume_key = _u["newHandle"], self._key_idx
+                self._resume_handle = _u["newHandle"]
+                self._resume_key = self._key_idx
+                self._resume_key_val = self._key_val
+                self._resume_model = self._active_model()
         if "goAway" in response:
             console.log("[Gemini Live] goAway received, reconnecting with session resumption", "WARN")
             asyncio.create_task(self._reconnect_now())
@@ -366,7 +400,7 @@ class GeminiWebSocket:
             except Exception as e:
                 console.log(f"[Gemini Live] Reconnect failed: {e}", "WARN")
             if self.ws and self.ws.protocol.state.name == "OPEN":
-                console.log("[Gemini Live] Reconnected" + (" (session resumed)" if self._resume_handle else ""), "INFO")
+                console.log("[Gemini Live] Reconnected" + (" (session resumed)" if self._last_connect_resumed else " (fresh session)"), "INFO")
                 return
 
     async def _reconnect_now(self) -> None:
