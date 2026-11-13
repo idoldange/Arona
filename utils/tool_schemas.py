@@ -125,7 +125,7 @@ def _group_meta_tools() -> list[dict]:
 
 
 _VOICE_DESCRIPTIONS = {
-    "desktop": "Open and control apps on the screen with the mouse and keyboard. Start with action=open; use action=help for options. Coordinates range from 0 to 1000.",
+    "desktop": "Open and control apps on the screen. Start with action=open; use launch app=browser to open a page. Coordinates range from 0 to 1000; use action=help for options.",
     "daemon": "Start or manage a long-running or interactive task. start returns an ID; use read/send/stop with it, or list/status to find tasks. Use help for options.",
     "run_code": "Run a short Python script or shell command. Files are kept for future commands unless temp=true. For a long-running or interactive task, use daemon.",
     "leave_voice": "Leave this voice chat. Optionally send a goodbye message to the text channel.",

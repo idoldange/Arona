@@ -231,9 +231,10 @@ pass.hash
 
 audit.log
 
-#test file
-test.py
-test_live.py
+# Local test scripts
+test*.py
+*_test.py
+_t[0-9]*.py
 check_tools.py
 rebuild.err
 patch.err
