@@ -501,7 +501,9 @@ wait $XP
                     raise ValueError("'cmd' (1-2000 chars) is required for app=cmd")
             else:
                 raise ValueError("app must be terminal, files or cmd")
-            return f"cd {dw} && (setsid sh -c {shlex.quote(cmd)} >/dev/null 2>&1 &)"
+            cnt = "wmctrl -l 2>/dev/null | grep -vc tint2"
+            return (f"N=$({cnt}); cd {dw} && (setsid sh -c {shlex.quote(cmd)} >/dev/null 2>&1 &); "
+                    f'for i in $(seq 1 60); do [ "$({cnt})" -gt "$N" ] && break; sleep 0.1; done; sleep 0.4')   # wait for its window
         raise ValueError(f"unknown action {act!r}")
 
     async def _changed(self, ws):
@@ -657,7 +659,7 @@ wait $XP
         except ValueError as e:
             return f"Error: {e}"
         before = info.get("thumb") if time.time() - info.get("thumb_t", 0) < 5 else await self._thumb(info)
-        settle = 1.0 if act == "launch" else 0.35
+        settle = 0.3 if act == "launch" else 0.35
         rc, out = await self._x(info, f"{script}; sleep {settle}; {_STATUS}")
         after, _ = await asyncio.gather(self._thumb(info), self._wait_frame(info, time.time()))
         info["thumb"], info["thumb_t"] = after, time.time()
