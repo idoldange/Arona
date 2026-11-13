@@ -8582,6 +8582,27 @@ async def _run_synth_job(message, synth_inputs, media_inputs, synth_opts, media_
       await send_with_retry(message.channel, f"-# Synth error: {e}")
     await _drop_status()
 
+def _forwarded_parts(m):
+  """Return (text, attachments) from a Discord forwarded message's snapshot(s)."""
+  snaps = getattr(m, "message_snapshots", None) or []
+  if not snaps:
+    return "", []
+  bodies, atts = [], []
+  for snap in snaps:
+    body = (getattr(snap, "content", "") or "").strip()
+    if body:
+      bodies.append(body)
+    for emb in getattr(snap, "embeds", []) or []:
+      desc = getattr(emb, "description", None)
+      if desc:
+        bodies.append(f"(embed: {getattr(emb, 'title', None) or 'No title'}) {desc}")
+    atts.extend(getattr(snap, "attachments", []) or [])
+  if not bodies and not atts:
+    return "", []
+  head = "(Forwarded message" + (f" with {len(atts)} attachment(s)" if atts else "") + ")"
+  return head + ("\n" + "\n".join(bodies) if bodies else ""), atts
+
+
 @client.event
 async def on_message(message):
   # Mirror every message of the voice-linked text channel (the bot's own included) into the virtual window
@@ -9417,12 +9438,15 @@ async def on_message(message):
       pass
     return
   # Handle text messages in voice channel
-  if gemini_ws.is_voice_session and message.channel == gemini_ws.current_channel and message.author.id != client.user.id and (message.content or message.attachments):
+  _voice_fwd_text, _voice_fwd_atts = _forwarded_parts(message)
+  if gemini_ws.is_voice_session and message.channel == gemini_ws.current_channel and message.author.id != client.user.id and (message.content or message.attachments or _voice_fwd_text or _voice_fwd_atts):
     # Chat text goes in as realtime text; attachments are viewed through the virtual Discord window
     _win_num = gemini_ws.window.add_message(message)
-    _att = f" [attached: {', '.join(a.filename for a in message.attachments)} - see window, message #{_win_num}]" if message.attachments else ""
-    console.log(f"User {message.author.display_name} sent text: {message.content}{_att}", "INFO")
-    await gemini_ws.send_realtime_text(f"{message.author.display_name} (message #{_win_num}): {message.content}{_att}")
+    _att_names = [a.filename for a in message.attachments] + [a.filename for a in _voice_fwd_atts]
+    _att = f" [attached: {', '.join(_att_names)} - see window, message #{_win_num}]" if _att_names else ""
+    _body = "\n".join(x for x in (message.content, _voice_fwd_text) if x)
+    console.log(f"User {message.author.display_name} sent text: {_body}{_att}", "INFO")
+    await gemini_ws.send_realtime_text(f"{message.author.display_name} (message #{_win_num}): {_body}{_att}")
     return
   if gemini_ws.is_voice_session and message.channel == gemini_ws.current_channel and not message.author.id == client.user.id:
     if message.content:
@@ -9521,7 +9545,7 @@ async def on_message(message):
         console.log(f"Rapid follow-up: merging {len(merged_msgs)} msgs from {message.author.display_name}, cancelling previous request", "INFO")
 
   def _msg_text_with_ref(m):
-    """Build the text for one message, prepending its reply reference if present and cached."""
+    """Build the text for one message, prepending its reply reference and any forwarded snapshot."""
     parts = []
     ref = getattr(m, "reference", None)
     if ref:
@@ -9531,16 +9555,25 @@ async def on_message(message):
         ref_body = (getattr(resolved, "content", "") or "")
         snippet = ref_body[:200] + ("..." if len(ref_body) > 200 else "")
         parts.append(f"(Referencing to {ref_author}: {snippet})")
+    fwd_text, _ = _forwarded_parts(m)
+    if fwd_text:
+      parts.append(fwd_text)
     if m.clean_content:
       parts.append(m.clean_content)
     return "\n".join(parts)
 
+  forwarded_atts = [a for m in merged_msgs for a in _forwarded_parts(m)[1]]
+
   call_kwargs: dict = dict(is_dm=is_dm, reply_to=reply_target, context_message=context_message, special_rules=special_rules, safety_note=safety_note)
   if len(merged_msgs) > 1:
-    merged_content = "\n".join(_msg_text_with_ref(m) for m in merged_msgs if m.clean_content or m.attachments)
-    merged_atts = [a for m in merged_msgs for a in getattr(m, "attachments", [])]
+    merged_content = "\n".join(_msg_text_with_ref(m) for m in merged_msgs if m.clean_content or m.attachments or getattr(m, "message_snapshots", None))
+    merged_atts = [a for m in merged_msgs for a in getattr(m, "attachments", [])] + forwarded_atts
     call_kwargs["user_input"] = merged_content or None
     call_kwargs["attachments"] = merged_atts if merged_atts else None
+  elif getattr(message, "message_snapshots", None):
+    call_kwargs["user_input"] = _msg_text_with_ref(message) or None
+    if forwarded_atts:
+      call_kwargs["attachments"] = forwarded_atts
   
   can_send = not message.guild or message.channel.permissions_for(message.guild.me).send_messages
   if not started:

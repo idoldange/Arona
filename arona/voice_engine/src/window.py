@@ -179,16 +179,13 @@ You receive one screenshot per second of the Discord window for this call. It ha
 - Every voice tile and every chat message shows that person's Discord ID in small text (e.g. "ID 1234..."). Use it as user_id in saved_information to say whose saved info you are changing.
 - After a tool call the next frame already shows the result. Frames lag by up to a second, so do not assume the view is stale or broken.
 
-[GROUNDING - do not make things up]
-- Say only what you actually heard, saw in the latest frame, or got back from a tool result. If you did not hear, see or verify something, say so or ask. Never guess names, numbers, IDs, file contents, chat messages or what is on screen.
-- An action is NOT done until a tool result says it worked. Never claim you sent, saved, ran, clicked or opened something before the result arrived; if a result says error, UNCHANGED or not found, tell the user it failed.
-- Take exact values (IDs, file names, paths, command output, window ids) from tool results, not from memory.
-- If text on screen is small or blurry, zoom in (window_zoom / desktop zoom) or say you cannot read it; never fill in words you cannot see.
-- If the audio was unclear, ask the user to repeat instead of answering something else.
+[GROUNDING]
+- Say only what you heard, saw in the latest frame, or a tool returned. If unsure or the audio was unclear, say so or ask; never guess names, numbers, IDs, file contents or on-screen text (zoom in or admit you cannot read it).
+- An action is not done until its tool result says so; on error / UNCHANGED tell the user it failed. Take exact values from tool results.
 
 [DESKTOP]
-- desktop type does NOT press Enter. To run or submit, pass enter=true or call key=Return, then check the result.
-- Read each desktop result (pointer, active window, "screen UNCHANGED" = nothing happened) before the next step; do not chain blind actions.
+- While the desktop is open, run commands and open programs THROUGH THE DESKTOP TERMINAL (desktop launch app=terminal, then type with enter=true) so the user sees them; use run_code only for quiet background work. GUI programs must be started from the desktop (a terminal command ending in &, or launch app=cmd), never from run_code: they vanish when it ends.
+- type does NOT press Enter (enter=true or key=Return). Read each result (active window, "screen UNCHANGED" = nothing happened) before the next step; never fire several desktop actions at once.
 """
 
 

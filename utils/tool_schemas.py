@@ -51,7 +51,7 @@ def _build_groups(turn_info: str) -> dict[str, list[dict]]:
 
         "dev": [
             {"name": "read_skills", "description": "Read SKILL.md before specialized tasks. MANDATORY before: docx, pdf, pptx, xlsx, canvas-design, frontend-design, discord-gif-creator, doc-coauthoring, internal-comms, algorithmic-art, coding, web-artifacts-builder, mcp-builder.", "parameters": {"type": "object", "properties": {"skills": {"type": "array", "items": {"type": "string", "enum": ["docx", "pdf", "pptx", "xlsx", "canvas-design", "frontend-design", "discord-gif-creator", "doc-coauthoring", "internal-comms", "algorithmic-art", "coding", "web-artifacts-builder", "mcp-builder", "mc-datapack"]}}}, "required": ["skills"]}},
-            {"name": "run_code", "description": "Execute Python/shell in sandbox. ALL output files(send to Discord) MUST go to OUTPUT_DIR env var. temp=false (default) = persistent per-channel workspace (call cleanup_sandbox when done). temp=true = ephemeral, auto-wipes after the message. Pre-installed Python: pandas, numpy, scipy, sympy, matplotlib, pillow, python-docx, pypdf, reportlab, pymupdf, pdfplumber, python-pptx, openpyxl, xlsxwriter, imageio, requests, aiohttp, cryptography, rembg, opencv (cv2), beautifulsoup4, lxml, duckdb, pyarrow, pyyaml, python-dotenv, tabulate, qrcode, faker, playwright (Chromium + headless shell pre-baked at /opt/ms-playwright; PLAYWRIGHT_BROWSERS_PATH is already set, so no need to run `playwright install` — default launch works, add --disable-dev-shm-usage for heavy pages). **To use a browser you MUST use Playwright** — no system chromium/chrome/firefox is installed, so never call those directly; launch the pre-baked Chromium via `p.chromium.launch(...)`. For a VISIBLE browser (headless=False) call the desktop tool first (voice only); DISPLAY/XAUTHORITY are injected automatically. Pre-installed CLI (via run_shell): objdump/nm/readelf/strings (binutils), gdb, upx, file, strace, ltrace, clang/llvm, cmake, p7zip, jq, cfr (Java class/jar decompiler), jadx (Android APK/DEX decompiler), apktool (APK resource/smali), pycdc/pycdas (Python bytecode decompiler, best-effort on 3.9+). Call read_skills first for doc tasks. **For long-running or interactive programs (servers, watchers, anything needing stdin/a terminal) use load_tools group 'daemon' instead of nohup/&.** **Do NOT use to fetch or re-fetch URLs — use web_crawl or web_search instead**. Executed code, logs, and output files are always sent back to the user automatically. VIEW_DIR env var (Python helper: view_file(name, data)) is separate from OUTPUT_DIR: save an image/audio/video file there (e.g. a chart you just generated, an attachment you downloaded, a frame extracted from a video) and it gets attached back to you as real inline content (not just a filename) so you can actually see/hear it before replying. Limits: image ≤8MB, audio/video ≤15MB, max 4 files per call — not for sending files to the user, that's still OUTPUT_DIR.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["run_code", "run_shell"]}, "code": {"type": "string"}, "shell_cmd": {"type": "string"}, "timeout": {"type": "integer", "default": 60}, "temp": {"type": "boolean", "default": False}}, "required": ["action", "temp"]}},
+            {"name": "run_code", "description": "Execute Python/shell in sandbox. ALL output files(send to Discord) MUST go to OUTPUT_DIR env var. temp=false (default) = persistent per-channel workspace (call cleanup_sandbox when done). temp=true = ephemeral, auto-wipes after the message. Pre-installed Python: pandas, numpy, scipy, sympy, matplotlib, pillow, python-docx, pypdf, reportlab, pymupdf, pdfplumber, python-pptx, openpyxl, xlsxwriter, imageio, requests, aiohttp, cryptography, rembg, opencv (cv2), beautifulsoup4, lxml, duckdb, pyarrow, pyyaml, python-dotenv, tabulate, qrcode, faker, playwright (Chromium + headless shell pre-baked at /opt/ms-playwright; PLAYWRIGHT_BROWSERS_PATH is already set, so no need to run `playwright install` — default launch works, add --disable-dev-shm-usage for heavy pages). **To use a browser you MUST use Playwright** — no system chromium/chrome/firefox is installed, so never call those directly; launch the pre-baked Chromium via `p.chromium.launch(...)`. For a VISIBLE browser (headless=False) call the desktop tool first (voice only); DISPLAY/XAUTHORITY are injected automatically. GUI windows started here CLOSE as soon as the call returns, so to open a browser/window the user can see and keep, run it from the desktop terminal (desktop action=launch app=terminal, then type the command) instead. Pre-installed CLI (via run_shell): objdump/nm/readelf/strings (binutils), gdb, upx, file, strace, ltrace, clang/llvm, cmake, p7zip, jq, cfr (Java class/jar decompiler), jadx (Android APK/DEX decompiler), apktool (APK resource/smali), pycdc/pycdas (Python bytecode decompiler, best-effort on 3.9+). Call read_skills first for doc tasks. **For long-running or interactive programs (servers, watchers, anything needing stdin/a terminal) use load_tools group 'daemon' instead of nohup/&.** **Do NOT use to fetch or re-fetch URLs — use web_crawl or web_search instead**. Executed code, logs, and output files are always sent back to the user automatically. VIEW_DIR env var (Python helper: view_file(name, data)) is separate from OUTPUT_DIR: save an image/audio/video file there (e.g. a chart you just generated, an attachment you downloaded, a frame extracted from a video) and it gets attached back to you as real inline content (not just a filename) so you can actually see/hear it before replying. Limits: image ≤8MB, audio/video ≤15MB, max 4 files per call — not for sending files to the user, that's still OUTPUT_DIR.", "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["run_code", "run_shell"]}, "code": {"type": "string"}, "shell_cmd": {"type": "string"}, "timeout": {"type": "integer", "default": 60}, "temp": {"type": "boolean", "default": False}}, "required": ["action", "temp"]}},
             {"name": "view_workspace_file", "description": "See/hear an image/audio/video file that already exists in this channel's PERSISTENT (temp=false) run_code workspace, without writing/re-running any code. Looks in the workspace root, outputs/, and view/ subfolders for an exact filename match. Use this when a file from an earlier run_code(temp=false) call — e.g. a downloaded attachment, a previously generated chart, an extracted video frame — is already sitting in the workspace and you just need to look at/listen to it now. For files you just created THIS call, keep using VIEW_DIR inside run_code instead. Limits: image ≤8MB, audio/video ≤15MB. Only works with temp=false workspaces (persistent, keyed by channel).", "parameters": {"type": "object", "properties": {"filename": {"type": "string", "description": "Exact filename to look up (as it appears in the workspace, e.g. 'chart.png')."}}, "required": ["filename"]}},
             {"name": "cleanup_sandbox", "description": "Wipe persistent sandbox workspace (temp=false). Call after multi-step task is complete and outputs sent. Don't call mid-task.", "parameters": {"type": "object", "properties": {}}},
             {"name": "create_files", "description": "Stage text/code files for editing or sending. Returns file_id per file. Chain: create_files → edit_file (refine) → send_files (deliver). Write complete content — no empty stubs.", "parameters": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "object", "properties": {"filename": {"type": "string"}, "content": {"type": "string"}}, "required": ["filename", "content"]}}}, "required": ["files"]}},
@@ -124,6 +124,44 @@ def _group_meta_tools() -> list[dict]:
     ]
 
 
+_VOICE_KEEP = {"desktop", "daemon", "run_code"}      # already compact
+
+
+def _cut(text: str, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    k = max(cut.rfind(". "), cut.rfind("; "))
+    return (cut[:k + 1] if k > limit // 2 else cut.rstrip() + "...")
+
+
+def _slim_props(node, limit=70):
+    if isinstance(node, dict):
+        if isinstance(node.get("description"), str):
+            node["description"] = _cut(node["description"], limit)
+        for v in node.values():
+            _slim_props(v, limit)
+    elif isinstance(node, list):
+        for v in node:
+            _slim_props(v, limit)
+
+
+def _slim_voice(tools):
+    """The Live session re-reads every tool declaration each turn (tokens per minute!): keep them short in voice."""
+    import copy
+    out = []
+    for d in tools:
+        if d.get("name") in _VOICE_KEEP:
+            out.append(d)
+            continue
+        d = copy.deepcopy(d)
+        d["description"] = _cut(d.get("description", ""), 150)
+        _slim_props(d.get("parameters"))
+        out.append(d)
+    return out
+
+
 def get_gemini_tools(
     message: Union[discord.Message, None] = None,
     model_name: str = DEFAULT_MODEL,
@@ -172,7 +210,7 @@ def get_gemini_tools(
     # Groups that were unconditionally available even in voice sessions before this refactor
     # (they used to live in `shared_tools`). Lazy-loading only applies to text channels, since
     # voice has no per-channel message stream to tick a TTL against.
-    VOICE_ALWAYS_ON_GROUPS = ("chess", "scheduler", "blue_archive", "migration")
+    VOICE_ALWAYS_ON_GROUPS = ("chess", "scheduler", "blue_archive")      # migration/account linking makes no sense by voice
 
     if is_voice:
         always_on = _build_groups(turn_info="")  # no live channel turn_info available in voice
@@ -185,6 +223,7 @@ def get_gemini_tools(
                 tools.append(DESKTOP_TOOL)
         except Exception:
             pass
+        tools = _slim_voice(tools)
     else:
         # load_tools/unload_tools only make sense with a real channel to track TTL against
         tools += _group_meta_tools()

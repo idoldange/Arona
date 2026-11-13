@@ -456,5 +456,5 @@ SANDBOX_USER_ARONA = True
 # Used automatically (for ~30 min) when LIVE_MODEL is rejected, e.g. keys without quota for it.
 LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
 # Live context compression: compress when the session holds this many tokens, down to the target.
-LIVE_COMPRESS_TRIGGER = 24000
-LIVE_COMPRESS_TARGET = 12000
+LIVE_COMPRESS_TRIGGER = 16000
+LIVE_COMPRESS_TARGET = 8000

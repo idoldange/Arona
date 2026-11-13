@@ -183,6 +183,11 @@ class GeminiWebSocket:
                     
                     return
                 except Exception as e:
+                    if resumed and any(k in str(e).lower() for k in ("session not found", "expired", "1008", "policy violation")):
+                        console.log("[Gemini Live] Resume handle expired; starting a fresh session", "INFO")
+                        self._resume_handle = self._resume_key = None
+                        order.append(i)                  # retry this key without the handle
+                        continue
                     console.log(f"Failed to connect to Gemini (Key {i+1}): {e}", "WARN")
                     _em = str(e).lower()
                     if self._active_model() == config.LIVE_MODEL and getattr(config, "LIVE_MODEL_FALLBACK", "") \

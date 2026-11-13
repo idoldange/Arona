@@ -202,7 +202,7 @@ ENV PIP_USER=1
 # Kept as a late layer so the heavy earlier layers stay cached.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xvfb xauth x11-utils x11-xserver-utils xdotool wmctrl xclip dbus-x11 \
-    openbox tint2 xfce4-terminal thunar adwaita-icon-theme libgl1-mesa-dri libnss-wrapper \
+    openbox tint2 xfce4-terminal thunar adwaita-icon-theme libgl1-mesa-dri libnss-wrapper x11-apps xterm xfonts-base \
     && rm -rf /var/lib/apt/lists/* \
     && cp /etc/passwd /etc/nss_passwd \
     && awk 'BEGIN{for(u=2000;u<10000;u++) printf "arona:x:%d:0:arona:/home/sandboxuser:/bin/bash\n", u}' >> /etc/nss_passwd

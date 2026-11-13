@@ -120,7 +120,8 @@ VOICE_SANDBOX_TOOLS = [
         "Run Python (action=run_code) or a shell command (action=run_shell) in the sandbox for quick jobs that finish within "
         "~a minute. Uses the channel's persistent workspace unless temp=true. Long-running or interactive programs: use the "
         "daemon tool instead. To use a browser, use Playwright (Chromium is pre-baked, no system browser exists); with the "
-        "desktop open, headless=False renders on the desktop."),
+        "desktop open, headless=False renders there, but only while this call runs. To open a window the user can keep and watch, "
+        "use the desktop tool: launch app=terminal (or app=cmd) and run the command from there."),
      "parameters": {"type": "object", "properties": {
          "action": {"type": "string", "enum": ["run_code", "run_shell"]}, "code": {"type": "string"},
          "shell_cmd": {"type": "string"}, "timeout": {"type": "integer"}, "temp": {"type": "boolean"}}, "required": ["action"]}},
