@@ -22,7 +22,7 @@ FALLBACK_MODEL      = "gemini-3.5-flash-lite"# 503
 RATE_LIMIT_MODEL    = "gemini-3.5-flash-lite"# 429
 RATE_LIMIT_MODEL_   = "gemini-3.6-flash"     # 429 on RATE_LIMIT_MODEL
 LITE_MODEL          = "gemini-3.5-flash-lite"
-LIVE_MODEL          = "gemini-3.8-live"
+LIVE_MODEL          = "gemini-3.1-flash-live-preview"
 DEFAULT_TEMPERATURE = 1.0
 MAX_RETRIES         = 1                      # rounds
 # Hard cap on the number of HTTP requests a single ask_gemini() call may send to the
@@ -336,7 +336,7 @@ INFERENCE_DEVICE = "cpu"                                           # Device for 
 # Generation config
 RVC_ENABLED        = True
 RVC_MODEL_PATH     = "rvc/models/pretraineds/custom/arona.pth"          
-RVC_F0_UP_KEY      = 4         # int
+RVC_F0_UP_KEY      = 5         # int
 RVC_POST_PROCESS   = False
 RVC_PITCH_SHIFT    = 0         # post-processing pitch shift in semitones, applied after F0 modification
 RVC_F0_METHOD      = "rmvpe"   # fcpe | rmvpe | crepe
@@ -458,9 +458,10 @@ LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
 # Live context compression: compress when the session holds this many tokens, down to the target.
 LIVE_COMPRESS_TRIGGER = 16000
 LIVE_COMPRESS_TARGET = 8000
-# gemini-3.8-live gets hard-killed by the server after ~8 min (1008, no goAway) and refuses
-# resumption afterwards. Reconnect with the resumption handle before that, but only once the
-# call is idle (nobody speaking, no tool running, model has answered).
-LIVE_PROACTIVE_RECONNECT = 300
+# Chu dong reconnect truoc moc ~8 phut ma server hard-kill mot so model live (vd gemini-3.8-live:
+# bi ngat 1008 "Requested entity was not found" va khong bao gio gui goAway). gemini-3.1-flash-live
+# khong bi loi nay -> set <= 0 de TAT chu dong reconnect.
+LIVE_PROACTIVE_RECONNECT = 0         # giay giua cac lan chu dong resume reconnect; <= 0 = tat
 LIVE_PROACTIVE_IDLE_QUIET = 1.5      # seconds of silence on both sides to count as idle
 LIVE_PROACTIVE_AWAIT_CAP = 30.0      # stop waiting for a model reply after this many seconds
+LIVE_PROACTIVE_MAX_WAIT = 60.0       # cho call ranh toi da nay (giay), het han van reconnect de kip truoc moc ~8 phut

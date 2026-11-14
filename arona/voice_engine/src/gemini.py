@@ -431,12 +431,22 @@ class GeminiWebSocket:
             except Exception:
                 pass
         await self.connect()
+        if self.ws and self.ws.protocol.state.name == "OPEN":
+            console.log(
+                "[Gemini Live] goAway reconnect done "
+                + ("(session resumed)" if self._last_connect_resumed else "(fresh session)"),
+                "INFO",
+            )
 
     def _schedule_proactive_reconnect(self) -> None:
-        """Schedule a resume before gemini-3.8-live's ~8 min hard kill (it never sends goAway)."""
+        """Schedule a resume before the ~8 min hard kill (models like gemini-3.8-live never send goAway).
+        LIVE_PROACTIVE_RECONNECT <= 0 disables it (models that do not hard-kill, e.g. 3.1 flash live)."""
         task = self._proactive_task
         if task and not task.done() and task is not asyncio.current_task():
             task.cancel()
+        self._proactive_task = None
+        if float(getattr(config, "LIVE_PROACTIVE_RECONNECT", 300)) <= 0:
+            return
         self._proactive_task = asyncio.create_task(self._proactive_loop())
 
     def _proactive_busy(self) -> bool:
@@ -462,6 +472,8 @@ class GeminiWebSocket:
 
     async def _proactive_loop(self) -> None:
         delay = float(getattr(config, "LIVE_PROACTIVE_RECONNECT", 300))
+        if delay <= 0:      # disabled (models without the ~8 min hard kill)
+            return
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
@@ -472,8 +484,16 @@ class GeminiWebSocket:
             console.log("[Gemini Live] Proactive reconnect skipped: no resumption handle", "WARN")
             return
         _wait_logged = False
+        # Do tre toi da cho call ranh: call ban keo dai (mic/musik lien tuc) khong duoc de starve
+        # muc dich chinh — reconnect truoc moc ~8 phut, neu khong server tu ngat (1008) va mat session.
+        deadline = time.monotonic() + float(getattr(config, "LIVE_PROACTIVE_MAX_WAIT", 60.0))
         while not self._closing and self.ws and self.ws.protocol.state.name == "OPEN":
             if not self._proactive_busy():
+                break
+            if time.monotonic() >= deadline:
+                console.log(
+                    f"[Gemini Live] Call busy for {getattr(config, 'LIVE_PROACTIVE_MAX_WAIT', 60.0):.0f}s; "
+                    "forcing proactive reconnect before the hard kill", "WARN")
                 break
             if not _wait_logged:
                 console.log("[Gemini Live] Proactive reconnect due but call is busy; waiting for idle", "INFO")

@@ -337,3 +337,5 @@ tests/
 
 .mcp.json
 main_.py
+tests.py
+/_*.py

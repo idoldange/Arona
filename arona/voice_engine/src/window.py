@@ -251,6 +251,82 @@ def _font_raw(size: int, bold: bool = False, role: str = "base", style: str = ""
     return font
 
 
+# ── glyph coverage fallback ─────────────────────────────────────────────
+# Discord display names hay dùng ký tự trang trí (braille "⡇", kaomoji "༼༽", hangul filler "ㅤ",
+# sao/trăng "⋆✧☾"...) mà Segoe UI không có glyph -> vẽ ra ô vuông / ký tự sai. Chain fallback dưới
+# đây dùng cmap thật của từng font (fontTools) để chọn font ĐÚNG cho từng ký tự trong 1 run.
+_FB_TIER_NAMES = [
+    ("seguisym.ttf", "seguisym.ttf"),                 # Segoe UI Symbol: braille, mũi tên, hình học...
+    ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf"),        # phủ rộng (braille, runic...) trên Linux
+    ("NotoSansSymbols-Regular.ttf", "NotoSansSymbols-Regular.ttf"),
+    ("NotoSansSymbols2-Regular.ttf", "NotoSansSymbols2-Regular.ttf"),
+    ("himalaya.ttf", "himalaya.ttf"),                 # Tibetan: ༄ ༂ ༒ ༿ ། (kaomoji/decorative) —
+                                                      # ĐỨNG TRƯỚC Arial Unicode MS vì arialuni
+                                                      # cmap có mà glyph sai/thiếu (࿐ -> ô vuông)
+    ("arial-unicode-ms.ttf", "arial-unicode-ms.ttf"),
+    ("msyh.ttc", "msyhbd.ttc"),                       # CJK mở rộng
+    ("NotoSansJP-Regular.otf", "NotoSansJP-Bold.otf"),
+    ("Nirmala.ttf", "NirmalaB.ttf"),
+    ("SymbolsNerdFont-Regular.ttf", "SymbolsNerdFont-Regular.ttf"),
+]
+_FB_FONTS: Dict[tuple, List] = {}          # (size, bold) -> [(font, covered_set), ...]
+_FB_COVER: Dict[str, set] = {}             # font file -> set of codepoints it has
+
+
+def _covered(path: str) -> set:
+    cov = _FB_COVER.get(path)
+    if cov is None:
+        cov = set()
+        try:
+            from fontTools.ttLib import TTCollection, TTFont
+            if path.lower().endswith(".ttc"):
+                fonts = TTCollection(path, lazy=True).fonts
+            else:
+                fonts = [TTFont(path, lazy=True)]
+            for f in fonts:
+                cov.update(int(cp) for cp in f.getBestCmap().keys())
+        except Exception:
+            cov = set()
+        _FB_COVER[path] = cov
+    return cov
+
+
+def _font_path(font) -> Optional[str]:
+    """The file Pillow actually loaded (a missing path falls back to a system font, so the
+    requested path is not always the truth — font.path is)."""
+    p = getattr(font, "path", None)
+    return p if p and os.path.isfile(p) else None
+
+
+def _fallback_chain(size: int, bold: bool) -> List:
+    key = (size, bool(bold))
+    chain = _FB_FONTS.get(key)
+    if chain is None:
+        chain = []
+        for reg, bd in _FB_TIER_NAMES:
+            path = next((os.path.join(d, bd if bold else reg) for d in _FONT_DIRS
+                         if os.path.isfile(os.path.join(d, bd if bold else reg))), None)
+            if not path:
+                continue
+            try:
+                font = ImageFont.truetype(path, size)
+            except Exception:
+                continue
+            real = _font_path(font)
+            covered = _covered(real) if real else set()
+            if not covered:
+                continue
+            chain.append((font, covered))
+        _FB_FONTS[key] = chain
+    return chain
+
+
+def _primary_covered(font) -> set:
+    """Coverage of the font `font` was really loaded from."""
+    p = _font_path(font)
+    return _covered(p) if p else set()
+
+
 class _SFont:
     """A font created at device size (size * S) that reports logical (720p) lengths, so layout code is unchanged."""
     __slots__ = ("real", "s")
@@ -305,6 +381,15 @@ class _FontStack:
         self.size, self.bold = size, bold
         self.base = _font_raw(size, bold, "base", style)
         self._ek = size * _EMOJI_EM / 136.0      # 136 = NotoColorEmoji advance at 109px
+        self._fb: List = []                      # [(font, covered), ...] built lazily
+        self._fb_done = False
+
+    def _fb_chain(self) -> List:
+        if not self._fb_done:
+            self._fb_done = True
+            # fontTools thiếu / không tìm được font nào thì chain rỗng -> giữ hành vi cũ
+            self._fb = _fallback_chain(self.size, self.bold)
+        return self._fb
 
     def _run_font(self, role: str):
         if role == "emoji":
@@ -314,14 +399,48 @@ class _FontStack:
             return self.base
         return self.base if role == "base" else _font_raw(self.size, self.bold, role)
 
-    def _run_len(self, role: str, s: str) -> float:
+    def _all_covered(self, text: str) -> bool:
+        cov = _primary_covered(self.base)
+        if not cov:
+            return True       # coverage unknown (fontTools missing): keep the old behaviour
+        return all(ord(ch) in cov for ch in text)
+
+    def _chunks(self, role: str, s: str) -> List:
+        """Split a run into (font, text) pieces: glyphs the run font lacks go to the first
+        fallback font that actually has them (real cmap check), so decorative names
+        (braille / kaomoji / star-moon decorations...) no longer render as tofu."""
         f = self._run_font(role)
         if role == "emoji" and f is not self.base:
-            return f.getlength(s) * self._ek
-        return f.getlength(s)
+            return [(f, s)]
+        cov = _primary_covered(f)
+        if not cov:
+            return [(f, s)]
+        chain = self._fb_chain()
+        if not chain:
+            return [(f, s)]
+        out, cur_f, buf = [], f, ""
+        for ch in s:
+            cp = ord(ch)
+            g = f if cp in cov else next((ff for ff, c in chain if cp in c), f)
+            if g is cur_f:
+                buf += ch
+            else:
+                if buf:
+                    out.append((cur_f, buf))
+                cur_f, buf = g, ch
+        if buf:
+            out.append((cur_f, buf))
+        return out
+
+    def _run_len(self, role: str, s: str) -> float:
+        if role == "emoji":
+            f = self._run_font(role)
+            if f is not self.base:
+                return f.getlength(s) * self._ek
+        return sum(ff.getlength(t) for ff, t in self._chunks(role, s))
 
     def getlength(self, text: str) -> float:
-        if not _SPECIAL.search(text):
+        if not _SPECIAL.search(text) and self._all_covered(text):
             return self.base.getlength(text)
         return sum(self._run_len(r, s) for r, s in _runs(text))
 
@@ -331,7 +450,7 @@ class _FontStack:
     def draw(self, d, xy, text: str, fill) -> None:
         x, y = xy
         plain = ImageDraw.ImageDraw.text
-        if not _SPECIAL.search(text):
+        if not _SPECIAL.search(text) and self._all_covered(text):
             plain(d, (x, y), text, font=self.base, fill=fill)
             return
         base_y = y + self.base.getmetrics()[0]       # shared baseline for every run
@@ -340,8 +459,9 @@ class _FontStack:
             if role == "emoji" and f is not self.base:
                 x += self._draw_emoji(d, f, x, base_y, s)
                 continue
-            plain(d, (x, base_y), s, font=f, fill=fill, anchor="ls")
-            x += f.getlength(s)
+            for ff, part in self._chunks(role, s):
+                plain(d, (x, base_y), part, font=ff, fill=fill, anchor="ls")
+                x += ff.getlength(part)
 
     def _draw_emoji(self, d, ef, x: float, base_y: float, s: str) -> float:
         k = self._ek
@@ -397,9 +517,19 @@ class _Draw(ImageDraw.ImageDraw):
 
 
 def _tfont(text: str, size: int, bold: bool = False, style: str = ""):
-    if _SPECIAL.search(text or ""):
-        return _SFont(_FontStack(max(1, int(round(size * S))), bold, style), S)
+    ds = max(1, int(round(size * S)))
+    plain = _font_raw(ds, bold, "base", style)
+    if _SPECIAL.search(text or "") or not _has_glyphs(plain, text or ""):
+        return _SFont(_FontStack(ds, bold, style), S)
     return _font(size, bold, "base", style)
+
+
+def _has_glyphs(font, text: str) -> bool:
+    """True if every character of `text` exists in `font`'s cmap (fontTools missing -> True)."""
+    cov = _primary_covered(font)
+    if not cov:
+        return True
+    return all(ord(ch) in cov for ch in text)
 
 
 def _wrap(font, text: str, maxw: int) -> List[str]:
