@@ -526,7 +526,7 @@ wait $XP
                 raise ValueError("app must be browser, terminal, files or cmd")
             cnt = "wmctrl -l 2>/dev/null | grep -vc tint2"
             return (f"N=$({cnt}); cd {dw} && (setsid sh -c {shlex.quote(cmd)} >/dev/null 2>&1 &); "
-                    f'for i in $(seq 1 60); do [ "$({cnt})" -gt "$N" ] && break; sleep 0.1; done; '
+                    f'for i in $(seq 1 150); do [ "$({cnt})" -gt "$N" ] && break; sleep 0.1; done; '
                     + (f'[ "$({cnt})" -gt "$N" ] || echo "Could not open browser."; ' if app == "browser" else "")
                     + "sleep 0.4")   # wait for its window
         raise ValueError(f"unknown action {act!r}")

@@ -207,6 +207,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && cp /etc/passwd /etc/nss_passwd \
     && awk 'BEGIN{for(u=2000;u<10000;u++) printf "arona:x:%d:0:arona:/home/sandboxuser:/bin/bash\n", u}' >> /etc/nss_passwd
 
+# Chromium breaks under LD_PRELOAD=libnss_wrapper (used to name the sandbox uid "arona"): wrap it so the browser runs without it.
+RUN for f in /opt/ms-playwright/chromium-*/chrome-linux*/chrome /opt/ms-playwright/chromium_headless_shell-*/chrome-linux*/headless_shell; do \
+      [ -f "$f" ] && [ ! -f "$f.real" ] && mv "$f" "$f.real" && printf '#!/bin/sh
+unset LD_PRELOAD
+exec "$0.real" "$@"
+' > "$f" && chmod +x "$f"; \
+    done
+
 ENV HTTP_PROXY=http://127.0.0.1:8888 \
     HTTPS_PROXY=http://127.0.0.1:8888 \
     NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16 \
