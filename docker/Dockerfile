@@ -209,10 +209,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Chromium breaks under LD_PRELOAD=libnss_wrapper (used to name the sandbox uid "arona"): wrap it so the browser runs without it.
 RUN for f in /opt/ms-playwright/chromium-*/chrome-linux*/chrome /opt/ms-playwright/chromium_headless_shell-*/chrome-linux*/headless_shell; do \
-      [ -f "$f" ] && [ ! -f "$f.real" ] && mv "$f" "$f.real" && printf '#!/bin/sh
-unset LD_PRELOAD
-exec "$0.real" "$@"
-' > "$f" && chmod +x "$f"; \
+      [ -f "$f" ] && [ ! -f "$f.real" ] && mv "$f" "$f.real" && printf '#!/bin/sh\nunset LD_PRELOAD\nexec "$0.real" "$@"\n' > "$f" && chmod +x "$f"; \
     done
 
 ENV HTTP_PROXY=http://127.0.0.1:8888 \
