@@ -101,7 +101,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     duckdb pyarrow \
     pyyaml python-dotenv tabulate \
     "qrcode[pil]" faker \
-    gdown \
+    gdown yt-dlp \
     playwright
 
 # 7b. Node.js & npm (LTS via NodeSource)
