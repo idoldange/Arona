@@ -9,6 +9,8 @@ Exit code: 0 = xong (hoac khong co gi de gui / chua cau hinh URL), 1 = gui loi.
 """
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -45,6 +47,18 @@ def read_env_var(name):
         except OSError:
             continue
     return None
+
+
+def commit_link():
+    """Link commit HEAD tren GitHub. None neu khong xac dinh duoc."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    try:
+        sha = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
+        raw = subprocess.run(["git", "-C", root, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:
+        return None
+    m = re.match(r"https?://(?:www\.)?github\.com/([^/]+/[^/.]+)", raw) or re.match(r"git@github\.com:([^/]+/[^/.]+?)(?:\.git)?$", raw)
+    return f"https://github.com/{m.group(1)}/commit/{sha}" if m and sha else None
 
 
 def valid_webhook_url(url):
@@ -140,6 +154,9 @@ def main(argv=None):
     if not valid_webhook_url(url):
         print(f"[discord] {ENV_NAME} is not a Discord webhook URL; skipping announcement", file=sys.stderr)
         return 1
+    link = commit_link()
+    if link:
+        text += "\n\n" + link
     ok, total = send(url, text)
     print(f"[discord] sent {ok}/{total} message(s)")
     return 0 if ok == total else 1

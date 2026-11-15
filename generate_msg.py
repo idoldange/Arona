@@ -52,7 +52,7 @@ _JARGON_EN = (r"commit|api|prompt|token|config|database|script|refactor|async|qu
               r"python|module|class|file")
 _JARGON_VI = r"hàm|mã nguồn|lập trình|thuật toán|tham số|thư viện"
 _JARGON_ANY = r"commit|api|git|github|json|sql|sqlite|python|regex"   # ngon ngu khac: chi bat tu chac chan la ky thuat
-_PATHLIKE = r"[._/\\]\w+\.(?:py|js|md|json)|_\w+"                     # ten file, snake_case
+_PATHLIKE = r"[._/\\]\w+\.(?:py|js|md|json)|[^\W_]+_[^\W_]+"                     # ten file, snake_case
 _JARGON_RE = {
     "vi": re.compile(rf"(?<!\w)(?:{_JARGON_EN}|{_JARGON_VI})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
     "en": re.compile(rf"(?<!\w)(?:{_JARGON_EN})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
@@ -352,127 +352,137 @@ def _post(key, payload):
         return json.loads(response.read().decode("utf-8"))
 
 
-def plain_line_problems(msg, lang_key="vi"):
-    """Tu ky thuat con sot lai trong dong dau (dong danh cho nguoi khong biet code)."""
-    first = (msg.strip().split("\n") or [""])[0]
-    rx = _JARGON_RE.get(lang_key, _JARGON_RE["other"])
-    return sorted({m.group(0).strip() for m in rx.finditer(first)})
-
-
 def _text_of(content):
     return "".join(p.get("text", "") for p in content.get("parts", []) if p.get("text") and not p.get("thought")).strip()
 
 
-_FORBIDDEN = ("Forbidden in this line: file or function names and tech words such as commit, code, function, tool, "
-              "API, prompt, token, config, database, script, refactor, async, quota")
+OPEN_TAG, CLOSE_TAG = "<message>", "</message>"
+MSG_FILE = ".discord_msg.txt"
+TAG_RETRIES = 3
 
-_BODY_EXAMPLE = (
-    "\n"
-    "fix: stop scheduler retrying a failed task forever\n"
-    "\n"
-    "- count a failed run in scheduler.py:scheduler_heartbeat() except-branch and delete the task after max retries\n"
-    "- log the final failure with the task id"
-)
+_FORBIDDEN = ("Forbidden: file or function names and tech words such as commit, code, function, tool, API, prompt, "
+              "token, config, database, script, refactor, async, quota")
+_STYLE = {
+    "vi": "casual Gen Z Vietnamese, like texting a friend (short forms t/m/ko/đc/r/j/vs/nha/luôn are fine; no forced slang, no emoji)",
+    "en": "casual, friendly English, like texting a friend (light slang ok, no forced memes or emoji)",
+}
+_EX = {
+    "vi": "Sửa vụ hẹn giờ nhắc việc bị lặp hoài ko dừng\nGiờ lỗi vài lần là bot tự bỏ luôn nha, ko spam nữa",
+    "en": "Fixed the reminder thing that kept retrying forever\nIt now gives up after a few fails, no more spam",
+}
 
 
-def line1_spec(key, name):
-    """Huong dan cho dong dau (dong cho nguoi khong biet code), theo ngon ngu."""
-    if key == "vi":
-        return (
-            "Line 1: ONE line of casual Gen Z Vietnamese (max about 100 characters), written like texting a friend in "
-            "a group chat, for readers who do NOT code. Spoken tone, natural slang and short forms are welcome (t, m, "
-            "ko, đc, r, j, vs, nha, luôn, xịn, mượt, hơi...). Say what they would notice: what the bot can do now, "
-            "what got fixed, or what feels better. Stay accurate and easy to understand: no forced slang, no emoji, "
-            "no cringe, and never claim a user-visible effect the diff does not support. " + _FORBIDDEN + ". "
-            "If the change is only behind the scenes (cleanup, dev tooling, docs, tests, backups), say that casually "
-            "and honestly, e.g. \"Dọn dẹp bên trong thôi, bot xài vẫn y chang nha\" or \"Chỉnh lại phần ghi chú cập "
-            "nhật cho dễ đọc, ko ảnh hưởng gì tới ai đâu\". Do not start this line with feat:/fix:.\n"
-        )
-    if key == "en":
-        return (
-            "Line 1: ONE line of casual, friendly English (max about 100 characters), like texting a friend, for "
-            "readers who do NOT code. Everyday words, short and spoken, light slang is fine (gonna, kinda, tbh) but "
-            "do not force memes or emoji. Say what they would notice: what the bot can do now, what got fixed, or "
-            "what feels better. Stay accurate and never claim a user-visible effect the diff does not support. "
-            + _FORBIDDEN + ". If the change is only behind the scenes (cleanup, dev tooling, docs, tests, backups), "
-            "say that simply and honestly, e.g. \"Just some cleanup behind the scenes, the bot works the same\" or "
-            "\"Tidied up how update notes get written, nothing changes for anyone\". "
-            "Do not start this line with feat:/fix:.\n"
-        )
-    return (
-        f"Line 1: ONE line written in {name} (max about 100 characters), in the casual, friendly spoken style that "
-        f"younger native speakers of {name} use when texting a friend, for readers who do NOT code. Natural everyday "
-        "words; slang or short forms only where they are natural in that language; no emoji, no forced memes. Say "
-        "what they would notice: what the bot can do now, what got fixed, or what feels better. Stay accurate and "
-        "never claim a user-visible effect the diff does not support. " + _FORBIDDEN + " (in English or in "
-        f"{name} transliteration). If the change is only behind the scenes (cleanup, dev tooling, docs, tests, "
-        f"backups), say that simply and honestly in {name}. Do not start this line with feat:/fix:. "
-        f"(Only line 1 is in {name}; the title and bullets below stay in English.)\n"
-    )
+def style_for(key, name):
+    return _STYLE.get(key) or f"casual, friendly spoken {name}, as younger native speakers text a friend (slang only where natural; no emoji)"
 
 
 def example_for(key, name):
-    if key == "vi":
-        first = "Sửa vụ hẹn giờ nhắc việc bị lặp hoài ko dừng, giờ lỗi vài lần là tự bỏ luôn nha"
-    elif key == "en":
-        first = "Fixed the reminder thing that kept retrying forever, it now gives up after a few fails"
-    else:
-        first = f"<line 1 in {name}: one casual plain sentence about what the bot's users will notice>"
-    return first + "\n" + _BODY_EXAMPLE
+    ann = _EX.get(key) or f"<casual plain announcement in {name}>"
+    return ("fix: stop scheduler retrying a failed task forever\n\n"
+            "- count a failed run in scheduler.py:scheduler_heartbeat() except-branch, delete the task after max retries\n"
+            "- log the final failure with the task id\n\n" + OPEN_TAG + "\n" + ann + "\n" + CLOSE_TAG)
 
 
-def retry_message(key, name, bad):
-    head = ("Line 1 is not plain enough: it contains " + ", ".join(f'"{b}"' for b in bad) + ". Rewrite the WHOLE "
-            "message with the same layout and keep everything from line 3 on unchanged, but ")
-    tail = (" that someone who has never coded understands at once: say what the bot's users or its maintainer will "
-            "notice, with none of those words and no names of files, functions or tools. Output only the message.")
-    if key == "vi":
-        return head + ("write line 1 as casual Gen Z Vietnamese (like texting a friend, short forms like t/ko/đc/r/j "
-                       "are fine)" + tail + " For a change that only happens behind the scenes, say so simply, e.g. "
-                       "\"Chỉnh lại phần ghi chú cập nhật cho dễ đọc, bot xài vẫn y chang nha\".")
-    if key == "en":
-        return head + ("write line 1 as casual, friendly English (like texting a friend)" + tail
-                       + " For a change that only happens behind the scenes, say so simply, e.g. \"Just some cleanup "
-                         "behind the scenes, the bot works the same\".")
-    return head + (f"write line 1 in {name}, in a casual, friendly spoken style" + tail
-                   + f" For a change that only happens behind the scenes, say so simply in {name}.")
+def message_spec(key, name):
+    return (f"At the very end, after a blank line, add the Discord announcement wrapped EXACTLY as {OPEN_TAG} ... "
+            f"{CLOSE_TAG} with nothing after the closing tag. ONLY this text is posted to Discord (the title and bullets "
+            f"are not), so write it in {style_for(key, name)} for readers who do NOT code: what they will notice (new "
+            "ability, fix, nicer behaviour). Short is best (1-4 short lines; Discord markdown like **bold** and '- ' "
+            "bullets is ok), hard limit 2000 characters. Stay accurate, never claim an effect the diff does not "
+            f"support. {_FORBIDDEN}. Never use @mentions. If the change is only behind the scenes, say so simply and "
+            "honestly.\n")
+
+
+def split_announcement(text):
+    """-> (commit_msg, announcement, problem). Khoi <message> phai o CUOI; nhac toi the trong bullet ky thuat thi bo qua."""
+    t = text.strip()
+    if OPEN_TAG not in t and CLOSE_TAG not in t:
+        return t, None, f"there is no {OPEN_TAG}...{CLOSE_TAG} block"
+    o = t.rfind(OPEN_TAG)
+    if not t.endswith(CLOSE_TAG):
+        return t, None, (f"{OPEN_TAG} is opened but never closed" if o > t.rfind(CLOSE_TAG)
+                         else f"the response must END with {CLOSE_TAG}")
+    if o == -1:
+        return t, None, f"{CLOSE_TAG} has no opening {OPEN_TAG}"
+    ann = t[o + len(OPEN_TAG):-len(CLOSE_TAG)].strip()
+    if OPEN_TAG in ann or CLOSE_TAG in ann:
+        return t, None, "the block contains nested or duplicate tags"
+    if not ann:
+        return t, None, "the block is empty"
+    commit = t[:o].rstrip()
+    if not commit:
+        return t, None, "the technical commit message before the block is missing"
+    return commit, ann, None
+
+
+def strip_tags(t):
+    """Khi tag hong sau khi het luot sua: bo phan tag khoi commit message."""
+    o = t.rfind(OPEN_TAG)
+    t = t[:o] if o != -1 else t
+    return t.replace(CLOSE_TAG, "").strip()
+
+
+def plain_problems(text, lang_key="vi"):
+    rx = _JARGON_RE.get(lang_key, _JARGON_RE["other"])
+    return sorted({m.group(0).strip() for m in rx.finditer(text)})
+
+
+def tag_feedback(problem, key, name):
+    return (f"Invalid answer: {problem}. Rewrite the WHOLE answer: the technical commit message first (English title, "
+            f"blank line, bullets), then at the very end ONE {OPEN_TAG}...{CLOSE_TAG} block with the casual announcement "
+            f"in {name} for non-coders, nothing after {CLOSE_TAG}. Output only that.")
+
+
+def jargon_feedback(bad, key, name):
+    return ("The announcement is not plain enough: it contains " + ", ".join(f'"{b}"' for b in bad) + ". Rewrite the "
+            f"WHOLE answer, keep the commit message unchanged, but write the {OPEN_TAG} block in {style_for(key, name)} "
+            "so someone who has never coded understands it at once, with none of those words and no names of files, "
+            "functions or tools. Output only the answer.")
 
 
 def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
+    """-> (commit_message, announcement|None)."""
     contents = [{"role": "user", "parts": [{"text": prompt}]}]
-    for turn in range(MAX_TOOL_TURNS + 1):
+    tool_turns = tag_n = plain_n = 0
+    force_text = False
+    while True:
         payload = {"contents": contents, "tools": TOOLS}
-        if turn >= MAX_TOOL_TURNS:   # het luot tool: ep model tra loi bang text
+        if force_text or tool_turns >= MAX_TOOL_TURNS:   # het luot tool / dang sua loi: ep tra loi bang text
             payload["toolConfig"] = {"functionCallingConfig": {"mode": "NONE"}}
-        res = _post(key, payload)
-        content = res["candidates"][0]["content"]
+        content = _post(key, payload)["candidates"][0]["content"]
         calls = [p["functionCall"] for p in content.get("parts", []) if p.get("functionCall")]
-        if not calls:
-            text = _text_of(content)
-            for _ in range(PLAIN_RETRIES):
-                bad = plain_line_problems(text, lang_key)
-                if not bad:
-                    break
-                print(f"[plain-line] jargon in line 1: {bad}; asking for a rewrite", file=sys.stderr)
-                contents.append(content)
-                contents.append({"role": "user", "parts": [{"text": retry_message(lang_key, lang_name, bad)}]})
-                res = _post(key, {"contents": contents, "tools": TOOLS,
-                                  "toolConfig": {"functionCallingConfig": {"mode": "NONE"}}})
-                content = res["candidates"][0]["content"]
-                text = _text_of(content) or text
-            return text
-        # giu nguyen content cua model (gom ca thoughtSignature) roi tra ket qua tool
+        if calls:
+            tool_turns += 1
+            contents.append(content)   # giu nguyen (gom ca thoughtSignature)
+            responses = []
+            for fc in calls:
+                args = fc.get("args") or {}
+                result = run_tool(root, fc.get("name"), args)
+                print(f"[tool] {fc.get('name')}({args}) -> {'error: ' + result['error'] if 'error' in result else result.get('info', 'ok')}",
+                      file=sys.stderr)
+                responses.append({"functionResponse": {"name": fc.get("name"), "response": result}})
+            contents.append({"role": "user", "parts": responses})
+            continue
+        text = _text_of(content).replace("```git", "").replace("```", "").strip()
+        commit, ann, problem = split_announcement(text)
+        feedback = None
+        if problem:
+            print(f"[announce] {problem}", file=sys.stderr)
+            if tag_n < TAG_RETRIES:
+                tag_n += 1
+                feedback = tag_feedback(problem, lang_key, lang_name)
+        else:
+            bad = plain_problems(ann, lang_key)
+            if bad:
+                print(f"[announce] jargon: {bad}", file=sys.stderr)
+                if plain_n < PLAIN_RETRIES:
+                    plain_n += 1
+                    feedback = jargon_feedback(bad, lang_key, lang_name)
+        if feedback is None:
+            return (strip_tags(text), None) if problem else (commit, ann)
         contents.append(content)
-        responses = []
-        for fc in calls:
-            args = fc.get("args") or {}
-            result = run_tool(root, fc.get("name"), args)
-            shown = {k: v for k, v in args.items()}
-            print(f"[tool] {fc.get('name')}({shown}) -> {'error: ' + result['error'] if 'error' in result else result.get('info', 'ok')}",
-                  file=sys.stderr)
-            responses.append({"functionResponse": {"name": fc.get("name"), "response": result}})
-        contents.append({"role": "user", "parts": responses})
-    return ""
+        contents.append({"role": "user", "parts": [{"text": feedback}]})
+        force_text = True
 
 
 def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese"):
@@ -495,19 +505,16 @@ def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnames
         "busy, and do not repeat a call with the same arguments.\n",
 
         "OUTPUT FORMAT (exactly this layout, no code fences, no extra text):\n"
-        + line1_spec(lang_key, lang_name) +
+        "Line 1: technical title in English, conventional format (feat:, fix:, refactor:, ...), max 50 characters.\n"
         "Line 2: blank line.\n"
-        "Line 3: technical title in English, conventional format (feat:, fix:, refactor:, ...), max 50 characters.\n"
-        "Line 4: blank line.\n"
         "Then short bullet points in English, each naming the relevant file and function/loop "
         "(e.g. `- fix buffering in arch.py:read_output() loop`).\n"
+        + message_spec(lang_key, lang_name) +
         "Example of the layout (the content is made up):\n" + example_for(lang_key, lang_name) + "\n",
     ]
     if log:
-        parts.append(
-            "Recent commits (newest first). Match their style and do not repeat what they already describe unless "
-            "this diff changes it again:\n" + log + "\n"
-        )
+        parts.append("Recent commits (newest first). Match their style and do not repeat what they already describe "
+                     "unless this diff changes it again:\n" + log + "\n")
     if stat:
         parts.append("Files changed in this commit:\n" + stat + "\n")
     if truncated:
@@ -518,53 +525,49 @@ def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnames
 
 
 def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="Generate a git commit message with Gemini (writes .commit_msg.txt).")
+    ap = argparse.ArgumentParser(description="Generate a git commit message + Discord announcement with Gemini.")
     ap.add_argument("--lang", default=DEFAULT_LANG,
-                    help="language of line 1, the plain-language summary for non-coders: 'vi' (casual Gen Z Vietnamese, "
-                         "default), 'en', or any other language code/name (ja, fr, pt-BR, Thai...). "
-                         "The technical title and bullets are always English.")
+                    help="language of the <message> announcement: 'vi' (casual Gen Z, default), 'en', or any other "
+                         "language code/name (ja, fr, pt-BR, Thai...). The commit message itself is always English.")
     return ap.parse_args(argv)
+
+
+def _write(path, text):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def main():
     args = parse_args()
     lang_key, lang_name = normalize_lang(args.lang)
-    print(f"[lang] line 1 in {lang_name}", file=sys.stderr)
+    print(f"[lang] announcement in {lang_name}", file=sys.stderr)
+    if os.path.exists(MSG_FILE):
+        os.remove(MSG_FILE)   # khong de thong bao cu bi gui lai
 
     diff, truncated = get_git_diff()
-
     if not diff:
-        with open(OUT_FILE, "w", encoding="utf-8") as f:
-            f.write("Auto-sync: minor changes")
-        return
-
+        return _write(OUT_FILE, "Auto-sync: minor changes")
     keys = get_api_keys()
     if not keys:
-        with open(OUT_FILE, "w", encoding="utf-8") as f:
-            f.write("Auto-sync: update codebase")
-        return
+        return _write(OUT_FILE, "Auto-sync: update codebase")
 
     root = get_repo_root()
     prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name)
-
-    success = False
     for key in keys:
         try:
-            msg = generate_with_key(key, prompt, root, lang_key, lang_name)
-            msg = msg.replace("```git", "").replace("```", "").strip()
-            if not msg:
+            commit, ann = generate_with_key(key, prompt, root, lang_key, lang_name)
+            if not commit:
                 raise ValueError("empty response")
-            with open(OUT_FILE, "w", encoding="utf-8") as f:
-                f.write(msg)
-            success = True
-            break
+            _write(OUT_FILE, commit)
+            if ann:
+                _write(MSG_FILE, ann)
+                print(f"[announce] {len(ann)} chars -> {MSG_FILE}", file=sys.stderr)
+            else:
+                print("[announce] no valid <message> block; nothing will be posted to Discord", file=sys.stderr)
+            return
         except Exception as e:
             print(f"[Warning] Key failed or API error, trying next key... ({e})", file=sys.stderr)
-            continue
-
-    if not success:
-        with open(OUT_FILE, "w", encoding="utf-8") as f:
-            f.write("Auto-sync: update codebase (API failover)")
+    _write(OUT_FILE, "Auto-sync: update codebase (API failover)")
 
 
 if __name__ == "__main__":

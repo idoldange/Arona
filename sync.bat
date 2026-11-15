@@ -61,17 +61,19 @@ echo --------------------------------------------------
 
 echo [%date% %time%] Committing changes...
 git commit -F .commit_msg.txt
-
+set COMMIT_OK=%errorlevel%
 if exist .commit_msg.txt del .commit_msg.txt
 
 echo [%date% %time%] Pushing changes to origin main (force)...
 git push origin main --force
 
-if %errorlevel% equ 0 (
+if %errorlevel% equ 0 if %COMMIT_OK% equ 0 (
     echo [%date% %time%] Auto-sync completed successfully!
+    if exist .discord_msg.txt (
+        echo [%date% %time%] Sending update announcement to Discord...
+        python notify_discord.py
+        if exist .discord_msg.txt del .discord_msg.txt
+    )
 ) else (
-    echo [%date% %time%] An error occurred during push!
+    echo [%date% %time%] An error occurred during commit or push!
 )
-
-echo Waiting 30 seconds before exiting...
-timeout /t 30
