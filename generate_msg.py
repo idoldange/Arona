@@ -1,3 +1,4 @@
+import argparse
 import os
 import re
 import sys
@@ -19,11 +20,44 @@ DIFF_MAX_CHARS = 100000
 
 OUT_FILE = ".commit_msg.txt"
 PLAIN_RETRIES = 2            # so lan yeu cau viet lai dong dau neu con thuat ngu
-_JARGON_RE = re.compile(
-    r"(?<!\w)(?:commit|api|prompt|token|config|database|script|refactor|async|quota|function|tool|tools|repo|"
-    r"git|github|code|bug|debug|merge|diff|backend|frontend|daemon|scheduler|regex|json|sql|sqlite|python|"
-    r"hàm|mã nguồn|lập trình|thuật toán|tham số|module|class|file|thư viện)(?!\w)|[._/\\]\w+\.(?:py|js|md|json)|_\w+",
-    re.IGNORECASE)
+DEFAULT_LANG = "vi"          # ngon ngu cua dong dau (dong cho nguoi khong biet code); doi bang --lang
+
+# Ten ngon ngu dua cho model khi truyen ma (en-US, ja, pt-BR...). Ma la khac thi dung nguyen chuoi nguoi dung truyen vao.
+LANG_NAMES = {
+    "vi": "Vietnamese", "en": "English", "ja": "Japanese", "ko": "Korean", "zh": "Chinese", "fr": "French",
+    "de": "German", "es": "Spanish", "pt": "Portuguese", "it": "Italian", "ru": "Russian", "id": "Indonesian",
+    "ms": "Malay", "th": "Thai", "tl": "Filipino", "fil": "Filipino", "tr": "Turkish", "hi": "Hindi",
+    "ar": "Arabic", "pl": "Polish", "nl": "Dutch", "uk": "Ukrainian", "sv": "Swedish",
+}
+
+
+def normalize_lang(raw):
+    """-> (key, ten). key: 'vi' | 'en' | 'other'. Ten la thu se noi cho model ('Vietnamese', 'Portuguese (pt-BR)'...)."""
+    s = (raw or DEFAULT_LANG).strip() or DEFAULT_LANG
+    k = s.lower().replace("_", "-")
+    if k in ("vi", "vn", "vie", "vietnamese", "tieng viet", "tiếng việt") or k.startswith("vi-"):
+        return "vi", "Vietnamese"
+    if k in ("en", "eng", "english") or k.startswith("en-"):
+        return "en", "English"
+    base = k.split("-")[0]
+    name = LANG_NAMES.get(base)
+    if name:
+        return "other", name + (f" ({s})" if "-" in k else "")
+    return "other", s
+
+
+# Tu ky thuat khong duoc xuat hien o dong dau (dong danh cho nguoi khong biet code), theo tung ngon ngu.
+_JARGON_EN = (r"commit|api|prompt|token|config|database|script|refactor|async|quota|function|tool|tools|repo|"
+              r"git|github|code|bug|debug|merge|diff|backend|frontend|daemon|scheduler|regex|json|sql|sqlite|"
+              r"python|module|class|file")
+_JARGON_VI = r"hàm|mã nguồn|lập trình|thuật toán|tham số|thư viện"
+_JARGON_ANY = r"commit|api|git|github|json|sql|sqlite|python|regex"   # ngon ngu khac: chi bat tu chac chan la ky thuat
+_PATHLIKE = r"[._/\\]\w+\.(?:py|js|md|json)|_\w+"                     # ten file, snake_case
+_JARGON_RE = {
+    "vi": re.compile(rf"(?<!\w)(?:{_JARGON_EN}|{_JARGON_VI})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
+    "en": re.compile(rf"(?<!\w)(?:{_JARGON_EN})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
+    "other": re.compile(rf"(?<!\w)(?:{_JARGON_ANY})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
+}
 _COMMIT_RE = re.compile(r"[0-9a-fA-F]{4,40}|HEAD(?:[~^]\d{1,4})?")
 
 
@@ -318,17 +352,93 @@ def _post(key, payload):
         return json.loads(response.read().decode("utf-8"))
 
 
-def plain_line_problems(msg):
+def plain_line_problems(msg, lang_key="vi"):
     """Tu ky thuat con sot lai trong dong dau (dong danh cho nguoi khong biet code)."""
     first = (msg.strip().split("\n") or [""])[0]
-    return sorted({m.group(0).strip() for m in _JARGON_RE.finditer(first)})
+    rx = _JARGON_RE.get(lang_key, _JARGON_RE["other"])
+    return sorted({m.group(0).strip() for m in rx.finditer(first)})
 
 
 def _text_of(content):
     return "".join(p.get("text", "") for p in content.get("parts", []) if p.get("text") and not p.get("thought")).strip()
 
 
-def generate_with_key(key, prompt, root):
+_FORBIDDEN = ("Forbidden in this line: file or function names and tech words such as commit, code, function, tool, "
+              "API, prompt, token, config, database, script, refactor, async, quota")
+
+_BODY_EXAMPLE = (
+    "\n"
+    "fix: stop scheduler retrying a failed task forever\n"
+    "\n"
+    "- count a failed run in scheduler.py:scheduler_heartbeat() except-branch and delete the task after max retries\n"
+    "- log the final failure with the task id"
+)
+
+
+def line1_spec(key, name):
+    """Huong dan cho dong dau (dong cho nguoi khong biet code), theo ngon ngu."""
+    if key == "vi":
+        return (
+            "Line 1: ONE line of casual Gen Z Vietnamese (max about 100 characters), written like texting a friend in "
+            "a group chat, for readers who do NOT code. Spoken tone, natural slang and short forms are welcome (t, m, "
+            "ko, đc, r, j, vs, nha, luôn, xịn, mượt, hơi...). Say what they would notice: what the bot can do now, "
+            "what got fixed, or what feels better. Stay accurate and easy to understand: no forced slang, no emoji, "
+            "no cringe, and never claim a user-visible effect the diff does not support. " + _FORBIDDEN + ". "
+            "If the change is only behind the scenes (cleanup, dev tooling, docs, tests, backups), say that casually "
+            "and honestly, e.g. \"Dọn dẹp bên trong thôi, bot xài vẫn y chang nha\" or \"Chỉnh lại phần ghi chú cập "
+            "nhật cho dễ đọc, ko ảnh hưởng gì tới ai đâu\". Do not start this line with feat:/fix:.\n"
+        )
+    if key == "en":
+        return (
+            "Line 1: ONE line of casual, friendly English (max about 100 characters), like texting a friend, for "
+            "readers who do NOT code. Everyday words, short and spoken, light slang is fine (gonna, kinda, tbh) but "
+            "do not force memes or emoji. Say what they would notice: what the bot can do now, what got fixed, or "
+            "what feels better. Stay accurate and never claim a user-visible effect the diff does not support. "
+            + _FORBIDDEN + ". If the change is only behind the scenes (cleanup, dev tooling, docs, tests, backups), "
+            "say that simply and honestly, e.g. \"Just some cleanup behind the scenes, the bot works the same\" or "
+            "\"Tidied up how update notes get written, nothing changes for anyone\". "
+            "Do not start this line with feat:/fix:.\n"
+        )
+    return (
+        f"Line 1: ONE line written in {name} (max about 100 characters), in the casual, friendly spoken style that "
+        f"younger native speakers of {name} use when texting a friend, for readers who do NOT code. Natural everyday "
+        "words; slang or short forms only where they are natural in that language; no emoji, no forced memes. Say "
+        "what they would notice: what the bot can do now, what got fixed, or what feels better. Stay accurate and "
+        "never claim a user-visible effect the diff does not support. " + _FORBIDDEN + " (in English or in "
+        f"{name} transliteration). If the change is only behind the scenes (cleanup, dev tooling, docs, tests, "
+        f"backups), say that simply and honestly in {name}. Do not start this line with feat:/fix:. "
+        f"(Only line 1 is in {name}; the title and bullets below stay in English.)\n"
+    )
+
+
+def example_for(key, name):
+    if key == "vi":
+        first = "Sửa vụ hẹn giờ nhắc việc bị lặp hoài ko dừng, giờ lỗi vài lần là tự bỏ luôn nha"
+    elif key == "en":
+        first = "Fixed the reminder thing that kept retrying forever, it now gives up after a few fails"
+    else:
+        first = f"<line 1 in {name}: one casual plain sentence about what the bot's users will notice>"
+    return first + "\n" + _BODY_EXAMPLE
+
+
+def retry_message(key, name, bad):
+    head = ("Line 1 is not plain enough: it contains " + ", ".join(f'"{b}"' for b in bad) + ". Rewrite the WHOLE "
+            "message with the same layout and keep everything from line 3 on unchanged, but ")
+    tail = (" that someone who has never coded understands at once: say what the bot's users or its maintainer will "
+            "notice, with none of those words and no names of files, functions or tools. Output only the message.")
+    if key == "vi":
+        return head + ("write line 1 as casual Gen Z Vietnamese (like texting a friend, short forms like t/ko/đc/r/j "
+                       "are fine)" + tail + " For a change that only happens behind the scenes, say so simply, e.g. "
+                       "\"Chỉnh lại phần ghi chú cập nhật cho dễ đọc, bot xài vẫn y chang nha\".")
+    if key == "en":
+        return head + ("write line 1 as casual, friendly English (like texting a friend)" + tail
+                       + " For a change that only happens behind the scenes, say so simply, e.g. \"Just some cleanup "
+                         "behind the scenes, the bot works the same\".")
+    return head + (f"write line 1 in {name}, in a casual, friendly spoken style" + tail
+                   + f" For a change that only happens behind the scenes, say so simply in {name}.")
+
+
+def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
     contents = [{"role": "user", "parts": [{"text": prompt}]}]
     for turn in range(MAX_TOOL_TURNS + 1):
         payload = {"contents": contents, "tools": TOOLS}
@@ -340,20 +450,12 @@ def generate_with_key(key, prompt, root):
         if not calls:
             text = _text_of(content)
             for _ in range(PLAIN_RETRIES):
-                bad = plain_line_problems(text)
+                bad = plain_line_problems(text, lang_key)
                 if not bad:
                     break
                 print(f"[plain-line] jargon in line 1: {bad}; asking for a rewrite", file=sys.stderr)
                 contents.append(content)
-                contents.append({"role": "user", "parts": [{"text": (
-                    "Line 1 is not plain enough: it contains " + ", ".join(f'"{b}"' for b in bad) + ". Rewrite the WHOLE "
-                    "message with the same layout, keep everything from line 3 on unchanged, but write line 1 as casual "
-                    "Gen Z Vietnamese (like texting a friend, short forms like t/ko/đc/r/j are fine) that someone who has "
-                    "never coded understands at once: say what the bot's users or its maintainer will notice, with none of "
-                    "those words and no names of files, functions or tools. For a change that only happens behind the "
-                    "scenes, say so simply, e.g. \"Chỉnh lại phần ghi chú cập nhật cho dễ đọc, bot xài vẫn y chang nha\". "
-                    "Output only the message."
-                )}]})
+                contents.append({"role": "user", "parts": [{"text": retry_message(lang_key, lang_name, bad)}]})
                 res = _post(key, {"contents": contents, "tools": TOOLS,
                                   "toolConfig": {"functionCallingConfig": {"mode": "NONE"}}})
                 content = res["candidates"][0]["content"]
@@ -373,17 +475,7 @@ def generate_with_key(key, prompt, root):
     return ""
 
 
-EXAMPLE = (
-    "Sửa vụ hẹn giờ nhắc việc bị lặp hoài ko dừng, giờ lỗi vài lần là tự bỏ luôn nha\n"
-    "\n"
-    "fix: stop scheduler retrying a failed task forever\n"
-    "\n"
-    "- count a failed run in scheduler.py:scheduler_heartbeat() except-branch and delete the task after max retries\n"
-    "- log the final failure with the task id"
-)
-
-
-def build_prompt(diff, truncated, stat, log):
+def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese"):
     parts = [
         "You are writing the commit message for the PENDING commit whose diff is at the end of this prompt. "
         "The commits in the history list below are ALREADY committed; do not describe them as part of this change.\n",
@@ -403,22 +495,13 @@ def build_prompt(diff, truncated, stat, log):
         "busy, and do not repeat a call with the same arguments.\n",
 
         "OUTPUT FORMAT (exactly this layout, no code fences, no extra text):\n"
-        "Line 1: ONE line of casual Gen Z Vietnamese (max about 100 characters), written like texting a friend in "
-        "a group chat, for readers who do NOT code. Spoken tone, natural slang and short forms are welcome (t, m, "
-        "ko, đc, r, j, vs, nha, luôn, xịn, mượt, hơi...). Say what they would notice: what the bot can do now, "
-        "what got fixed, or what feels better. Stay accurate and easy to understand: no forced slang, no emoji, "
-        "no cringe, and never claim a user-visible effect the diff does not support. Forbidden in this line: file "
-        "or function names and tech words such as commit, code, function, tool, API, prompt, token, config, "
-        "database, script, refactor, async, quota. If the change is only behind the scenes (cleanup, dev tooling, "
-        "docs, tests, backups), say that casually and honestly, e.g. \"Dọn dẹp bên trong thôi, bot xài vẫn y "
-        "chang nha\" or \"Chỉnh lại phần ghi chú cập nhật cho dễ đọc, ko ảnh hưởng gì tới ai đâu\". "
-        "Do not start this line with feat:/fix:.\n"
+        + line1_spec(lang_key, lang_name) +
         "Line 2: blank line.\n"
         "Line 3: technical title in English, conventional format (feat:, fix:, refactor:, ...), max 50 characters.\n"
         "Line 4: blank line.\n"
         "Then short bullet points in English, each naming the relevant file and function/loop "
         "(e.g. `- fix buffering in arch.py:read_output() loop`).\n"
-        "Example of the layout (the content is made up):\n" + EXAMPLE + "\n",
+        "Example of the layout (the content is made up):\n" + example_for(lang_key, lang_name) + "\n",
     ]
     if log:
         parts.append(
@@ -434,7 +517,20 @@ def build_prompt(diff, truncated, stat, log):
     return "\n".join(parts)
 
 
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(description="Generate a git commit message with Gemini (writes .commit_msg.txt).")
+    ap.add_argument("--lang", default=DEFAULT_LANG,
+                    help="language of line 1, the plain-language summary for non-coders: 'vi' (casual Gen Z Vietnamese, "
+                         "default), 'en', or any other language code/name (ja, fr, pt-BR, Thai...). "
+                         "The technical title and bullets are always English.")
+    return ap.parse_args(argv)
+
+
 def main():
+    args = parse_args()
+    lang_key, lang_name = normalize_lang(args.lang)
+    print(f"[lang] line 1 in {lang_name}", file=sys.stderr)
+
     diff, truncated = get_git_diff()
 
     if not diff:
@@ -449,12 +545,12 @@ def main():
         return
 
     root = get_repo_root()
-    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log())
+    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name)
 
     success = False
     for key in keys:
         try:
-            msg = generate_with_key(key, prompt, root)
+            msg = generate_with_key(key, prompt, root, lang_key, lang_name)
             msg = msg.replace("```git", "").replace("```", "").strip()
             if not msg:
                 raise ValueError("empty response")
