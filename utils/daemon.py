@@ -864,7 +864,11 @@ class DaemonManager:
                           "needed, continue with the daemon tools (load_tools group 'daemon' if not loaded).\n"
                           f"<daemon_output>\n{text}\n</daemon_output>")
                 try:
-                    out = extract(await ask(text=prompt, sys_prompt=True, message=msg, enable_functions=True, timeout=60000))
+                    res = await ask(text=prompt, sys_prompt=True, message=msg, enable_functions=True, timeout=60000,
+                                    quota_user_id=row["user_id"])   # BYOK first; else charge 1 msg to the daemon owner
+                    out = extract(res)
+                    if not out and isinstance(res, dict) and res.get("error") in ("quota_exceeded", "byok_quota_exhausted"):
+                        plain += "\n(Wake not processed by the model: daily free message limit reached. Use `!arona addkey` to add your own key.)"
                 except Exception as e:
                     console.log(f"[daemon] wake turn failed: {e}", "ERROR")
             try:

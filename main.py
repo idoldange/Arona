@@ -1738,6 +1738,42 @@ def clean_gemini_response(text: str, history: list = None) -> str:
   text = re.sub(r'-#\s*File\(s\)\s*\n\s*\[[^\]]+?\s*—\s*Preview\]\(https?://arona\.hangdongwibu\.io/artifact/[^)]+?\)\s*\n\s*\(Note for Arona: This message is auto-generated when you use the `send_files` tool\. Do not reproduce this format in your response\.\)', '', text)
   return text.strip()
 
+async def ask_gemini_metered(*args, quota_user_id=None, **kwargs):
+  """ask_gemini for NON-chat turns (scheduled tasks, daemon wakes) that must still be
+  billed to a specific user.
+
+  - message.author is forced to quota_user_id so ask_gemini picks THAT user's BYOK key(s)
+    first (a partial/fetched message may otherwise carry the bot as author).
+  - No BYOK: gated by the free-tier daily quota, and 1 message is charged on success.
+  - BYOK: unlimited on own key; if the own key(s) fail and the request falls back to the
+    free pool, _remember_working_key charges the quota (and ask_gemini blocks the fallback
+    with "byok_quota_exhausted" when the free allowance is used up).
+  Returns the normal ask_gemini result, or an {"error": ...} dict when blocked."""
+  if quota_user_id is None:
+    return await ask_gemini(*args, **kwargs)
+  try:
+    raw_uid = int(quota_user_id)
+  except (TypeError, ValueError):
+    return await ask_gemini(*args, **kwargs)
+
+  msg = kwargs.get("message")
+  if msg is not None and getattr(getattr(msg, "author", None), "id", None) != raw_uid:
+    try:
+      msg.author = client.get_user(raw_uid) or await client.fetch_user(raw_uid)
+    except Exception as e:
+      console.log(f"[metered] could not resolve author {raw_uid}: {e}", "WARN")
+
+  uid = resolve_id(raw_uid)
+  if raw_uid not in ADMINS and not apikeys.check_quota(uid):
+    used, limit = apikeys.get_quota_status(uid)
+    return {"error": "quota_exceeded", "details": f"User {raw_uid} reached the daily free message limit ({used}/{limit})."}
+
+  result = await ask_gemini(*args, **kwargs)
+  if not (isinstance(result, dict) and result.get("error")):
+    apikeys.increment_quota(uid)   # no-op for BYOK users (they only pay on free-pool fallback)
+  return result
+
+
 def extract_gemini_text(result: dict, history: list = None) -> str:
   extracted_parts = []
   all_image_data = []
@@ -8456,14 +8492,14 @@ async def on_ready():
       asyncio.create_task(console_command_loop())
       asyncio.create_task(_stale_workdir_cleanup())
       client.loop.create_task(scheduler_heartbeat(
-          client, ask_gemini, extract_gemini_text,
+          client, ask_gemini_metered, extract_gemini_text,
           send_func=send_content_or_file,
           mood_func=affection.parse_and_apply_mood_tag,
       ))
       if desktop_manager:
         client.loop.create_task(desktop_manager.reaper_loop())
       client.loop.create_task(daemon_manager.watch_loop(
-          client, ask_gemini, extract_gemini_text,
+          client, ask_gemini_metered, extract_gemini_text,
           send_func=send_content_or_file,
           mood_func=affection.parse_and_apply_mood_tag,
       ))

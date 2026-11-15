@@ -263,14 +263,25 @@ async def scheduler_heartbeat(client, ask_gemini_func, extract_func, send_func=N
                             )
                             response = await ask_gemini_func(
                                 text=text, sys_prompt=True, message=target_message,
-                                enable_functions=True, timeout=60000
+                                enable_functions=True, timeout=60000,
+                                quota_user_id=user_id,   # BYOK first; else charge 1 msg to the scheduler's quota
                             )
                             final_text = extract_func(response)
 
                             if final_text:
                                 await _send(channel, final_text)
                             else:
-                                log(f"Task {task_id} returned empty response.", "WARN")
+                                err = response.get("error") if isinstance(response, dict) else None
+                                if err in ("quota_exceeded", "byok_quota_exhausted"):
+                                    log(f"Task {task_id} skipped: {err}", "WARN")
+                                    try:
+                                        await channel.send(
+                                            f"<@{user_id}> Scheduled task #{task_id} was skipped: daily free message limit reached. "
+                                            "Use `!arona addkey` to add your own key.")
+                                    except Exception:
+                                        pass
+                                else:
+                                    log(f"Task {task_id} returned empty response.", "WARN")
 
                         # task executed successfully → reset retry count
                         c.execute("UPDATE schedules SET retry_count = 0 WHERE id = ?", (task_id,))
