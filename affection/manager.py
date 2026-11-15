@@ -201,6 +201,7 @@ class AffectionManager:
                 "mood_desc":    str,
                 "mood_blend":   str,    # e.g. "mostly joy (strong), with some anxiety (slight)"
                 "mood_why":     list,   # privacy-aware causes, e.g. 'joy: "Sensei thanked me" (~10m ago)'
+                "mood_changes": list,   # recent mood moves, e.g. 'joy +medium "Sensei thanked me" (~10m ago)'
                 "mood_value":   float,  # valence, kept for compatibility
                 "bond_line":    str,
             }
@@ -230,6 +231,7 @@ class AffectionManager:
             "mood_desc":    d["desc"],
             "mood_blend":   d["blend"],
             "mood_why":     d["why"],
+            "mood_changes": d["changes"],
             "mood_value":   d["valence"],
             "bond_line":    _bond.prompt_line(b),
             "special":      _special.prompt_line(user_id),
@@ -262,6 +264,8 @@ class AffectionManager:
         lines.append(mood)
         if ctx.get("mood_why"):
             lines.append("Why: " + "; ".join(ctx["mood_why"]))
+        if ctx.get("mood_changes"):
+            lines.append("Recent changes (old to new): " + "; ".join(ctx["mood_changes"]))
         if ctx["was_sleeping"]:
             lines.append("Just woke up: slightly drowsy, mention at most once.")
         return "<affection>\n" + "\n".join(lines) + "\n</affection>"

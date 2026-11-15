@@ -293,6 +293,12 @@ CAUSE_PRUNE_MIN = 0.01       # ... and deleted below this
 CAUSE_MAX_AGE = 48 * 3600.0
 CAUSE_MAX_PER_EMO = 3        # per (user, emotion)
 CAUSE_TOTAL_MAX = 200
+CAUSE_SHOW_PER_EMO = 3       # max 'Why' causes shown to the model per displayed emotion
+CAUSE_SHOW_MAX = 5           # max 'Why' causes shown to the model in total
+RECENT_CHANGES_SHOW = 5      # max recent mood changes (delta + reason) shown to the model; 0 = off
+RECENT_CHANGES_WINDOW = 3 * 3600.0   # only changes newer than this (seconds) are shown
+CHANGE_STRONG = 0.10         # |applied delta| >= this -> "strong"
+CHANGE_MEDIUM = 0.05         # >= this -> "medium", below -> "slight"
 
 # Fatigue (backend-driven): relaxes toward a target made of base + night + recent activity
 FATIGUE_RISE_HALFLIFE = 45 * 60

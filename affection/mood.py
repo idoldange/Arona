@@ -249,6 +249,40 @@ def _prune_causes(now: float):
         _dirty_causes = True
 
 
+def _age_text(now: float, at: float) -> str:
+    mins = max(0, int((now - at) / 60))
+    return "just now" if mins < 2 else (f"~{mins}m ago" if mins < 120 else f"~{mins // 60}h ago")
+
+
+def _change_word(x: float) -> str:
+    x = abs(x)
+    return "strong" if x >= C.CHANGE_STRONG else "medium" if x >= C.CHANGE_MEDIUM else "slight"
+
+
+def _recent_changes(viewer: int | None, is_dm: bool, now: float) -> list[str]:
+    """Last RECENT_CHANGES_SHOW mood changes caused by this viewer (oldest -> newest), privacy-aware."""
+    n = int(C.RECENT_CHANGES_SHOW)
+    if viewer is None or n <= 0:
+        return []
+    uid = int(viewer)
+    picked = []
+    for ev in reversed(_events):                  # _events is chronological
+        if now - ev["t"] > C.RECENT_CHANGES_WINDOW:
+            break
+        if ev["uid"] != uid or not ev["d"]:
+            continue
+        picked.append(ev)
+        if len(picked) >= n:
+            break
+    out = []
+    for ev in reversed(picked):
+        moves = ", ".join(f"{e} {'+' if x > 0 else '-'}{_change_word(x)}"
+                          for e, x in sorted(ev["d"].items(), key=lambda kv: -abs(kv[1])))
+        text = "a private matter" if (ev["dm"] and not is_dm) else clean_reason(ev["r"])
+        out.append(f'{moves}' + (f' "{text}"' if text else "") + f" ({_age_text(now, ev['t'])})")
+    return out
+
+
 def _why_lines(emotion: str, viewer: int | None, is_dm: bool, now: float) -> list[str]:
     items = []
     for c in _causes:
@@ -262,9 +296,8 @@ def _why_lines(emotion: str, viewer: int | None, is_dm: bool, now: float) -> lis
         items.append((amt, text, c["at"], c["s"]))
     items.sort(key=lambda x: -x[0])
     out = []
-    for _amt, text, at, is_sys in items[:2]:
-        mins = max(0, int((now - at) / 60))
-        age = "just now" if mins < 2 else (f"~{mins}m ago" if mins < 120 else f"~{mins // 60}h ago")
+    for _amt, text, at, is_sys in items[:C.CAUSE_SHOW_PER_EMO]:
+        age = _age_text(now, at)
         out.append(f"{emotion}: {text} ({age})" if is_sys else f'{emotion}: "{text}" ({age})')
     return out
 
@@ -506,7 +539,8 @@ def describe(viewer: int | None = None, is_dm: bool = False, now: float | None =
     for e in shown:
         why += _why_lines(e, viewer, is_dm, now)
     return {"label": lbl, "desc": C.MOOD_LABEL_DESC.get(lbl, ""), "blend": _blend(vec, dom),
-            "valence": valence(vec), "why": why[:4], "dominant": dom, "vec": vec}
+            "valence": valence(vec), "why": why[:C.CAUSE_SHOW_MAX], "dominant": dom, "vec": vec,
+            "changes": _recent_changes(viewer, is_dm, now)}
 
 
 # Legacy-compatible public API
