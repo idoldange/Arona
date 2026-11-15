@@ -96,7 +96,7 @@ def split_message(text, limit=LIMIT):
 
 def post_message(url, content, retries=3):
     """POST 1 tin. Tu cho khi bi rate limit (429). Tra ve True neu gui duoc."""
-    body = json.dumps({"content": content, "username": USERNAME, "allowed_mentions": {"parse": []}}).encode("utf-8")
+    body = json.dumps({"content": content, "username": USERNAME, "flags": 4, "allowed_mentions": {"parse": []}}).encode("utf-8")
     for _ in range(retries):
         req = urllib.request.Request(url, data=body, method="POST", headers={
             "Content-Type": "application/json",

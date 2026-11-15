@@ -139,6 +139,28 @@ def get_api_keys():
 
 
 # ---- tools ------------------------------------------------------------------
+def get_owner_login():
+    """Login chu repo tu remote origin (GitHub); khong co remote thi 'idoldange'."""
+    try:
+        raw = _gitq(["remote", "get-url", "origin"]).strip()
+    except Exception:
+        raw = ""
+    m = re.search(r"github\.com[:/]+([^/]+)/", raw)
+    return m.group(1) if m else "idoldange"
+
+
+def get_owner_name(login):
+    """Ten hien thi cua chu repo tren GitHub; loi hoac khong co thi dung login."""
+    try:
+        req = urllib.request.Request("https://api.github.com/users/" + login,
+                                     headers={"Accept": "application/vnd.github+json", "User-Agent": "AronaUpdate"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            name = (json.load(r) or {}).get("name")
+        return (name or login).strip()
+    except Exception:
+        return login
+
+
 TOOLS = [{
     "functionDeclarations": [
         {
@@ -383,9 +405,11 @@ def example_for(key, name):
             "- log the final failure with the task id\n\n" + OPEN_TAG + "\n" + ann + "\n" + CLOSE_TAG)
 
 
-def message_spec(key, name):
+def message_spec(key, name, owner="idoldange", call="anh"):
     return (f"At the very end, after a blank line, add the Discord announcement wrapped EXACTLY as {OPEN_TAG} ... "
-            f"{CLOSE_TAG} with nothing after the closing tag. ONLY this text is posted to Discord (the title and bullets "
+            f"{CLOSE_TAG} with nothing after the closing tag. The reader is {owner}, the bot owner: in Vietnamese address "
+            f"them as '{call} {owner}', in other languages however a younger person would naturally call them. "
+            "ONLY this text is posted to Discord (the title and bullets "
             f"are not), so write it in {style_for(key, name)} for readers who do NOT code: what they will notice (new "
             "ability, fix, nicer behaviour). Write it as plain prose like a person typing to friends: normal sentences "
             "with natural line breaks (a blank line between paragraphs is fine), no bullet lists and no markdown "
@@ -486,7 +510,7 @@ def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
         force_text = True
 
 
-def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese"):
+def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese", owner="idoldange", call="anh"):
     parts = [
         "You are writing the commit message for the PENDING commit whose diff is at the end of this prompt. "
         "The commits in the history list below are ALREADY committed; do not describe them as part of this change.\n",
@@ -502,6 +526,10 @@ def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnames
         "4. Write only when you can say, with evidence from the diff or the files you read: what changed, what it "
         "affects, and (if visible) why. Do not describe anything you did not verify, do not invent file or function "
         "names, and do not call a change a \"fix\" unless the diff shows a bug being fixed.\n"
+        "5. If something looks half-finished (stub function, TODO, a feature wired up only halfway), treat it "
+        "as work in progress: describe what it is meant to do and that it is still being built, never as "
+        "finished. If you are not sure, hedge like \'chắc là'\' (or the natural equivalent in the announcement "
+        "language).\n"
         "Small obvious commits need 0-2 tool calls; larger or unclear ones need more. Do not call tools just to look "
         "busy, and do not repeat a call with the same arguments.\n",
 
@@ -510,7 +538,7 @@ def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnames
         "Line 2: blank line.\n"
         "Then short bullet points in English, each naming the relevant file and function/loop "
         "(e.g. `- fix buffering in arch.py:read_output() loop`).\n"
-        + message_spec(lang_key, lang_name) +
+        + message_spec(lang_key, lang_name, owner, call) +
         "Example of the layout (the content is made up):\n" + example_for(lang_key, lang_name) + "\n",
     ]
     if log:
@@ -530,6 +558,8 @@ def parse_args(argv=None):
     ap.add_argument("--lang", default=DEFAULT_LANG,
                     help="language of the <message> announcement: 'vi' (casual Gen Z, default), 'en', or any other "
                          "language code/name (ja, fr, pt-BR, Thai...). The commit message itself is always English.")
+    ap.add_argument("--call", default="anh",
+                    help="cach goi chu bot trong thong bao: 'anh' (mac dinh) hoac 'chi'")
     return ap.parse_args(argv)
 
 
@@ -542,6 +572,9 @@ def main():
     args = parse_args()
     lang_key, lang_name = normalize_lang(args.lang)
     print(f"[lang] announcement in {lang_name}", file=sys.stderr)
+    login = get_owner_login()
+    owner = get_owner_name(login)
+    print(f"[owner] {owner} ({login}); goi la: {args.call}", file=sys.stderr)
     if os.path.exists(MSG_FILE):
         os.remove(MSG_FILE)   # khong de thong bao cu bi gui lai
 
@@ -553,7 +586,7 @@ def main():
         return _write(OUT_FILE, "Auto-sync: update codebase")
 
     root = get_repo_root()
-    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name)
+    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call)
     for key in keys:
         try:
             commit, ann = generate_with_key(key, prompt, root, lang_key, lang_name)
