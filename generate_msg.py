@@ -407,8 +407,8 @@ def example_for(key, name):
 
 def message_spec(key, name, owner="idoldange", call="anh"):
     return (f"At the very end, after a blank line, add the Discord announcement wrapped EXACTLY as {OPEN_TAG} ... "
-            f"{CLOSE_TAG} with nothing after the closing tag. The reader is {owner}, the bot owner: in Vietnamese address "
-            f"them as '{call} {owner}', in other languages however a younger person would naturally call them. "
+            f"{CLOSE_TAG} with nothing after the closing tag. The bot owner is {owner} (dev): in Vietnamese address them "
+            f"as '{call} {owner}', in other languages however a younger person would naturally call them. "
             "ONLY this text is posted to Discord (the title and bullets "
             f"are not), so write it in {style_for(key, name)} for readers who do NOT code: what they will notice (new "
             "ability, fix, nicer behaviour). Write it as plain prose like a person typing to friends: normal sentences "
