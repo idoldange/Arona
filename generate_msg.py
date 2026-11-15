@@ -608,6 +608,8 @@ def parse_args(argv=None):
                          "language code/name (ja, fr, pt-BR, Thai...). The commit message itself is always English.")
     ap.add_argument("--call", default="anh",
                     help="cach goi chu bot trong thong bao: 'anh' (mac dinh) hoac 'chi'")
+    ap.add_argument("--name", default="",
+                    help="ten chu bot tu chon; truyen thi bo qua viec tra remote + GitHub API")
     return ap.parse_args(argv)
 
 
@@ -620,9 +622,12 @@ def main():
     args = parse_args()
     lang_key, lang_name = normalize_lang(args.lang)
     print(f"[lang] announcement in {lang_name}", file=sys.stderr)
-    login = get_owner_login()
-    owner = get_owner_name(login)
-    print(f"[owner] {owner} ({login}); goi la: {args.call}", file=sys.stderr)
+    if args.name:
+        owner, login = args.name, ""
+    else:
+        login = get_owner_login()
+        owner = get_owner_name(login)
+    print(f"[owner] {owner} ({login or 'custom'}); goi la: {args.call}", file=sys.stderr)
     if os.path.exists(MSG_FILE):
         os.remove(MSG_FILE)   # khong de thong bao cu bi gui lai
 
