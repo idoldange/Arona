@@ -50,7 +50,7 @@ def read_env_var(name):
 
 
 def commit_link():
-    """Link commit HEAD tren GitHub. None neu khong xac dinh duoc."""
+    """Link commit HEAD (GitHub) dang markdown [id](url). None neu khong xac dinh duoc."""
     root = os.path.dirname(os.path.abspath(__file__))
     try:
         sha = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
@@ -58,7 +58,8 @@ def commit_link():
     except Exception:
         return None
     m = re.match(r"https?://(?:www\.)?github\.com/([^/]+/[^/.]+)", raw) or re.match(r"git@github\.com:([^/]+/[^/.]+?)(?:\.git)?$", raw)
-    return f"https://github.com/{m.group(1)}/commit/{sha}" if m and sha else None
+    url = f"https://github.com/{m.group(1)}/commit/{sha}" if m and sha else None
+    return f"[{sha[:7]}]({url})" if url else None
 
 
 def valid_webhook_url(url):

@@ -387,8 +387,9 @@ def message_spec(key, name):
     return (f"At the very end, after a blank line, add the Discord announcement wrapped EXACTLY as {OPEN_TAG} ... "
             f"{CLOSE_TAG} with nothing after the closing tag. ONLY this text is posted to Discord (the title and bullets "
             f"are not), so write it in {style_for(key, name)} for readers who do NOT code: what they will notice (new "
-            "ability, fix, nicer behaviour). Short is best (1-4 short lines; Discord markdown like **bold** and '- ' "
-            "bullets is ok), hard limit 2000 characters. Stay accurate, never claim an effect the diff does not "
+            "ability, fix, nicer behaviour). Write a bit more detail than one line: a few short paragraphs or bullets "
+            "so a non-coder clearly gets what changed and how it behaves now (Discord markdown like **bold** "
+            "and '- ' bullets is ok; no hard limit, long texts are split automatically). Stay accurate, never claim an effect the diff does not "
             f"support. {_FORBIDDEN}. Never use @mentions. If the change is only behind the scenes, say so simply and "
             "honestly.\n")
 
