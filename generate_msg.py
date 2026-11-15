@@ -385,8 +385,11 @@ def _post(key, payload):
             body = e.read().decode("utf-8", errors="ignore")
         except Exception:
             pass
-        if e.code == 429 and "tokensperminute" in body.lower().replace("_", "").replace(" ", ""):
-            raise TpmError("TPM quota exceeded, shrink the diff and retry")   # khac RPM: giam token thi het
+        if e.code == 429:
+            norm = body.lower().replace("_", "").replace(" ", "")
+            if "tokensperminute" in norm:
+                raise TpmError("TPM quota exceeded, shrink the diff and retry")   # giam token thi het
+            raise RuntimeError(f"429 qua gioi han khac (RPM hoac IP): {body[:200]}")
         raise
 
 
