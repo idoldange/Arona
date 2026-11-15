@@ -72,8 +72,8 @@ if %errorlevel% equ 0 if %COMMIT_OK% equ 0 (
     if exist .discord_msg.txt (
         echo [%date% %time%] Sending update announcement to Discord...
         python notify_discord.py
-        if exist .discord_msg.txt del .discord_msg.txt
     )
 ) else (
     echo [%date% %time%] An error occurred during commit or push!
 )
+if exist .discord_msg.txt del .discord_msg.txt
