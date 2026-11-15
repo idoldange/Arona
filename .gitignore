@@ -343,3 +343,6 @@ tests.py
 # AI commit / Discord announcement files (tao sau khi git add .)
 .commit_msg.txt
 .discord_msg.txt
+
+# debug.py la runtime state file, main.py tu tao/tu ghi de khi chay lenh "debug on/off"
+debug.py

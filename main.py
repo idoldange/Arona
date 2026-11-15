@@ -120,7 +120,13 @@ mp_config.FFMPEG_BINARY = "ffmpeg.exe"
 mp_config.IMAGEMAGICK_BINARY = None
 mpy_tools.subprocess_quiet = True
 VideoFileClip.DEFAULT_AUDIO_FPS = 44100
-from debug import debug_enabled
+# debug.py la file runtime state (duoc main.py tu ghi de khi bat/tat debug mode bang
+# console command "debug on/off"), khong track trong git. Neu file chua ton tai thi
+# mac dinh la False thay vi crash ModuleNotFoundError khi khoi dong bot.
+try:
+    from debug import debug_enabled
+except ModuleNotFoundError:
+    debug_enabled = False
 from arona.voice_engine.src.record import AudioProcessor
 from arona.voice_engine.src.gemini import GeminiWebSocket
 from arona.voice_engine.src.voice_metrics import metrics as voice_metrics
