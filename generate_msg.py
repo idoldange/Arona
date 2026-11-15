@@ -1,27 +1,91 @@
 import os
+import re
 import sys
 import json
 import subprocess
 import urllib.request
 
+# ---- cau hinh ---------------------------------------------------------------
+MODEL = "gemini-3.5-flash-lite"
+RECENT_COMMITS = 15          # so commit gan nhat dua san vao prompt (de bat chuoc style, tranh lap lai)
+MAX_TOOL_TURNS = 8           # toi da so luot model goi tool truoc khi ep no viet commit message
+REQUEST_TIMEOUT = 30         # giay cho moi request (loop co tool lau hon 1 request don)
+READ_DEFAULT_LINES = 400     # read_file: so dong mac dinh neu khong chi dinh end_line
+READ_MAX_CHARS = 20000       # read_file: cat output vuot muc nay
+LOG_MAX_COUNT = 100          # git_log: toi da so commit tra ve 1 lan
+SHOW_MAX_CHARS = 25000       # show_commit: so ky tu toi da tra ve 1 lan (doc tiep bang offset)
+SHOW_MAX_FILES = 300         # show_commit: so file toi da dua vao pathspec
+DIFF_MAX_CHARS = 100000
+
+OUT_FILE = ".commit_msg.txt"
+PLAIN_RETRIES = 2            # so lan yeu cau viet lai dong dau neu con thuat ngu
+_JARGON_RE = re.compile(
+    r"(?<!\w)(?:commit|api|prompt|token|config|database|script|refactor|async|quota|function|tool|tools|repo|"
+    r"git|github|code|bug|debug|merge|diff|backend|frontend|daemon|scheduler|regex|json|sql|sqlite|python|"
+    r"hàm|mã nguồn|lập trình|thuật toán|tham số|module|class|file|thư viện)(?!\w)|[._/\\]\w+\.(?:py|js|md|json)|_\w+",
+    re.IGNORECASE)
+_COMMIT_RE = re.compile(r"[0-9a-fA-F]{4,40}|HEAD(?:[~^]\d{1,4})?")
+
+
+def _git(args, **kw):
+    return subprocess.check_output(["git"] + args, text=True, encoding="utf-8", errors="ignore", **kw)
+
+
+class GitError(Exception):
+    pass
+
+
+def _gitq(args, **kw):
+    """Dung cho tool: stdout sach (khong lan warning), loi git tra ve qua GitError de bao lai cho model."""
+    r = subprocess.run(["git"] + args, capture_output=True, text=True, encoding="utf-8", errors="ignore", **kw)
+    if r.returncode != 0:
+        raise GitError((r.stderr or r.stdout).strip()[:300])
+    return r.stdout
+
+
+def get_repo_root():
+    try:
+        return os.path.realpath(_git(["rev-parse", "--show-toplevel"]).strip())
+    except Exception:
+        return os.path.realpath(os.getcwd())
+
+
 def get_git_diff():
     # --function-context (-W): mo rong moi hunk ra toan bo ham/vong lap chua no,
     # nen model biet duoc thay doi nam trong ham/khoi nao, khong chi thay may dong +/-.
-    diff_args = ["git", "diff", "--function-context", "--cached"]
+    diff_args = ["diff", "--function-context", "--cached"]
     try:
-        diff = subprocess.check_output(diff_args, text=True, encoding="utf-8", errors="ignore")
+        diff = _git(diff_args)
         if not diff.strip():
-            diff_args = ["git", "diff", "--function-context"]
-            diff = subprocess.check_output(diff_args, text=True, encoding="utf-8", errors="ignore")
-        return diff[:100000]
+            diff = _git(["diff", "--function-context"])
+        return diff[:DIFF_MAX_CHARS], len(diff) > DIFF_MAX_CHARS
+    except Exception:
+        return "", False
+
+
+def get_diff_stat():
+    """Danh sach file + so dong doi (staged, neu khong co thi unstaged). Cho model thay file nao bi cat khoi diff."""
+    try:
+        stat = _git(["diff", "--cached", "--stat=140", "--stat-count=60"])
+        if not stat.strip():
+            stat = _git(["diff", "--stat=140", "--stat-count=60"])
+        return stat.strip()
     except Exception:
         return ""
+
+
+def get_recent_log():
+    try:
+        return _git(["log", f"-n{RECENT_COMMITS}", "--date=short", "--pretty=format:%h %ad %s"]).strip()
+    except Exception:
+        return ""
+
 
 def get_api_keys():
     env_path = r"C:\arona\.env"
     if not os.path.exists(env_path):
         return []
-    
+
     try:
         with open(env_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -39,60 +103,373 @@ def get_api_keys():
         print(f"[Warning] Could not read .env file: {e}", file=sys.stderr)
     return []
 
+
+# ---- tools ------------------------------------------------------------------
+TOOLS = [{
+    "functionDeclarations": [
+        {
+            "name": "read_file",
+            "description": (
+                "Read a text file from this git repository (current working tree) to understand the code around a "
+                "change. Only files that are NOT git-ignored can be read. Returns numbered lines."
+            ),
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "path": {"type": "STRING", "description": "File path relative to the repo root, e.g. utils/scheduler.py"},
+                    "start_line": {"type": "INTEGER", "description": "First line to read (1-based, default 1)"},
+                    "end_line": {"type": "INTEGER", "description": f"Last line to read (default start_line + {READ_DEFAULT_LINES - 1})"},
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "git_log",
+            "description": (
+                "List older commits (hash, date, subject), newest first. Use skip to go further back than the recent "
+                "history already given, path to see the history of one file or folder, grep to search commit "
+                "messages by keyword (case-insensitive)."
+            ),
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "count": {"type": "INTEGER", "description": f"How many commits (default 20, max {LOG_MAX_COUNT})"},
+                    "skip": {"type": "INTEGER", "description": "Skip this many newest commits first (default 0)"},
+                    "path": {"type": "STRING", "description": "Only commits touching this file/folder (repo-relative)"},
+                    "grep": {"type": "STRING", "description": "Only commits whose message contains this text"},
+                },
+            },
+        },
+        {
+            "name": "show_commit",
+            "description": (
+                "Show what an earlier commit changed: full message, changed files and its diff. Files that are "
+                "git-ignored are hidden. Long output is paged: call again with the offset it tells you."
+            ),
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "commit": {"type": "STRING", "description": "Commit hash (4-40 hex chars) or HEAD / HEAD~N"},
+                    "path": {"type": "STRING", "description": "Only show the diff of this file/folder"},
+                    "offset": {"type": "INTEGER", "description": "Character offset to continue a long output (default 0)"},
+                },
+                "required": ["commit"],
+            },
+        },
+    ]
+}]
+
+
+def _is_ignored(root, rel):
+    """True/False, hoac None neu khong xac dinh duoc (coi nhu bi chan)."""
+    rc = subprocess.run(["git", "check-ignore", "-q", "--", rel], cwd=root,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+    return True if rc == 0 else False if rc == 1 else None
+
+
+def read_file_tool(root, path, start_line=None, end_line=None):
+    """Doc 1 file trong repo. Tu choi: ngoai repo, .git/, file bi gitignore, file nhi phan, file khong ton tai."""
+    try:
+        path = str(path or "").strip().replace("\\", "/")
+        if not path:
+            return {"error": "path is required"}
+        full = os.path.realpath(os.path.join(root, path))
+        nroot, nfull = os.path.normcase(root), os.path.normcase(full)
+        if nfull != nroot and not nfull.startswith(nroot + os.sep):
+            return {"error": "path is outside the repository"}
+        rel = os.path.relpath(full, root).replace("\\", "/")
+        if rel == ".git" or rel.startswith(".git/"):
+            return {"error": "access to .git is not allowed"}
+        if not os.path.isfile(full):
+            return {"error": f"file not found: {rel}"}
+        ign = _is_ignored(root, rel)
+        if ign is None:
+            return {"error": "could not verify gitignore status; refusing to read"}
+        if ign:
+            return {"error": f"{rel} is git-ignored and cannot be read"}
+        with open(full, "rb") as f:
+            raw = f.read()
+        if b"\0" in raw[:8000]:
+            return {"error": f"{rel} looks like a binary file"}
+        lines = raw.decode("utf-8", errors="ignore").splitlines()
+        total = len(lines)
+        start = max(1, int(start_line)) if start_line else 1
+        end = int(end_line) if end_line else start + READ_DEFAULT_LINES - 1
+        end = min(max(end, start), total)
+        out, size = [], 0
+        for i in range(start, end + 1):
+            row = f"{i}: {lines[i - 1]}"
+            size += len(row) + 1
+            if size > READ_MAX_CHARS:
+                end = i - 1
+                break
+            out.append(row)
+        note = f"{rel} lines {start}-{end} of {total}"
+        if end < total:
+            note += f" (more lines available: call again with start_line={end + 1})"
+        return {"file": rel, "info": note, "content": "\n".join(out)}
+    except Exception as e:
+        return {"error": f"read failed: {e}"}
+
+
+def _clean_rel_path(path):
+    """Chuan hoa path loc theo repo; None neu khong hop le (rong, tuyet doi, chua ..)."""
+    p = str(path or "").strip().replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    if not p:
+        return None
+    if p.startswith("/") or re.match(r"^[A-Za-z]:", p) or ".." in p.split("/"):
+        return ""
+    return p.rstrip("/")
+
+
+def git_log_tool(root, count=None, skip=None, path=None, grep=None):
+    try:
+        n = max(1, min(int(count or 20), LOG_MAX_COUNT))
+        sk = max(0, int(skip or 0))
+        args = ["--literal-pathspecs", "log", f"-n{n}", f"--skip={sk}", "--date=short", "--pretty=format:%h %ad %s"]
+        if grep:
+            args += ["-i", f"--grep={str(grep)[:200]}"]
+        rp = _clean_rel_path(path)
+        if rp == "":
+            return {"error": "path must be a repo-relative path without '..'"}
+        if rp:
+            args += ["--", rp]
+        out = _gitq(args, cwd=root).strip()
+        if not out:
+            return {"info": "no commits found", "content": ""}
+        got = len(out.splitlines())
+        info = f"{got} commit(s), skipped {sk}"
+        if got == n:
+            info += f" (may be more: call again with skip={sk + n})"
+        return {"info": info, "content": out}
+    except GitError as e:
+        return {"error": f"git log failed: {e}"}
+    except Exception as e:
+        return {"error": f"git_log failed: {e}"}
+
+
+def show_commit_tool(root, commit, path=None, offset=None):
+    """Header + stat + diff cua 1 commit cu. File hien dang bi gitignore bi giau (tranh lo noi dung cu cua .env...)."""
+    try:
+        c = str(commit or "").strip()
+        if not _COMMIT_RE.fullmatch(c):
+            return {"error": "commit must be a hex hash (4-40 chars) or HEAD / HEAD~N"}
+        names = [n for n in _gitq(["show", "--name-only", "--format=", "-z", c], cwd=root).split("\0") if n]
+        if names:
+            r = subprocess.run(["git", "check-ignore", "--no-index", "-z", "--stdin"], input="\0".join(names),
+                               cwd=root, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+            if r.returncode not in (0, 1):
+                return {"error": "could not verify gitignore status; refusing to show"}
+            ignored = set(x for x in r.stdout.split("\0") if x)
+        else:
+            ignored = set()
+        allowed = [n for n in names if n not in ignored]
+        hidden = len(names) - len(allowed)
+        rp = _clean_rel_path(path)
+        if rp == "":
+            return {"error": "path must be a repo-relative path without '..'"}
+        if rp:
+            allowed = [n for n in allowed if n == rp or n.startswith(rp + "/")]
+        if not allowed:
+            return {"error": "no readable changed files in this commit" + (" for that path" if rp else "")
+                             + (f" ({hidden} git-ignored file(s) hidden)" if hidden else "")}
+        capped = len(allowed) > SHOW_MAX_FILES
+        allowed = allowed[:SHOW_MAX_FILES]
+        header = _gitq(["show", "--no-patch", "--date=iso", "--format=commit %H%nAuthor: %an%nDate: %ad%n%n%B", c], cwd=root).strip()
+        base = ["--literal-pathspecs", "show", "--format=", c]
+        stat = _gitq(base[:2] + ["--stat=140"] + base[2:] + ["--"] + allowed, cwd=root).strip()
+        diff = _gitq(base[:2] + ["-U5"] + base[2:] + ["--"] + allowed, cwd=root)
+        text = f"{header}\n\n--- files ---\n{stat}\n\n--- diff ---\n{diff}"
+        off = max(0, int(offset or 0))
+        chunk = text[off:off + SHOW_MAX_CHARS]
+        notes = []
+        if hidden:
+            notes.append(f"{hidden} git-ignored file(s) hidden")
+        if capped:
+            notes.append(f"only first {SHOW_MAX_FILES} files included; use path to narrow")
+        if off + SHOW_MAX_CHARS < len(text):
+            notes.append(f"output continues: call again with offset={off + SHOW_MAX_CHARS} (or use path to narrow)")
+        return {"info": f"commit {c}, chars {off}-{off + len(chunk)} of {len(text)}" + (f" ({'; '.join(notes)})" if notes else ""),
+                "content": chunk}
+    except GitError as e:
+        return {"error": f"git show failed: {e}"}
+    except Exception as e:
+        return {"error": f"show_commit failed: {e}"}
+
+
+def run_tool(root, name, args):
+    if name == "read_file":
+        return read_file_tool(root, args.get("path"), args.get("start_line"), args.get("end_line"))
+    if name == "git_log":
+        return git_log_tool(root, args.get("count"), args.get("skip"), args.get("path"), args.get("grep"))
+    if name == "show_commit":
+        return show_commit_tool(root, args.get("commit"), args.get("path"), args.get("offset"))
+    return {"error": f"unknown tool {name}"}
+
+
+# ---- goi Gemini (co function calling) ---------------------------------------
+def _post(key, payload):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={key}"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def plain_line_problems(msg):
+    """Tu ky thuat con sot lai trong dong dau (dong danh cho nguoi khong biet code)."""
+    first = (msg.strip().split("\n") or [""])[0]
+    return sorted({m.group(0).strip() for m in _JARGON_RE.finditer(first)})
+
+
+def _text_of(content):
+    return "".join(p.get("text", "") for p in content.get("parts", []) if p.get("text") and not p.get("thought")).strip()
+
+
+def generate_with_key(key, prompt, root):
+    contents = [{"role": "user", "parts": [{"text": prompt}]}]
+    for turn in range(MAX_TOOL_TURNS + 1):
+        payload = {"contents": contents, "tools": TOOLS}
+        if turn >= MAX_TOOL_TURNS:   # het luot tool: ep model tra loi bang text
+            payload["toolConfig"] = {"functionCallingConfig": {"mode": "NONE"}}
+        res = _post(key, payload)
+        content = res["candidates"][0]["content"]
+        calls = [p["functionCall"] for p in content.get("parts", []) if p.get("functionCall")]
+        if not calls:
+            text = _text_of(content)
+            for _ in range(PLAIN_RETRIES):
+                bad = plain_line_problems(text)
+                if not bad:
+                    break
+                print(f"[plain-line] jargon in line 1: {bad}; asking for a rewrite", file=sys.stderr)
+                contents.append(content)
+                contents.append({"role": "user", "parts": [{"text": (
+                    "Line 1 is not plain enough: it contains " + ", ".join(f'"{b}"' for b in bad) + ". Rewrite the WHOLE "
+                    "message with the same layout, keep everything from line 3 on unchanged, but write line 1 as casual "
+                    "Gen Z Vietnamese (like texting a friend, short forms like t/ko/đc/r/j are fine) that someone who has "
+                    "never coded understands at once: say what the bot's users or its maintainer will notice, with none of "
+                    "those words and no names of files, functions or tools. For a change that only happens behind the "
+                    "scenes, say so simply, e.g. \"Chỉnh lại phần ghi chú cập nhật cho dễ đọc, bot xài vẫn y chang nha\". "
+                    "Output only the message."
+                )}]})
+                res = _post(key, {"contents": contents, "tools": TOOLS,
+                                  "toolConfig": {"functionCallingConfig": {"mode": "NONE"}}})
+                content = res["candidates"][0]["content"]
+                text = _text_of(content) or text
+            return text
+        # giu nguyen content cua model (gom ca thoughtSignature) roi tra ket qua tool
+        contents.append(content)
+        responses = []
+        for fc in calls:
+            args = fc.get("args") or {}
+            result = run_tool(root, fc.get("name"), args)
+            shown = {k: v for k, v in args.items()}
+            print(f"[tool] {fc.get('name')}({shown}) -> {'error: ' + result['error'] if 'error' in result else result.get('info', 'ok')}",
+                  file=sys.stderr)
+            responses.append({"functionResponse": {"name": fc.get("name"), "response": result}})
+        contents.append({"role": "user", "parts": responses})
+    return ""
+
+
+EXAMPLE = (
+    "Sửa vụ hẹn giờ nhắc việc bị lặp hoài ko dừng, giờ lỗi vài lần là tự bỏ luôn nha\n"
+    "\n"
+    "fix: stop scheduler retrying a failed task forever\n"
+    "\n"
+    "- count a failed run in scheduler.py:scheduler_heartbeat() except-branch and delete the task after max retries\n"
+    "- log the final failure with the task id"
+)
+
+
+def build_prompt(diff, truncated, stat, log):
+    parts = [
+        "You are writing the commit message for the PENDING commit whose diff is at the end of this prompt. "
+        "The commits in the history list below are ALREADY committed; do not describe them as part of this change.\n",
+
+        "HOW TO WORK (do this BEFORE writing the message):\n"
+        "1. Read the file list and the diff. For every changed file/function make sure you understand what it does "
+        "and what changed. The diff has full function context, but not the rest of the file.\n"
+        "2. If anything is unclear (a new function whose purpose you cannot tell, a config value, who calls a changed "
+        "function, a rename, a file cut from the diff), call read_file to look at the code around it.\n"
+        "3. If this commit continues, fixes, tunes or reverts earlier work, call git_log (path= for the history of one "
+        "file, grep= to search by keyword, skip= to go further back than the history below) and show_commit to read "
+        "what the earlier commit really changed. Never guess what earlier commits did.\n"
+        "4. Write only when you can say, with evidence from the diff or the files you read: what changed, what it "
+        "affects, and (if visible) why. Do not describe anything you did not verify, do not invent file or function "
+        "names, and do not call a change a \"fix\" unless the diff shows a bug being fixed.\n"
+        "Small obvious commits need 0-2 tool calls; larger or unclear ones need more. Do not call tools just to look "
+        "busy, and do not repeat a call with the same arguments.\n",
+
+        "OUTPUT FORMAT (exactly this layout, no code fences, no extra text):\n"
+        "Line 1: ONE line of casual Gen Z Vietnamese (max about 100 characters), written like texting a friend in "
+        "a group chat, for readers who do NOT code. Spoken tone, natural slang and short forms are welcome (t, m, "
+        "ko, đc, r, j, vs, nha, luôn, xịn, mượt, hơi...). Say what they would notice: what the bot can do now, "
+        "what got fixed, or what feels better. Stay accurate and easy to understand: no forced slang, no emoji, "
+        "no cringe, and never claim a user-visible effect the diff does not support. Forbidden in this line: file "
+        "or function names and tech words such as commit, code, function, tool, API, prompt, token, config, "
+        "database, script, refactor, async, quota. If the change is only behind the scenes (cleanup, dev tooling, "
+        "docs, tests, backups), say that casually and honestly, e.g. \"Dọn dẹp bên trong thôi, bot xài vẫn y "
+        "chang nha\" or \"Chỉnh lại phần ghi chú cập nhật cho dễ đọc, ko ảnh hưởng gì tới ai đâu\". "
+        "Do not start this line with feat:/fix:.\n"
+        "Line 2: blank line.\n"
+        "Line 3: technical title in English, conventional format (feat:, fix:, refactor:, ...), max 50 characters.\n"
+        "Line 4: blank line.\n"
+        "Then short bullet points in English, each naming the relevant file and function/loop "
+        "(e.g. `- fix buffering in arch.py:read_output() loop`).\n"
+        "Example of the layout (the content is made up):\n" + EXAMPLE + "\n",
+    ]
+    if log:
+        parts.append(
+            "Recent commits (newest first). Match their style and do not repeat what they already describe unless "
+            "this diff changes it again:\n" + log + "\n"
+        )
+    if stat:
+        parts.append("Files changed in this commit:\n" + stat + "\n")
+    if truncated:
+        parts.append(f"NOTE: the diff below was cut at {DIFF_MAX_CHARS} characters; later files are missing, "
+                     "use the file list above and read_file to cover them.\n")
+    parts.append(f"Diff:\n{diff}")
+    return "\n".join(parts)
+
+
 def main():
-    diff = get_git_diff()
-    out_file = ".commit_msg.txt"
+    diff, truncated = get_git_diff()
 
     if not diff:
-        with open(out_file, "w", encoding="utf-8") as f:
+        with open(OUT_FILE, "w", encoding="utf-8") as f:
             f.write("Auto-sync: minor changes")
         return
 
     keys = get_api_keys()
     if not keys:
-        with open(out_file, "w", encoding="utf-8") as f:
+        with open(OUT_FILE, "w", encoding="utf-8") as f:
             f.write("Auto-sync: update codebase")
         return
 
-    prompt = (
-        "Analyze this git diff and create a concise, professional Git commit message in English.\n"
-        "The diff includes full function/loop context (via --function-context), not just changed lines, "
-        "so identify exactly which file(s), function(s)/method(s), or loop/block were modified.\n"
-        "Format:\n"
-        "Title line (max 50 chars, conventional format like feat:, fix:, refactor:)\n\n"
-        "Short bullet points describing key changes, each mentioning the relevant file and function/loop name "
-        "(e.g. `- fix buffering in arch.py:read_output() loop`).\n\n"
-        f"Diff:\n{diff}"
-    )
+    root = get_repo_root()
+    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log())
 
     success = False
     for key in keys:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={key}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}]
-        }
-        
         try:
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-            
-            with urllib.request.urlopen(req, timeout=10) as response:
-                res = json.loads(response.read().decode("utf-8"))
-                msg = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-                msg = msg.replace("```git", "").replace("```", "").strip()
-                
-                with open(out_file, "w", encoding="utf-8") as f:
-                    f.write(msg)
-                
-                success = True
-                break
+            msg = generate_with_key(key, prompt, root)
+            msg = msg.replace("```git", "").replace("```", "").strip()
+            if not msg:
+                raise ValueError("empty response")
+            with open(OUT_FILE, "w", encoding="utf-8") as f:
+                f.write(msg)
+            success = True
+            break
         except Exception as e:
             print(f"[Warning] Key failed or API error, trying next key... ({e})", file=sys.stderr)
             continue
 
     if not success:
-        with open(out_file, "w", encoding="utf-8") as f:
+        with open(OUT_FILE, "w", encoding="utf-8") as f:
             f.write("Auto-sync: update codebase (API failover)")
+
 
 if __name__ == "__main__":
     main()
