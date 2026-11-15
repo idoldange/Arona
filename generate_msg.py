@@ -4,6 +4,7 @@ import re
 import sys
 import json
 import subprocess
+import urllib.error
 import urllib.request
 
 # ---- cau hinh ---------------------------------------------------------------
@@ -69,6 +70,11 @@ class GitError(Exception):
     pass
 
 
+class TpmError(Exception):
+    """429 do vuot tokens-per-minute (khac voi vuot requests-per-minute)."""
+    pass
+
+
 def _gitq(args, **kw):
     """Dung cho tool: stdout sach (khong lan warning), loi git tra ve qua GitError de bao lai cho model."""
     r = subprocess.run(["git"] + args, capture_output=True, text=True, encoding="utf-8", errors="ignore", **kw)
@@ -84,7 +90,7 @@ def get_repo_root():
         return os.path.realpath(os.getcwd())
 
 
-def get_git_diff():
+def get_git_diff(limit=DIFF_MAX_CHARS):
     # --function-context (-W): mo rong moi hunk ra toan bo ham/vong lap chua no,
     # nen model biet duoc thay doi nam trong ham/khoi nao, khong chi thay may dong +/-.
     diff_args = ["diff", "--function-context", "--cached"]
@@ -92,7 +98,7 @@ def get_git_diff():
         diff = _git(diff_args)
         if not diff.strip():
             diff = _git(["diff", "--function-context"])
-        return diff[:DIFF_MAX_CHARS], len(diff) > DIFF_MAX_CHARS
+        return diff[:limit], len(diff) > limit
     except Exception:
         return "", False
 
@@ -370,8 +376,18 @@ def _post(key, payload):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={key}"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        if e.code == 429 and "tokensperminute" in body.lower().replace("_", "").replace(" ", ""):
+            raise TpmError("TPM quota exceeded, shrink the diff and retry")   # khac RPM: giam token thi het
+        raise
 
 
 def _text_of(content):
@@ -510,7 +526,7 @@ def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
         force_text = True
 
 
-def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese", owner="idoldange", call="anh"):
+def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese", owner="idoldange", call="anh", limit=DIFF_MAX_CHARS):
     parts = [
         "You are writing the commit message for the PENDING commit whose diff is at the end of this prompt. "
         "The commits in the history list below are ALREADY committed; do not describe them as part of this change.\n",
@@ -547,7 +563,7 @@ def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnames
     if stat:
         parts.append("Files changed in this commit:\n" + stat + "\n")
     if truncated:
-        parts.append(f"NOTE: the diff below was cut at {DIFF_MAX_CHARS} characters; later files are missing, "
+        parts.append(f"NOTE: the diff below was cut at {limit} characters; later files are missing, "
                      "use the file list above and read_file to cover them.\n")
     parts.append(f"Diff:\n{diff}")
     return "\n".join(parts)
@@ -578,7 +594,8 @@ def main():
     if os.path.exists(MSG_FILE):
         os.remove(MSG_FILE)   # khong de thong bao cu bi gui lai
 
-    diff, truncated = get_git_diff()
+    limit = DIFF_MAX_CHARS
+    diff, truncated = get_git_diff(limit)
     if not diff:
         return _write(OUT_FILE, "Auto-sync: minor changes")
     keys = get_api_keys()
@@ -586,21 +603,32 @@ def main():
         return _write(OUT_FILE, "Auto-sync: update codebase")
 
     root = get_repo_root()
-    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call)
+    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call, limit=limit)
     for key in keys:
-        try:
-            commit, ann = generate_with_key(key, prompt, root, lang_key, lang_name)
-            if not commit:
-                raise ValueError("empty response")
-            _write(OUT_FILE, commit)
-            if ann:
-                _write(MSG_FILE, ann)
-                print(f"[announce] {len(ann)} chars -> {MSG_FILE}", file=sys.stderr)
-            else:
-                print("[announce] no valid <message> block; nothing will be posted to Discord", file=sys.stderr)
-            return
-        except Exception as e:
-            print(f"[Warning] Key failed or API error, trying next key... ({e})", file=sys.stderr)
+        while True:
+            try:
+                commit, ann = generate_with_key(key, prompt, root, lang_key, lang_name)
+                if not commit:
+                    raise ValueError("empty response")
+                _write(OUT_FILE, commit)
+                if ann:
+                    _write(MSG_FILE, ann)
+                    print(f"[announce] {len(ann)} chars -> {MSG_FILE}", file=sys.stderr)
+                else:
+                    print("[announce] no valid <message> block; nothing will be posted to Discord", file=sys.stderr)
+                return
+            except TpmError:
+                smaller = max(20000, limit // 2)
+                if smaller == limit:
+                    print("[Warning] TPM exceeded but diff cannot shrink more, next key...", file=sys.stderr)
+                    break
+                limit = smaller
+                diff, truncated = get_git_diff(limit)
+                prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call, limit=limit)
+                print(f"[Warning] TPM exceeded: diff shrunk to {limit} chars, retrying same key...", file=sys.stderr)
+            except Exception as e:
+                print(f"[Warning] Key failed or API error, trying next key... ({e})", file=sys.stderr)
+                break
     _write(OUT_FILE, "Auto-sync: update codebase (API failover)")
 
 
