@@ -3,12 +3,13 @@ import os
 import re
 import sys
 import json
+import time
 import subprocess
 import urllib.error
 import urllib.request
 
 # ---- cau hinh ---------------------------------------------------------------
-MODEL = "gemini-3.5-flash-lite"
+MODEL = "gemini-3.1-flash-lite"
 RECENT_COMMITS = 15          # so commit gan nhat dua san vao prompt (de bat chuoc style, tranh lap lai)
 MAX_TOOL_TURNS = 8           # toi da so luot model goi tool truoc khi ep no viet commit message
 REQUEST_TIMEOUT = 30         # giay cho moi request (loop co tool lau hon 1 request don)
@@ -18,9 +19,11 @@ LOG_MAX_COUNT = 100          # git_log: toi da so commit tra ve 1 lan
 SHOW_MAX_CHARS = 25000       # show_commit: so ky tu toi da tra ve 1 lan (doc tiep bang offset)
 SHOW_MAX_FILES = 300         # show_commit: so file toi da dua vao pathspec
 DIFF_MAX_CHARS = 100000
+MAX_API_RETRIES = 3
+RETRY_BASE_SECONDS = 10
 
 OUT_FILE = ".commit_msg.txt"
-PLAIN_RETRIES = 2            # so lan yeu cau viet lai dong dau neu con thuat ngu
+# PLAIN_RETRIES = 2           # temporarily disabled with the announcement jargon filter
 DEFAULT_LANG = "vi"          # ngon ngu cua dong dau (dong cho nguoi khong biet code); doi bang --lang
 
 # Ten ngon ngu dua cho model khi truyen ma (en-US, ja, pt-BR...). Ma la khac thi dung nguyen chuoi nguoi dung truyen vao.
@@ -47,18 +50,19 @@ def normalize_lang(raw):
     return "other", s
 
 
-# Tu ky thuat khong duoc xuat hien o dong dau (dong danh cho nguoi khong biet code), theo tung ngon ngu.
-_JARGON_EN = (r"commit|api|prompt|token|config|database|script|refactor|async|quota|function|tool|tools|repo|"
-              r"git|github|code|bug|debug|merge|diff|backend|frontend|daemon|scheduler|regex|json|sql|sqlite|"
-              r"python|module|class|file")
-_JARGON_VI = r"hàm|mã nguồn|lập trình|thuật toán|tham số|thư viện"
-_JARGON_ANY = r"commit|api|git|github|json|sql|sqlite|python|regex"   # ngon ngu khac: chi bat tu chac chan la ky thuat
-_PATHLIKE = r"[._/\\]\w+\.(?:py|js|md|json)|[^\W_]+_[^\W_]+"                     # ten file, snake_case
-_JARGON_RE = {
-    "vi": re.compile(rf"(?<!\w)(?:{_JARGON_EN}|{_JARGON_VI})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
-    "en": re.compile(rf"(?<!\w)(?:{_JARGON_EN})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
-    "other": re.compile(rf"(?<!\w)(?:{_JARGON_ANY})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
-}
+# Temporarily disabled: these patterns used to block technical terms and file-like names
+# in user-facing announcements. Keep them commented for easy restoration if needed.
+# _JARGON_EN = (r"commit|api|prompt|token|config|database|script|refactor|async|quota|function|tool|tools|repo|"
+#               r"git|github|code|bug|debug|merge|diff|backend|frontend|daemon|scheduler|regex|json|sql|sqlite|"
+#               r"python|module|class|file")
+# _JARGON_VI = r"hàm|mã nguồn|lập trình|thuật toán|tham số|thư viện"
+# _JARGON_ANY = r"commit|api|git|github|json|sql|sqlite|python|regex"
+# _PATHLIKE = r"[._/\\]\w+\.(?:py|js|md|json)|[^\W_]+_[^\W_]+"
+# _JARGON_RE = {
+#     "vi": re.compile(rf"(?<!\w)(?:{_JARGON_EN}|{_JARGON_VI})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
+#     "en": re.compile(rf"(?<!\w)(?:{_JARGON_EN})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
+#     "other": re.compile(rf"(?<!\w)(?:{_JARGON_ANY})(?!\w)|{_PATHLIKE}", re.IGNORECASE),
+# }
 _COMMIT_RE = re.compile(r"[0-9a-fA-F]{4,40}|HEAD(?:[~^]\d{1,4})?")
 
 
@@ -73,6 +77,23 @@ class GitError(Exception):
 class TpmError(Exception):
     """429 do vuot tokens-per-minute (khac voi vuot requests-per-minute)."""
     pass
+
+
+class RetryableAPIError(RuntimeError):
+    def __init__(self, status, body):
+        super().__init__(f"HTTP {status}: {body[:200]}")
+        self.status = status
+
+
+def wait_before_retry(retry_count, reason):
+    if retry_count >= MAX_API_RETRIES:
+        print(f"[Warning] {reason}; exhausted {MAX_API_RETRIES} retries for this key", file=sys.stderr)
+        return False
+
+    delay = RETRY_BASE_SECONDS * (2 ** retry_count)
+    print(f"[Warning] {reason}; retry {retry_count + 1}/{MAX_API_RETRIES} in {delay}s...", file=sys.stderr)
+    time.sleep(delay)
+    return True
 
 
 def _gitq(args, **kw):
@@ -165,6 +186,15 @@ def get_owner_name(login):
         return (name or login).strip()
     except Exception:
         return login
+
+
+def get_agent_md():
+    """Doc agent.md o goc repo (index ngan: file nao lam gi, lien quan file nao). Cat o 8000 ky tu."""
+    try:
+        with open(os.path.join(get_repo_root(), "agent.md"), "r", encoding="utf-8", errors="ignore") as f:
+            return f.read().strip()[:8000]
+    except Exception:
+        return ""
 
 
 TOOLS = [{
@@ -389,7 +419,8 @@ def _post(key, payload):
             norm = body.lower().replace("_", "").replace(" ", "")
             if "tokensperminute" in norm:
                 raise TpmError("TPM quota exceeded, shrink the diff and retry")   # giam token thi het
-            raise RuntimeError(f"429 qua gioi han khac (RPM hoac IP): {body[:200]}")
+        if e.code in (429, 503):
+            raise RetryableAPIError(e.code, body) from e
         raise
 
 
@@ -466,9 +497,9 @@ def strip_tags(t):
     return t.replace(CLOSE_TAG, "").strip()
 
 
-def plain_problems(text, lang_key="vi"):
-    rx = _JARGON_RE.get(lang_key, _JARGON_RE["other"])
-    return sorted({m.group(0).strip() for m in rx.finditer(text)})
+# def plain_problems(text, lang_key="vi"):
+#     rx = _JARGON_RE.get(lang_key, _JARGON_RE["other"])
+#     return sorted({m.group(0).strip() for m in rx.finditer(text)})
 
 
 def tag_feedback(problem, key, name):
@@ -477,17 +508,17 @@ def tag_feedback(problem, key, name):
             f"in {name} for non-coders, nothing after {CLOSE_TAG}. Output only that.")
 
 
-def jargon_feedback(bad, key, name):
-    return ("The announcement is not plain enough: it contains " + ", ".join(f'"{b}"' for b in bad) + ". Rewrite the "
-            f"WHOLE answer, keep the commit message unchanged, but write the {OPEN_TAG} block in {style_for(key, name)} "
-            "so someone who has never coded understands it at once, with none of those words and no names of files, "
-            "functions or tools. Output only the answer.")
+# def jargon_feedback(bad, key, name):
+#     return ("The announcement is not plain enough: it contains " + ", ".join(f'"{b}"' for b in bad) + ". Rewrite the "
+#             f"WHOLE answer, keep the commit message unchanged, but write the {OPEN_TAG} block in {style_for(key, name)} "
+#             "so someone who has never coded understands it at once, with none of those words and no names of files, "
+#             "functions or tools. Output only the answer.")
 
 
 def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
     """-> (commit_message, announcement|None)."""
     contents = [{"role": "user", "parts": [{"text": prompt}]}]
-    tool_turns = tag_n = plain_n = 0
+    tool_turns = tag_n = 0
     force_text = False
     while True:
         payload = {"contents": contents, "tools": TOOLS}
@@ -515,13 +546,7 @@ def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
             if tag_n < TAG_RETRIES:
                 tag_n += 1
                 feedback = tag_feedback(problem, lang_key, lang_name)
-        else:
-            bad = plain_problems(ann, lang_key)
-            if bad:
-                print(f"[announce] jargon: {bad}", file=sys.stderr)
-                if plain_n < PLAIN_RETRIES:
-                    plain_n += 1
-                    feedback = jargon_feedback(bad, lang_key, lang_name)
+        # Jargon-regex validation is temporarily disabled; technical wording is allowed in announcements.
         if feedback is None:
             return (strip_tags(text), None) if problem else (commit, ann)
         contents.append(content)
@@ -529,7 +554,7 @@ def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
         force_text = True
 
 
-def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese", owner="idoldange", call="anh", limit=DIFF_MAX_CHARS):
+def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese", owner="idoldange", call="anh", limit=DIFF_MAX_CHARS, agent_md=""):
     parts = [
         "You are writing the commit message for the PENDING commit whose diff is at the end of this prompt. "
         "The commits in the history list below are ALREADY committed; do not describe them as part of this change.\n",
@@ -560,6 +585,9 @@ def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnames
         + message_spec(lang_key, lang_name, owner, call) +
         "Example of the layout (the content is made up):\n" + example_for(lang_key, lang_name) + "\n",
     ]
+    if agent_md:
+        parts.append("PROJECT MAP (agent.md - short index: what each file does and how files relate; use it to tell "
+                     "where a change lives and what else it may affect):\n" + agent_md + "\n")
     if log:
         parts.append("Recent commits (newest first). Match their style and do not repeat what they already describe "
                      "unless this diff changes it again:\n" + log + "\n")
@@ -606,8 +634,11 @@ def main():
         return _write(OUT_FILE, "Auto-sync: update codebase")
 
     root = get_repo_root()
-    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call, limit=limit)
+    agent_md = get_agent_md()
+    print(f"[agent.md] {len(agent_md)} chars", file=sys.stderr)
+    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call, limit=limit, agent_md=agent_md)
     for key in keys:
+        retry_count = 0
         while True:
             try:
                 commit, ann = generate_with_key(key, prompt, root, lang_key, lang_name)
@@ -621,14 +652,20 @@ def main():
                     print("[announce] no valid <message> block; nothing will be posted to Discord", file=sys.stderr)
                 return
             except TpmError:
-                smaller = max(20000, limit // 2)
-                if smaller == limit:
-                    print("[Warning] TPM exceeded but diff cannot shrink more, next key...", file=sys.stderr)
+                if not wait_before_retry(retry_count, "TPM quota exceeded"):
                     break
-                limit = smaller
-                diff, truncated = get_git_diff(limit)
-                prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call, limit=limit)
-                print(f"[Warning] TPM exceeded: diff shrunk to {limit} chars, retrying same key...", file=sys.stderr)
+                retry_count += 1
+                smaller = max(20000, limit // 2)
+                if smaller < limit:
+                    limit = smaller
+                    diff, truncated = get_git_diff(limit)
+                    prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call, limit=limit, agent_md=agent_md)
+                continue
+            except RetryableAPIError as e:
+                if wait_before_retry(retry_count, str(e)):
+                    retry_count += 1
+                    continue
+                break
             except Exception as e:
                 print(f"[Warning] Key failed or API error, trying next key... ({e})", file=sys.stderr)
                 break
