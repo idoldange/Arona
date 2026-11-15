@@ -339,3 +339,7 @@ tests/
 main_.py
 tests.py
 /_*.py
+
+# AI commit / Discord announcement files (tao sau khi git add .)
+.commit_msg.txt
+.discord_msg.txt
