@@ -1,6 +1,6 @@
 """Gui thong bao update len Discord qua webhook.
 
-URL webhook lay tu bien moi truong DISCORD_WEBHOOK_URL, hoac tu file .env (canh script, roi C:\\arona\\.env).
+URL webhook lay tu bien moi truong DISCORD_WEBHOOK_URL, hoac tu file .env (canh script).
 Noi dung (mac dinh .discord_msg.txt, do generate_msg.py tao ra tu the <message>) duoc cat thanh cac tin <= 2000 ky tu
 (Discord gioi han 2000/tin) va gui lan luot. Khong bao gio ping @everyone/role/user.
 
@@ -21,7 +21,7 @@ LIMIT = 2000                      # gioi han ky tu cua 1 tin nhan Discord
 USERNAME = "Arona Update"
 DEFAULT_FILE = ".discord_msg.txt"
 ENV_NAME = "DISCORD_WEBHOOK_URL"
-ENV_PATHS = [os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), r"C:\arona\.env"]
+ENV_PATHS = [os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")]
 GAP_SECONDS = 0.6                 # nghi giua cac tin de khong cham rate limit
 
 

@@ -7,6 +7,13 @@ import time
 import subprocess
 import urllib.error
 import urllib.request
+import socket
+
+# IPv6 tren may nay bi treo khi connect (moi dia chi cho het timeout) -> uu tien IPv4 truoc.
+_orig_getaddrinfo = socket.getaddrinfo
+def _ipv4_first(*a, **kw):
+    return sorted(_orig_getaddrinfo(*a, **kw), key=lambda r: r[0] != socket.AF_INET)
+socket.getaddrinfo = _ipv4_first
 
 # ---- cau hinh ---------------------------------------------------------------
 MODEL = "gemini-3.1-flash-lite"
@@ -21,6 +28,12 @@ SHOW_MAX_FILES = 300         # show_commit: so file toi da dua vao pathspec
 DIFF_MAX_CHARS = 100000
 MAX_API_RETRIES = 3
 RETRY_BASE_SECONDS = 10
+KEY_SWITCH_DELAY = 6         # giay nghi truoc khi sang key khac sau 429 (nhan voi so lan 429 lien tiep) -> khong bi limit theo IP
+MAX_CONSECUTIVE_429 = 6      # 429 lien tiep tu bay nhieu key = limit IP/TPM chung, dung han thay vi dap het cac key
+
+# .env nam canh script nay (duong dan tuong doi, khong hardcode o dia/may nao)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(SCRIPT_DIR, ".env")
 
 OUT_FILE = ".commit_msg.txt"
 # PLAIN_RETRIES = 2           # temporarily disabled with the announcement jargon filter
@@ -143,14 +156,17 @@ def get_recent_log():
 
 
 def get_api_keys():
-    env_path = r"C:\arona\.env"
-    if not os.path.exists(env_path):
+    """Doc GEMINI_API_KEY tu .env canh script (ENV_PATH). Ho tro chuoi, hoac list JSON cho nhieu key."""
+    if not os.path.exists(ENV_PATH):
+        print(f"[Warning] .env not found at {ENV_PATH}", file=sys.stderr)
         return []
 
     try:
-        with open(env_path, "r", encoding="utf-8") as f:
+        with open(ENV_PATH, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
+                if line.startswith("export "):
+                    line = line[7:].lstrip()
                 if line.startswith("GEMINI_API_KEY"):
                     val = line.split("=", 1)[1].strip().strip('"').strip("'")
                     try:
@@ -456,18 +472,16 @@ def example_for(key, name):
 
 
 def message_spec(key, name, owner="idoldange", call="anh"):
-    return (f"At the very end, after a blank line, add the Discord announcement wrapped EXACTLY as {OPEN_TAG} ... "
-            f"{CLOSE_TAG} with nothing after the closing tag. The bot owner is {owner} (dev): in Vietnamese address them "
-            f"as '{call} {owner}', in other languages however a younger person would naturally call them. Every change in "
-            "the diff was written by this dev, not by you: present the update as their work, never as yours or as "
-            "the bot's doing. ONLY this text is posted to Discord (the title and bullets "
-            f"are not), so write it in {style_for(key, name)} for the bot's USERS to read: they use the bot, do not code, "
-            "and are NOT the dev (the dev already knows this change). Tell them what THEY will notice when using the bot "
-            "(new ability, fix, nicer behaviour). Write it as plain prose like a person typing to friends: normal sentences "
-            "with natural line breaks (a blank line between paragraphs is fine), no bullet lists and no markdown "
-            "formatting; no hard limit, long texts are split automatically). Stay accurate, never claim an effect the diff does not "
-            f"support. {_FORBIDDEN}. Never use @mentions. If the change is only behind the scenes, say so simply and "
-            "honestly.\n")
+    return (f"Then a blank line and the Discord announcement as {OPEN_TAG}...{CLOSE_TAG}, with nothing after the "
+            f"closing tag. ONLY this text is posted (not the title or bullets).\n"
+            f"- Audience: the bot's users. They don't code and are not the dev, who already knows the change. "
+            f"Tell them what THEY will notice (new ability, fix, nicer behaviour). Behind-the-scenes only: say so "
+            f"simply and honestly.\n"
+            f"- Voice: {style_for(key, name)}. Plain prose with natural line breaks, no lists, no markdown; "
+            f"length is free (long text is split automatically).\n"
+            f"- Credit: all changes are by the dev {owner}, never by you or the bot. In Vietnamese call them "
+            f"'{call} {owner}'; in other languages however a younger person would naturally address them.\n"
+            f"- Accuracy: never claim an effect the diff doesn't support. {_FORBIDDEN}. No @mentions.\n")
 
 
 def split_announcement(text):
@@ -558,46 +572,41 @@ def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
 
 def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese", owner="idoldange", call="anh", limit=DIFF_MAX_CHARS, agent_md=""):
     parts = [
-        "You are writing the commit message for the PENDING commit whose diff is at the end of this prompt. "
-        "The commits in the history list below are ALREADY committed; do not describe them as part of this change.\n",
+        "Write the commit message for the PENDING commit whose diff is at the end. The commits in the history "
+        "list are ALREADY committed; do not describe them as part of this change.\n",
 
-        "HOW TO WORK (do this BEFORE writing the message):\n"
-        "1. Read the file list and the diff. For every changed file/function make sure you understand what it does "
-        "and what changed. The diff has full function context, but not the rest of the file.\n"
-        "2. If anything is unclear (a new function whose purpose you cannot tell, a config value, who calls a changed "
-        "function, a rename, a file cut from the diff), call read_file to look at the code around it.\n"
-        "3. If this commit continues, fixes, tunes or reverts earlier work, call git_log (path= for the history of one "
-        "file, grep= to search by keyword, skip= to go further back than the history below) and show_commit to read "
-        "what the earlier commit really changed. Never guess what earlier commits did.\n"
-        "4. Write only when you can say, with evidence from the diff or the files you read: what changed, what it "
-        "affects, and (if visible) why. Do not describe anything you did not verify, do not invent file or function "
-        "names, and do not call a change a \"fix\" unless the diff shows a bug being fixed.\n"
-        "5. If something looks half-finished (stub function, TODO, a feature wired up only halfway), treat it "
-        "as work in progress: describe what it is meant to do and that it is still being built, never as "
-        "finished. If you are not sure, hedge like \'chắc là'\' (or the natural equivalent in the announcement "
+        "WORKFLOW (before writing):\n"
+        "1. Read the file list and diff. The diff has function context, not whole files.\n"
+        "2. If something is unclear (purpose of a new function, a config value, callers of a changed function, a "
+        "rename, a file cut from the diff), use read_file.\n"
+        "3. If this continues, fixes, tunes or reverts earlier work, use git_log (path=, grep=, skip=) and "
+        "show_commit. Never guess what earlier commits did.\n"
+        "4. State only what the diff or files you read prove: what changed, what it affects, why (if visible). "
+        "Never invent file or function names. Say \"fix\" only if the diff fixes a bug.\n"
+        "5. Half-finished code (stub, TODO, half-wired feature) is work in progress: say what it is meant to do and "
+        "that it is still being built. If unsure, hedge (\"chắc là\" or the equivalent in the announcement "
         "language).\n"
-        "Small obvious commits need 0-2 tool calls; larger or unclear ones need more. Do not call tools just to look "
-        "busy, and do not repeat a call with the same arguments.\n",
+        "Trivial commits: 0-2 tool calls. No filler or repeated calls.\n",
 
-        "OUTPUT FORMAT (exactly this layout, no code fences, no extra text):\n"
-        "Line 1: technical title in English, conventional format (feat:, fix:, refactor:, ...), max 50 characters.\n"
-        "Line 2: blank line.\n"
-        "Then short bullet points in English, each naming the relevant file and function/loop "
+        "OUTPUT (exactly this layout, no code fences, no extra text):\n"
+        "Line 1: English title, conventional format (feat:, fix:, refactor:, ...), max 50 chars.\n"
+        "Line 2: blank.\n"
+        "Then short English bullets, each naming the file and function/loop "
         "(e.g. `- fix buffering in arch.py:read_output() loop`).\n"
         + message_spec(lang_key, lang_name, owner, call) +
-        "Example of the layout (the content is made up):\n" + example_for(lang_key, lang_name) + "\n",
+        "Layout example (made-up content):\n" + example_for(lang_key, lang_name) + "\n",
     ]
     if agent_md:
-        parts.append("PROJECT MAP (agent.md - short index: what each file does and how files relate; use it to tell "
-                     "where a change lives and what else it may affect):\n" + agent_md + "\n")
+        parts.append("PROJECT MAP (agent.md: what each file does and how files relate; use it to see where a change "
+                     "lives and what else it may affect):\n" + agent_md + "\n")
     if log:
-        parts.append("Recent commits (newest first). Match their style and do not repeat what they already describe "
-                     "unless this diff changes it again:\n" + log + "\n")
+        parts.append("Recent commits (newest first). Match their style; don't repeat what they already say unless "
+                     "this diff changes it again:\n" + log + "\n")
     if stat:
         parts.append("Files changed in this commit:\n" + stat + "\n")
     if truncated:
-        parts.append(f"NOTE: the diff below was cut at {limit} characters; later files are missing, "
-                     "use the file list above and read_file to cover them.\n")
+        parts.append(f"NOTE: the diff below is cut at {limit} characters; later files are missing. "
+                     "Use the file list above and read_file to cover them.\n")
     parts.append(f"Diff:\n{diff}")
     return "\n".join(parts)
 
@@ -644,7 +653,11 @@ def main():
     agent_md = get_agent_md()
     print(f"[agent.md] {len(agent_md)} chars", file=sys.stderr)
     prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call, limit=limit, agent_md=agent_md)
+    consecutive_429 = 0
     for key in keys:
+        if consecutive_429 >= MAX_CONSECUTIVE_429:
+            print(f"[Warning] {consecutive_429} keys in a row got 429 (IP/token limit); giving up, try again in a minute", file=sys.stderr)
+            break
         retry_count = 0
         while True:
             try:
@@ -669,6 +682,12 @@ def main():
                     prompt = build_prompt(diff, truncated, get_diff_stat(), get_recent_log(), lang_key, lang_name, owner=owner, call=args.call, limit=limit, agent_md=agent_md)
                 continue
             except RetryableAPIError as e:
+                if e.status == 429:   # key het quota/limit: nghi roi moi sang key khac, khong don dap
+                    consecutive_429 += 1
+                    delay = KEY_SWITCH_DELAY * consecutive_429
+                    print(f"[Warning] 429 ({consecutive_429}/{MAX_CONSECUTIVE_429}), next key in {delay}s...", file=sys.stderr)
+                    time.sleep(delay)
+                    break
                 if wait_before_retry(retry_count, str(e)):
                     retry_count += 1
                     continue
