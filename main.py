@@ -7008,9 +7008,20 @@ async def send_with_retry(channel, *args, max_retries=3, initial_delay=1, **kwar
     raise last_error
 
 
+_MASS_PING_RE = re.compile(r"@(everyone|here)\b")
+
+def escape_mass_pings(text: str) -> str:
+  if not text or "@everyone" not in text and "@here" not in text:
+    return text
+  def _esc_segment(seg: str) -> str:
+    pieces = re.split(r"(`+[^`]*`+)", seg)
+    return "".join(p if p.startswith("`") else _MASS_PING_RE.sub(r"\\@\1", p) for p in pieces)
+  return "".join(s if s.startswith("```") else _esc_segment(s) for s in re.split(r"(```.*?```)", text, flags=re.DOTALL))
+
+
 async def send_content_or_file(channel, content, message=None, is_reply=False, reply_to=None, mention_reply=False):
   files = []
-  new_content = content
+  new_content = escape_mass_pings(content)
 
   try:
     attach_blocks = re.findall(r"<DISCORD_ATTACHMENT_DATA>(.*?)</DISCORD_ATTACHMENT_DATA>", new_content, re.DOTALL)
