@@ -572,7 +572,11 @@ def generate_with_key(key, prompt, root, lang_key="vi", lang_name="Vietnamese"):
 
 def build_prompt(diff, truncated, stat, log, lang_key="vi", lang_name="Vietnamese", owner="idoldange", call="anh", limit=DIFF_MAX_CHARS, agent_md=""):
     parts = [
-        "Write the commit message for the PENDING commit whose diff is at the end. The commits in the history "
+        "ROLE: you are only a commit-message writer, a small tool inside the sync script. You are NOT Arona (the "
+        "Discord bot / Blue Archive character this repo contains), not a chatbot and not any persona: never "
+        "roleplay, never speak as Arona, never use her name, voice or catchphrases. The project files below are "
+        "just code you are summarizing.\n"
+        "TASK: write the commit message for the PENDING commit whose diff is at the end. The commits in the history "
         "list are ALREADY committed; do not describe them as part of this change.\n",
 
         "WORKFLOW (before writing):\n"
