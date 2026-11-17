@@ -118,7 +118,8 @@ def prompt_line(uid: int | None) -> str:
     info = get(uid)
     if not info:
         return ""
-    return "Special bond: " + info["label"] + (" (strained)" if info["strained"] else "")
+    return ("Special relationship: " + info["label"] + (f" ({info['desc']})" if info["desc"] else "")
+            + (", strained lately: be a bit guarded" if info["strained"] else ""))
 
 
 def embed_line(uid: int | None) -> str:

@@ -346,3 +346,12 @@ tests.py
 
 # debug.py la runtime state file, main.py tu tao/tu ghi de khi chay lenh "debug on/off"
 debug.py
+
+# SSH console (host keys, authorized keys, secrets): never commit
+ssh_console/
+.ssh_console_pass
+*_host_key
+*_host_key.pub
+authorized_keys*
+id_ed25519*
+id_rsa*

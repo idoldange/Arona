@@ -82,8 +82,12 @@ def exp_for_message(bond: float, mood: float = 0.0, mood_delta: float = 0.0) -> 
     return result
 
 
+_CLOSENESS = ("just met", "acquainted", "friendly", "close", "very close", "inner circle", "closest person", "maximum")
+
+
 def prompt_line(bond: float) -> str:
-    return f"Relationship with this user: {rank_name(bond)} (Bond {bond:.1f}/100)"
+    i = next((k for k, (lo, hi, _n, _m) in enumerate(RANKS) if lo <= bond < hi), len(RANKS) - 1)
+    return f"Bond: {_CLOSENESS[min(i, len(_CLOSENESS) - 1)]} ({bond:.0f}/100)"
 
 
 # DB

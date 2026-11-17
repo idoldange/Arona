@@ -175,9 +175,9 @@ def prompt_line(uid: int | None, is_dm: bool = False, now: float | None = None) 
     lv, ch = levels(uid, now), _changes(uid, is_dm, now)
     lines = []
     if lv:
-        lines.append("Relation: " + ", ".join(f"{a} {w}" for a, w in lv))
+        lines.append("Toward them: " + ", ".join(f"{a} {w}" for a, w in lv))
     if ch:
-        lines.append("Relation changes (old to new): " + "; ".join(ch))
+        lines.append("Shifted lately (old→new): " + "; ".join(ch))
     return "\n".join(lines)
 
 
