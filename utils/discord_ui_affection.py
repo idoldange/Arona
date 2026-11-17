@@ -15,6 +15,8 @@ _MOOD_EMOJI = {
     "shocked": "😱",
 }
 
+import config as _C
+C_REL_ON = bool(getattr(_C, 'REL_ENABLED', True))
 ARONA_COLOR = discord.Color(0x89C4F4)   # Arona's light blue, always (mood no longer tints the embed)
 
 _MOOD_COLOR = {
@@ -113,6 +115,9 @@ def build_bond_embed(user: discord.abc.User, is_dm: bool = False) -> discord.Emb
     _rel = _special.embed_line(uid)
     if _rel:
         embed.add_field(name="💞 Special relationship", value=_safe(_rel)[:1000], inline=False)
+    if C_REL_ON:
+        from affection import relation as _relation
+        embed.add_field(name="🤝 Relation", value=_relation.embed_line(uid)[:1000], inline=False)
     embed.add_field(name="🌤️ Arona's mood", value="\n".join(mood_lines)[:1020], inline=False)
     embed.set_footer(text="Mood = Arona's general state plus how she feels toward you. Bond is yours only.")
     return embed

@@ -321,12 +321,17 @@ def _decay_offset(st: dict, uid: int, now: float):
     bond = _bond_value(uid)
     forgive = 1.0 - min(C.BOND_FORGIVE_MAX, bond / C.BOND_FORGIVE_DIV)
     floor_warmth = bond * C.WARMTH_FLOOR_PER_BOND
+    try:
+        from affection import relation as _r   # lazy: relation imports mood
+        relm = _r.hl_mult(uid)
+    except Exception:
+        relm = 1.0
     online = min(dt, C.SLEEP_AFTER)
     offline = dt - online
     for e, x in list(st["off"].items()):
         h = float(C.USER_HALFLIFE.get(e, 3600.0))
         if e in C.NEGATIVE_EMOS:
-            h *= forgive
+            h *= forgive * relm
         target = floor_warmth if (e == "warmth" and x > 0) else 0.0
         x = _relax(x, target, h, online)
         if offline > 0:

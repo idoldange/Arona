@@ -319,6 +319,22 @@ EMO_DRIFT_STD = 0.002        # per-tick random drift on joy/curiosity/anxiety (k
 MOOD_LABEL_DESC = {lbl: desc for _lo, _hi, lbl, desc in MOOD_LEVELS}
 MOOD_LABEL_DESC["shocked"] = "Arona is genuinely shocked, caught completely off guard."
 
+# Per-user relationship axes (affection/relation.py). Rest = 0.5 (tension rests at 0). Half-lives are in seconds.
+REL_ENABLED = True
+REL_UNIT = 0.01              # <rel>trust+3</rel> = 0.03
+REL_TAG_MAX = 15             # max units per axis per tag
+REL_TAG_MAX_COUNT = 3        # axes per tag
+REL_HALFLIFE = {"trust": 60 * 86400.0, "respect": 60 * 86400.0, "tension": 3 * 86400.0,
+                "playfulness": 14 * 86400.0, "ease": 14 * 86400.0, "openness": 30 * 86400.0}
+REL_EVENTS_KEEP = 6          # recent changes remembered per user (RAM)
+REL_EVENTS_WINDOW = 6 * 3600.0   # only changes newer than this are shown to the model
+REL_SHOW_DEV = 0.12          # an axis is shown in the prompt only when |level - rest| >= this
+REL_TENSION_HL_MULT = 1.5    # negative-feeling half-life x (1 + this * tension)
+REL_TRUST_FORGIVE = 0.4      # ... x (1 - this * (trust - 0.5))
+REL_TENSION_EXP_CUT = 0.5    # bond gain per message x (1 - this * tension)
+REL_SPECIAL_MIN_TRUST = 0.5  # special relationship needs trust >= this and tension <= next
+REL_SPECIAL_MAX_TENSION = 0.3
+
 
 # ── Database ─────────────────────────────────────────────────
 

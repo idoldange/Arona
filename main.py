@@ -7294,7 +7294,7 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
         # tts_text = tts_text.replace("↑", "").replace("↓", "") #no need
         
         # remove <mood>
-        tts_text = re.sub(r"<mood>.*?</mood>", "", tts_text, flags=re.DOTALL) 
+        tts_text = re.sub(r"<(mood|rel)>.*?</\1>", "", tts_text, flags=re.DOTALL) 
         tts_msg = await channel.send(
           content=f"-# {tts_text}",
           file=discord.File(BytesIO(tts_data), filename=tts_filename)
@@ -9320,7 +9320,7 @@ async def on_message(message):
       await send_with_retry(message.channel, "Text is too long — please keep it under 1500 characters.")
       return
     # Keep pitch markers (↑ ↓) for the model; drop mood tags like the normal TTS path does
-    tts_input = re.sub(r"<mood>.*?</mood>", "", tts_input, flags=re.DOTALL).strip()
+    tts_input = re.sub(r"<(mood|rel)>.*?</\1>", "", tts_input, flags=re.DOTALL).strip()
     if not tts_input:
       await send_with_retry(message.channel, "Nothing to speak after removing the mood tags.")
       return
