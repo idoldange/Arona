@@ -9923,16 +9923,18 @@ async def handle_status_command(cmd: str):
   """
   Handle the STATUS command to change the Discord bot's presence.
   Syntax:
-    STATUS dnd/idle/online/invisible P/L/S/W/C "activity name" url
+    STATUS dnd/idle/online/invisible P/L/S/W/C/T "activity name" url
+    (T = custom text status, the speech bubble above the avatar)
 
   Example:
     STATUS ONLINE S "Blue Archive" https://www.youtube.com/@BlueArchive_JP
+    STATUS ONLINE T "you have a sandevistan too?"
   """
   try:
     parts = shlex.split(cmd)
 
     if len(parts) < 4:
-      console.log("\033[31mUsage: STATUS dnd/idle/online/invisible P/L/S/W/C 'activity_name' url\033[0m", "ERROR")
+      console.log("\033[31mUsage: STATUS dnd/idle/online/invisible P/L/S/W/C/T 'activity_name' url\033[0m", "ERROR")
       return
 
     status_str = parts[1].lower()
@@ -9953,6 +9955,7 @@ async def handle_status_command(cmd: str):
       "S": discord.ActivityType.streaming,
       "W": discord.ActivityType.watching,
       "C": discord.ActivityType.competing,
+      "T": discord.ActivityType.custom,
     }
 
     if status_str not in status_map:
@@ -9960,7 +9963,7 @@ async def handle_status_command(cmd: str):
       return
 
     if activity_type_str not in activity_type_map:
-      console.log("\033[31mInvalid activity type! Use: P, L, S, W, C\033[0m", "ERROR")
+      console.log("\033[31mInvalid activity type! Use: P, L, S, W, C, T\033[0m", "ERROR")
       return
 
     if activity_type_str == "S":
@@ -9968,6 +9971,9 @@ async def handle_status_command(cmd: str):
       url_info = f"- {activity_url}"
     elif activity_type_str == "P":
       activity = discord.Game(name=activity_name)
+      url_info = ""
+    elif activity_type_str == "T":
+      activity = discord.CustomActivity(name=activity_name)
       url_info = ""
     else:
       activity = discord.Activity(type=activity_type_map[activity_type_str], name=activity_name)
