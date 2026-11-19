@@ -11,17 +11,24 @@ from console import console
 from arona.voice_engine.src.voice_metrics import metrics as vm
 
 # --- diagnostics: find out who stops the reader (the sink gets cleaned up a few seconds after joining) ---
+# Only warn when the stop looks unexpected: an error is set, or the caller is not one of the intentional
+# leave paths below (bot/user leaving on purpose).
+_INTENTIONAL_STOP_CALLERS = ("_finish_leave",)
+
 try:
     from discord.ext.voice_recv.reader import AudioReader as _AudioReader
     if not getattr(_AudioReader, "_arona_traced", False):
         _orig_reader_stop = _AudioReader.stop
 
         def _traced_reader_stop(self):
-            console.log(
-                f"[VoiceRecv] AudioReader.stop() active={self.active} error={self.error!r} called from:\n"
-                + "".join(traceback.format_stack(limit=12)),
-                "WARN",
-            )
+            stack = "".join(traceback.format_stack(limit=12))
+            intentional = self.error is None and any(name in stack for name in _INTENTIONAL_STOP_CALLERS)
+            if not intentional:
+                console.log(
+                    f"[VoiceRecv] AudioReader.stop() active={self.active} error={self.error!r} called from:\n"
+                    + stack,
+                    "WARN",
+                )
             return _orig_reader_stop(self)
 
         _AudioReader.stop = _traced_reader_stop
