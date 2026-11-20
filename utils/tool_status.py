@@ -433,24 +433,67 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
 
 # ---------------------------------------------------------------------------
 # Done-status: once a tool finishes, its "Executing..." notice is edited to
-# append a result marker, e.g. "-# ... Searching for 'cats'... Done".
-#   - result starts with Error/Failed/...  -> "Failed" (always wins)
-#   - else _DONE_OVERRIDES[tool](args, result) if it returns a string
-#   - else _DONE_STATIC[tool]
-#   - else "Done"
-# Add a new tool: put a line in _DONE_STATIC (fixed text) or _DONE_OVERRIDES
-# (callable (func_args, func_result) -> str | None).
+# append a result marker, e.g. "-# ... Searching for 'cats'... Found 5 results".
+# Order of decision (see get_function_done_message):
+#   1. result looks like a failure           -> "Failed"
+#   2. _DONE_OVERRIDES[tool](args, result, data) returned a string
+#   3. result looks like "X not found"       -> "Not found"
+#   4. _DONE_STATIC[tool]
+#   5. "Done"
+# `data` is the result parsed as JSON (dict/list) or None.
+# Add a tool: fixed text -> _DONE_STATIC; result/args dependent -> _DONE_OVERRIDES.
 # ---------------------------------------------------------------------------
 
-_ERROR_PREFIXES = ("error", "failed", "failure", "unknown")
+import json as _json
+import re as _re
+
+# Failure markers seen across execute_function and the utils modules.
+_FAIL_PREFIXES = (
+    "error", "err:", "failed", "failure", "unknown", "could not",
+    "crawl error", "navigation error", "move failed", "promotion failed",
+    "transcript error", "query failed", "delete failed", "invalid",
+    "[youtube error",
+)
+# daemon tools sometimes return "<head line>\nError: ..." (error not on first line)
+_ERR_LINE = _re.compile(r"^\s*error:", _re.I | _re.M)
+_ERR_LINE_TOOLS = {
+    "start_daemon", "read_daemon_output", "send_daemon_input", "stop_daemon",
+    "list_daemons", "daemon_status", "daemon",
+}
+
+
+def _parse_json(s: str):
+    t = s.lstrip()
+    if t[:1] in ("{", "["):
+        try:
+            return _json.loads(t)
+        except Exception:
+            return None
+    return None
+
+
+def _looks_failed(func_name: str, result: str, data) -> bool:
+    low = result.lstrip().lower()
+    if low.startswith(_FAIL_PREFIXES):
+        return True
+    if func_name in _ERR_LINE_TOOLS and _ERR_LINE.search(result[:600]):
+        return True
+    if isinstance(data, dict) and data.get("error"):
+        return True
+    return False
+
+
+def _looks_not_found(result: str) -> bool:
+    low = result.lstrip().lower()[:80]
+    return (low.startswith("no ") and "found" in low) or "not found" in low
+
 
 # fixed suffix per tool (tools not listed here and not in overrides -> "Done")
 _DONE_STATIC = {
     "cleanup_sandbox": "Sandbox wiped",
+    "weather_search": "Fetched",
+    "summarize_channel": "Summarized",
     "read_skills": "Skills loaded",
-    "send_files": "Sent",
-    "cleanup_files": "Cleaned up",
-    "edit_file": "Edited",
     "rag_save": "Saved",
     "rag_delete": "Deleted",
     "load_more_context": "Loaded",
@@ -484,32 +527,200 @@ _DONE_STATIC = {
 
 def _by_arg(key, mapping, default="Done", arg_default=""):
     """Override factory: pick the suffix from func_args[key]."""
-    def _fn(args, result):
+    def _fn(args, result, data):
         return mapping.get(args.get(key, arg_default), default)
     return _fn
 
 
-def _done_web_search(args, result):
+def _done_web_search(args, result, data):
+    low = result.lstrip().lower()
+    if low.startswith("no results found"):
+        return "No results"
+    if "search service temporarily unavailable" in low[:300]:
+        return "Failed"
     q = args.get("query", [])
-    n = len(q) if isinstance(q, list) else 1
-    return f"Done ({n} queries)" if n > 1 else "Done"
+    nq = len(q) if isinstance(q, list) else 1
+    failed = (len(_re.findall(r"^### Search for .*? failed", result, _re.M))
+              + len(_re.findall(r"^### Results for .*?:\s*\n\s*ERR:", result, _re.M)))
+    if nq and failed >= nq:
+        return "Failed"
+    n = len(_re.findall(r"^## Result \d+", result, _re.M))
+    base = f"Found {n} result{'' if n == 1 else 's'}" if n else "Done"
+    return f"{base}, {failed} failed" if failed else base
 
 
-def _done_web_crawl(args, result):
+def _done_web_crawl(args, result, data):
     urls = args.get("url", [])
     n = len(urls) if isinstance(urls, list) else 1
-    return f"Done ({n} pages)" if n > 1 else "Done"
+    failed = (len(_re.findall(r"^### Crawl for .*? failed", result, _re.M))
+              + len(_re.findall(r"^### Content for .*?:\s*\n\s*(?:ERR:|Crawl Error|Navigation error)", result, _re.M)))
+    ok = max(0, n - failed)
+    if n and ok == 0:
+        return "Failed"
+    if failed:
+        return f"Read {ok}/{n} pages"
+    return f"Read {n} page{'' if n == 1 else 's'}" if n else "Done"
 
 
-def _done_run_code(args, result):
-    if args.get("action", "run_code") == "run_shell":
-        return "Command finished"
-    return "Code finished"
+def _done_run_code(args, result, data):
+    m = _re.search(r"status:\s*(\w+)", result[:80])
+    st = m.group(1).lower() if m else "success"
+    if st in ("success", "ok"):
+        return "Command finished" if args.get("action", "run_code") == "run_shell" else "Code finished"
+    if st == "timeout":
+        return "Timed out"
+    return "Failed"
 
 
-def _done_create_files(args, result):
-    n = len(args.get("files", []) or [])
+def _done_create_files(args, result, data):
+    if not isinstance(data, list) or not data:
+        return "Created"
+    n = len(data)
+    ok = sum(1 for r in data if isinstance(r, dict) and not r.get("error"))
+    if ok == 0:
+        return "Failed"
+    if ok < n:
+        return f"Created {ok}/{n} files"
     return f"Created {n} files" if n > 1 else "Created"
+
+
+def _done_edit_file(args, result, data):
+    r = data.get("replaced") if isinstance(data, dict) else None
+    if isinstance(r, int):
+        return f"Edited ({r} replacement{'' if r == 1 else 's'})"
+    return "Edited"
+
+
+def _done_read_file(args, result, data):
+    if isinstance(data, dict) and "start_line" in data and "end_line" in data:
+        tail = " (more below)" if data.get("has_more") else ""
+        return f"Read lines {data['start_line']}-{data['end_line']}{tail}"
+    return "Done"
+
+
+def _done_find_str(args, result, data):
+    res = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(res, dict):
+        return "Done"
+    vals = [v for v in res.values() if isinstance(v, dict)]
+    if vals and all(v.get("error") for v in vals):
+        return "Failed"
+    total = sum(int(v.get("total_matches", 0) or 0) for v in vals)
+    if total == 0:
+        return "No matches"
+    return f"Found {total} match{'' if total == 1 else 'es'}"
+
+
+def _done_send_files(args, result, data):
+    if not isinstance(data, dict):
+        return "Sent"
+    s = len(data.get("sent") or [])
+    e = len(data.get("errors") or [])
+    if s == 0 and e:
+        return "Failed"
+    if e:
+        return f"Sent {s}, {e} failed"
+    return f"Sent {s} files" if s > 1 else "Sent"
+
+
+def _done_cleanup_files(args, result, data):
+    if not isinstance(data, dict):
+        return "Cleaned up"
+    d = data.get("deleted")
+    d = len(d) if isinstance(d, list) else int(d or 0)
+    e = len(data.get("errors") or [])
+    if d == 0 and e:
+        return "Failed"
+    if e:
+        return f"Cleaned up {d}, {e} failed"
+    return f"Cleaned up {d}"
+
+
+def _done_todo(args, result, data):
+    # todo returns result["error"] as a bare string (no "Error" prefix)
+    if result.lstrip().lower().startswith(("no content provided", "no active todo", "item not found")):
+        return "Failed"
+    return {"create": "Created", "done": "Completed", "edit": "Updated"}.get(args.get("action", ""), "Updated")
+
+
+def _done_rag_query(args, result, data):
+    n = len(_re.findall(r"^ID: ", result, _re.M))
+    if n == 0:
+        return None  # "No relevant information found in memory." -> generic "Not found"
+    return f"Found {n} memor{'y' if n == 1 else 'ies'}"
+
+
+def _done_fetch_history(args, result, data):
+    if result.lstrip().lower().startswith("no query provided"):
+        return "Skipped"
+    n = len(_re.findall(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\]\[", result, _re.M))
+    if n == 0:
+        return "No messages"
+    verb = "Found" if args.get("action") == "search" else "Fetched"
+    return f"{verb} {n} message{'' if n == 1 else 's'}"
+
+
+def _done_schaledb(args, result, data):
+    m = _re.search(r"\((\d+) total\)", result[:200])
+    if m:
+        n = int(m.group(1))
+        return f"Found {n} student{'' if n == 1 else 's'}"
+    return None
+
+
+def _done_search_hits(noun):
+    def _fn(args, result, data):
+        m = _re.search(r"\((\d+) result\(s\)", result[:200])
+        if not m:
+            return None
+        n = int(m.group(1))
+        return f"Found {n} {noun}{'' if n == 1 else 's'}"
+    return _fn
+
+
+def _done_youtube(args, result, data):
+    if args.get("action", "full") == "transcript":
+        m = _re.search(r"\|\s*([\d,]+) chars\]", result[:200])
+        return f"Got transcript ({m.group(1)} chars)" if m else "Got transcript"
+    if "--- Transcript [" in result:
+        return "Got video info + transcript"
+    if "[transcript unavailable" in result.lower():
+        return "Got video info (no transcript)"
+    return "Got video info"
+
+
+def _done_current_presence(args, result, data):
+    res = data.get("results") if isinstance(data, dict) else None
+    if isinstance(res, list):
+        return f"Checked {len(res)} member{'' if len(res) == 1 else 's'}"
+    return None
+
+
+def _done_presence_summary(args, result, data):
+    d = data.get("period_days") if isinstance(data, dict) else None
+    return f"Got {d}-day summary" if d else None
+
+
+def _done_list_presences(args, result, data):
+    p = data.get("presences") if isinstance(data, dict) else None
+    if isinstance(p, list):
+        return f"Found {len(p)} presence{'' if len(p) == 1 else 's'}" if p else "No presences"
+    return None
+
+
+def _done_presence_history(args, result, data):
+    h = data.get("history") if isinstance(data, dict) else None
+    if isinstance(h, list):
+        return f"Fetched {len(h)} entr{'y' if len(h) == 1 else 'ies'}"
+    return None
+
+
+_GITHUB_DONE = {
+    "search": "Searched GitHub", "info": "Fetched repo info",
+    "get_tree": "Fetched file tree", "tree": "Fetched file tree",
+    "read_files": "Read files", "find_string": "Searched code",
+    "commits": "Fetched commits",
+}
 
 
 _DONE_OVERRIDES = {
@@ -517,28 +728,45 @@ _DONE_OVERRIDES = {
     "web_crawl": _done_web_crawl,
     "run_code": _done_run_code,
     "create_files": _done_create_files,
+    "edit_file": _done_edit_file,
+    "read_file": _done_read_file,
+    "find_str": _done_find_str,
+    "send_files": _done_send_files,
+    "cleanup_files": _done_cleanup_files,
+    "todo": _done_todo,
+    "rag_query": _done_rag_query,
+    "fetch_history": _done_fetch_history,
+    "schaledb_query": _done_schaledb,
+    "search_member": _done_search_hits("member"),
+    "search_guild": _done_search_hits("server"),
+    "youtube": _done_youtube,
+    "fetch_current_presence": _done_current_presence,
+    "fetch_guild_presence_summary": _done_presence_summary,
+    "list_presences": _done_list_presences,
+    "fetch_presence_history": _done_presence_history,
+    "fetch_github_repo": _by_arg("action", _GITHUB_DONE),
     "move_file": _by_arg("direction", {"persist": "Persisted"}, default="Staged"),
     "saved_information": _by_arg("action", {"add": "Added", "edit": "Updated", "delete": "Deleted"}),
     "channel_memory": _by_arg("action", {"set": "Updated", "append": "Updated", "clear": "Cleared"}, arg_default="get"),
     "guild_memory": _by_arg("action", {"set": "Updated", "append": "Updated", "clear": "Cleared"}, arg_default="get"),
     "gacha_tracker": _by_arg("action", {"add": "Logged", "add_shards": "Added", "reset": "Reset"}, arg_default="status"),
-    "todo": _by_arg("action", {"create": "Created", "done": "Completed", "edit": "Updated"}, default="Updated"),
 }
 
 
 def get_function_done_message(func_name: str, func_args: dict, func_result, exec_text: str) -> str:
     """Return the notice text with a Done/Failed (or per-tool) marker appended."""
     result_str = func_result if isinstance(func_result, str) else str(func_result or "")
-    if result_str.lstrip().lower().startswith(_ERROR_PREFIXES):
+    data = _parse_json(result_str)
+    if _looks_failed(func_name, result_str, data):
         suffix = "Failed"
     else:
         suffix = None
         override = _DONE_OVERRIDES.get(func_name)
         if override:
             try:
-                suffix = override(func_args or {}, result_str)
+                suffix = override(func_args or {}, result_str, data)
             except Exception:
                 suffix = None
         if not suffix:
-            suffix = _DONE_STATIC.get(func_name, "Done")
+            suffix = "Not found" if _looks_not_found(result_str) else _DONE_STATIC.get(func_name, "Done")
     return f"{exec_text} {suffix}"[:2000]
