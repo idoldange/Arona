@@ -647,6 +647,32 @@ _pending_call_sig: Dict[str, str] = {}
 _active_tasks: Dict[Tuple[int, int], asyncio.Task] = {}
 _task_msgs: Dict[Tuple[int, int], List[Any]] = {}  # accumulated discord.Message objects
 
+# In-flight message lock: counts EVERY running handle_message call (all channels/users, plus
+# slash commands). `stop` waits until the count is back to 0 so a shutdown never cuts a reply
+# off mid-way, and several messages being processed at once are all waited for, not just one.
+_inflight_count = 0
+_inflight_idle = asyncio.Event()  # set while nothing is being processed
+_inflight_idle.set()
+_shutdown_requested = False  # once set, on_message stops accepting new messages
+
+
+async def _wait_for_inflight_messages():
+  """Block until every in-flight handle_message call has finished (used by `stop`)."""
+  global _shutdown_requested
+  _shutdown_requested = True
+  if _inflight_count:
+    console.log(f"[SHUTDOWN] Waiting for {_inflight_count} in-flight message(s) to finish...", "INFO")
+  while True:
+    try:
+      await asyncio.wait_for(_inflight_idle.wait(), timeout=15)
+    except asyncio.TimeoutError:
+      console.log(f"[SHUTDOWN] Still waiting for {_inflight_count} in-flight message(s)...", "INFO")
+      continue
+    await asyncio.sleep(0.1)  # let a task that was just scheduled bump the counter first
+    if _inflight_count == 0:
+      break
+  console.log("[SHUTDOWN] All in-flight messages finished.", "INFO")
+
 
 # § CODE EXECUTION  (run_code → docker_runner sandbox)
 async def run_code(code: str = "", action: str = "run_code", shell_cmd: str = "", msg_id: str = None, message=None, filename: str = None, send_output: bool = True, send_code: bool = True, send_logs: bool = False, timeout: int = 60, channel_id: str | None = None, desk_key: str | None = None) -> dict:
@@ -7737,7 +7763,22 @@ async def _extract_link_attachments(text: str, existing_urls: set) -> list:
 
 
 
-async def handle_message(message, user_input=None, attachments=None, reply_to=None, context_message=None, is_dm=False, special_rules=None, safety_note=None, on_permission_error=None):
+async def handle_message(*args, **kwargs):
+  """Counts this call as in-flight (see _wait_for_inflight_messages), then runs the real handler.
+  The decrement is in `finally`, so errors and cancellations (rapid follow-up merge) are counted out too."""
+  global _inflight_count
+  _inflight_count += 1
+  _inflight_idle.clear()
+  try:
+    return await _handle_message_impl(*args, **kwargs)
+  finally:
+    _inflight_count -= 1
+    if _inflight_count <= 0:
+      _inflight_count = 0
+      _inflight_idle.set()
+
+
+async def _handle_message_impl(message, user_input=None, attachments=None, reply_to=None, context_message=None, is_dm=False, special_rules=None, safety_note=None, on_permission_error=None):
   """
   Handles an incoming message from Discord.
   
@@ -8706,6 +8747,9 @@ async def on_message(message):
   except Exception as e:
     console.log(f"[Window] mirror message failed: {e}", "WARN")
   if message.author.id == client.user.id:
+    return
+  if _shutdown_requested:
+    console.log(f"[SHUTDOWN] Ignoring message {message.id}: shutdown in progress", "INFO")
     return
   if _is_duplicate_message_dispatch(message.id):
     console.log(f"[DEDUPE] Ignored duplicate on_message dispatch for message {message.id}", "WARN")
@@ -10066,6 +10110,7 @@ async def cmd_help(cmd: str = None):
 async def cmd_stop():
   """Shutdown bot
   Usage: stop"""
+  await _wait_for_inflight_messages()
   console.log("\033[31m[STOP] Shutting down...\033[0m", "INFO")
   if browser:
     try:
