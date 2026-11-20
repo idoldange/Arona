@@ -8170,6 +8170,15 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
               for att in getattr(context_message, "attachments", []):
                   attachment_texts.append(f"[Attachment: {att.filename} | Url: {att.url}]")
 
+              # Replied-to message is a Discord *forward*: its real content lives in
+              # message_snapshots, not in .content/.attachments (those are empty), so
+              # pull the snapshot text + attachments in via the shared helper.
+              fwd_text, fwd_atts = _forwarded_parts(context_message)
+              if fwd_text:
+                  replied_text = f"{replied_text}\n{fwd_text}" if replied_text else fwd_text
+              for att in fwd_atts:
+                  attachment_texts.append(f"[Attachment: {att.filename} | Url: {att.url}]")
+
               attach_block = (
                   " " + " | ".join(attachment_texts)
                   if attachment_texts
