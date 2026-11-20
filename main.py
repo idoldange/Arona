@@ -681,8 +681,14 @@ async def run_code(code: str = "", action: str = "run_code", shell_cmd: str = ""
         # model can use curl to fetch attachments directly
         docker_message = None
 
-        # Execute action
-        if action == "run_shell":
+        # Execute action. If no command/code was supplied, skip execution but
+        # still emit the script/log files so Discord gets a visible placeholder.
+        is_shell = action == "run_shell"
+        raw_content = shell_cmd if is_shell else code
+        command_missing = not (raw_content or "").strip()
+        if command_missing:
+            res = {"status": "success", "log": "", "files": [], "view_files": [], "code": raw_content or "", "msg_id": docker_runner._sanitize_msg_id(str(msg_id))}
+        elif is_shell:
             res = await docker_runner.run_shell(shell_cmd or "", msg_id, message=docker_message, timeout=timeout, channel_id=channel_id, desk_key=desk_key)
         else:
             # default: run_code
@@ -693,8 +699,10 @@ async def run_code(code: str = "", action: str = "run_code", shell_cmd: str = ""
         out_dir = os.path.join(docker_runner.host_workdir_base, workspace_key, "outputs")
         os.makedirs(out_dir, exist_ok=True)
 
-        # Save logs to logs.txt in the output dir
-        log_content = res.get('log') or ''
+        # Save logs to logs.txt in the output dir. Empty output becomes an
+        # explicit "(no output)" so both the model and Discord see something.
+        log_content = res.get('log') or '(no output)'
+        res['log'] = log_content
         logs_path = os.path.join(out_dir, 'logs.txt')
         try:
             with open(logs_path, 'w', encoding='utf-8') as lf:
@@ -711,6 +719,8 @@ async def run_code(code: str = "", action: str = "run_code", shell_cmd: str = ""
             script_content = re.sub(r'^```(python)?|```$', '', res.get('code') or code or '', flags=re.MULTILINE).strip()
 
         script_path = os.path.join(out_dir, script_filename)
+        if not script_content.strip():
+            script_content = "(no command provided)"
         try:
             with open(script_path, 'w', encoding='utf-8') as cf:
                 cf.write(script_content)
@@ -2648,7 +2658,7 @@ async def execute_function(function_name: str, args: dict, message: discord.Mess
         # Prepare response: return log as main text, and check for output files.
         workspace_key = docker_runner._sanitize_msg_id(effective_channel_id) if effective_channel_id else (res.get('msg_id') or msg_id)
         out_dir = os.path.join(docker_runner.host_workdir_base, workspace_key, "outputs")
-        log_preview = (res.get('log') or '')[:250_000]
+        log_preview = (res.get('log') or '(no output)')[:250_000]
         
         # Check if any output files were generated
         has_output_files = False
