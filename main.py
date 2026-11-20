@@ -2189,8 +2189,12 @@ async def load_channel_history(channel, limit: int, current_message_id: int) -> 
     if msg.reference and msg.reference.resolved:
       ref = msg.reference.resolved
       ref_author = getattr(getattr(ref, "author", None), "display_name", "Unknown")
-      ref_content = (getattr(ref, "content", "") or "")[:200]
-      if len(getattr(ref, "content", "") or "") > 200:
+      ref_full = (getattr(ref, "content", "") or "")
+      _fwd_text, _ = _forwarded_parts(ref)
+      if _fwd_text:
+        ref_full = f"{ref_full}\n{_fwd_text}" if ref_full else _fwd_text
+      ref_content = ref_full[:200]
+      if len(ref_full) > 200:
         ref_content += "..."
       rep = f" (Referencing to {ref_author}: {ref_content})\n"
     if msg.content:
@@ -7980,6 +7984,14 @@ async def handle_message(message, user_input=None, attachments=None, reply_to=No
             if hasattr(referenced_msg, 'attachments') and referenced_msg.attachments:
                 for att in referenced_msg.attachments:
                     ref_content += f" [Attachment: {att.filename} | Url: {att.url}]"
+
+            # Replied-to message is a forward: content/attachments are empty, the real
+            # payload sits in message_snapshots (same handling as reply_context).
+            fwd_text, fwd_atts = _forwarded_parts(referenced_msg)
+            if fwd_text:
+                ref_content = f"{ref_content}\n{fwd_text}" if ref_content else fwd_text
+            for att in fwd_atts:
+                ref_content += f" [Attachment: {att.filename} | Url: {att.url}]"
             
             rep = f" (Referencing to {author}: {ref_content})\n" if msg.author.id != bot_id else ""
           if msg.content:
