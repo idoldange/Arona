@@ -169,7 +169,7 @@ from console.command import *
 from typing import Dict, Tuple, Union, List, Any
 from games.chess import chess_manager
 # extracted modules
-from utils.tool_status import get_function_execution_message
+from utils.tool_status import get_function_execution_message, get_function_done_message
 from utils.tool_schemas import get_gemini_tools
 from utils.presence_tracker import PresenceTracker, PresenceTrackerDatabase
 from utils import tool_groups
@@ -6022,12 +6022,15 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           func_call = part["functionCall"]
           func_name = func_call.get("name", "")
           func_args = func_call.get("args", {})
+          _func_notice = None  # this call's "Executing..." message, edited to "done" after exec
+          func_msg_text = None
         
           # Notify that the function is running (no need to check msg here anymore)
           if not gemini_ws.is_voice_session and message:
             func_msg_text = get_function_execution_message(func_name, func_args)
             try:
-              func_msg.append(await message.channel.send(func_msg_text))
+              _func_notice = await message.channel.send(func_msg_text)
+              func_msg.append(_func_notice)
             except Exception as e:
               console.log(f"Failed sending func_msg notice for {func_name}: {e}", "WARN")
         
@@ -6082,6 +6085,13 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
           finally:
             if typing_pause_event is not None:
               typing_pause_event.clear()
+
+          # Mark the notice as done (per-tool text in utils/tool_status.py, fallback "done")
+          if _func_notice is not None and func_msg_text:
+            try:
+              await _func_notice.edit(content=get_function_done_message(func_name, func_args, func_result, func_msg_text))
+            except Exception as e:
+              console.log(f"Failed editing func_msg notice for {func_name}: {e}", "WARN")
         
           # Special: load_more_context replaces initial context window with larger batch
           if func_name == "load_more_context":

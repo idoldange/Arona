@@ -430,3 +430,115 @@ def get_function_execution_message(func_name: str, func_args: dict) -> str:
     # fallback
     else:
         return f"-# <:default:1484030880438816989> Executing {func_name}..."
+
+# ---------------------------------------------------------------------------
+# Done-status: once a tool finishes, its "Executing..." notice is edited to
+# append a result marker, e.g. "-# ... Searching for 'cats'... Done".
+#   - result starts with Error/Failed/...  -> "Failed" (always wins)
+#   - else _DONE_OVERRIDES[tool](args, result) if it returns a string
+#   - else _DONE_STATIC[tool]
+#   - else "Done"
+# Add a new tool: put a line in _DONE_STATIC (fixed text) or _DONE_OVERRIDES
+# (callable (func_args, func_result) -> str | None).
+# ---------------------------------------------------------------------------
+
+_ERROR_PREFIXES = ("error", "failed", "failure", "unknown")
+
+# fixed suffix per tool (tools not listed here and not in overrides -> "Done")
+_DONE_STATIC = {
+    "cleanup_sandbox": "Sandbox wiped",
+    "read_skills": "Skills loaded",
+    "send_files": "Sent",
+    "cleanup_files": "Cleaned up",
+    "edit_file": "Edited",
+    "rag_save": "Saved",
+    "rag_delete": "Deleted",
+    "load_more_context": "Loaded",
+    "make_chess_move": "Moved",
+    "promote_pawn": "Promoted",
+    "reset_chess_game": "Reset",
+    "send_chess_board_image": "Sent",
+    "schedule_message": "Scheduled",
+    "schedule_task": "Scheduled",
+    "schedule_loop": "Scheduled",
+    "delete_user_task": "Deleted",
+    "clear_user_tasks": "Cleared",
+    "edit_task": "Updated",
+    "wait_for_time": "Done waiting",
+    "start_daemon": "Started",
+    "send_daemon_input": "Sent",
+    "stop_daemon": "Stopped",
+    "ask_user": "Got a reply",
+    "get_migration_key": "Sent",
+    "reset_migration_key": "Sent",
+    "link_account": "Linked",
+    "unlink_account": "Unlinked",
+    "send_feedback": "Sent",
+    "join_voice": "Joined",
+    "leave_voice": "Left",
+    "send_text_message": "Sent",
+    "load_tools": "Loaded",
+    "unload_tools": "Unloaded",
+}
+
+
+def _by_arg(key, mapping, default="Done", arg_default=""):
+    """Override factory: pick the suffix from func_args[key]."""
+    def _fn(args, result):
+        return mapping.get(args.get(key, arg_default), default)
+    return _fn
+
+
+def _done_web_search(args, result):
+    q = args.get("query", [])
+    n = len(q) if isinstance(q, list) else 1
+    return f"Done ({n} queries)" if n > 1 else "Done"
+
+
+def _done_web_crawl(args, result):
+    urls = args.get("url", [])
+    n = len(urls) if isinstance(urls, list) else 1
+    return f"Done ({n} pages)" if n > 1 else "Done"
+
+
+def _done_run_code(args, result):
+    if args.get("action", "run_code") == "run_shell":
+        return "Command finished"
+    return "Code finished"
+
+
+def _done_create_files(args, result):
+    n = len(args.get("files", []) or [])
+    return f"Created {n} files" if n > 1 else "Created"
+
+
+_DONE_OVERRIDES = {
+    "web_search": _done_web_search,
+    "web_crawl": _done_web_crawl,
+    "run_code": _done_run_code,
+    "create_files": _done_create_files,
+    "move_file": _by_arg("direction", {"persist": "Persisted"}, default="Staged"),
+    "saved_information": _by_arg("action", {"add": "Added", "edit": "Updated", "delete": "Deleted"}),
+    "channel_memory": _by_arg("action", {"set": "Updated", "append": "Updated", "clear": "Cleared"}, arg_default="get"),
+    "guild_memory": _by_arg("action", {"set": "Updated", "append": "Updated", "clear": "Cleared"}, arg_default="get"),
+    "gacha_tracker": _by_arg("action", {"add": "Logged", "add_shards": "Added", "reset": "Reset"}, arg_default="status"),
+    "todo": _by_arg("action", {"create": "Created", "done": "Completed", "edit": "Updated"}, default="Updated"),
+}
+
+
+def get_function_done_message(func_name: str, func_args: dict, func_result, exec_text: str) -> str:
+    """Return the notice text with a Done/Failed (or per-tool) marker appended."""
+    result_str = func_result if isinstance(func_result, str) else str(func_result or "")
+    if result_str.lstrip().lower().startswith(_ERROR_PREFIXES):
+        suffix = "Failed"
+    else:
+        suffix = None
+        override = _DONE_OVERRIDES.get(func_name)
+        if override:
+            try:
+                suffix = override(func_args or {}, result_str)
+            except Exception:
+                suffix = None
+        if not suffix:
+            suffix = _DONE_STATIC.get(func_name, "Done")
+    return f"{exec_text} {suffix}"[:2000]
