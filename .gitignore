@@ -347,6 +347,9 @@ tests.py
 # debug.py la runtime state file, main.py tu tao/tu ghi de khi chay lenh "debug on/off"
 debug.py
 
+# Accidental empty file created by shell redirection (e.g. `... 2>fatal`)
+/fatal
+
 # SSH console (host keys, authorized keys, secrets): never commit
 ssh_console/
 .ssh_console_pass

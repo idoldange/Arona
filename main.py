@@ -882,7 +882,7 @@ intents.guilds = True  # Add this
 intents.voice_states = True 
 
 client = commands.Bot(command_prefix="/", intents=intents)
-presence_tracker = PresenceTracker(client, PresenceTrackerDatabase())
+presence_tracker = PresenceTracker(client, PresenceTrackerDatabase(PRESENCES_DB_PATH))
 cdn_refresh.init(client)
 tree = client.tree
 

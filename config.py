@@ -345,6 +345,7 @@ SAVEDINFO_DB_PATH  = os.path.join(DB_DIR, "saved_information.db")  # User's save
 VECTOR_DB_PATH     = os.path.join(DB_DIR, "vector_db")             # Persistent storage for ChromaDB to optimize SQLite performance
 AFFECTION_DB_PATH  = os.path.join(DB_DIR, "affection.db")          # Mood and bond data
 BYOK_DB_PATH       = os.path.join(DB_DIR, "apikeys.db")            # User's own API keys and usage data
+PRESENCES_DB_PATH  = os.path.join(DB_DIR, "presences_tracker.db")  # Discord presence tracker records/history
 
 
 # ── Vector Database ──────────────────────────────────────────
