@@ -183,6 +183,7 @@ import arona.tts.synth as _synth_mod
 from arona.tts.synth_media import render_media, media_kind, MEDIA_MAX_MB
 import arona.tts.synth_ui as synth_ui
 import arona.activity.server as activity_server
+from arona.activity.entry_point import hide_launch_button
 from config import TTS_REFS as _TTS_REFS_LIST
 from pydub import AudioSegment
 from affection import affection
@@ -8567,6 +8568,7 @@ async def on_interaction(interaction: discord.Interaction):
 async def on_ready():
   try:
     await tree.sync()
+    await hide_launch_button(client)
     seeded, missing_application_id = await presence_tracker.seed_from_cache()
     console.log(
       f"[PRESENCE] Startup cache: tracked {seeded} active game(s); "
