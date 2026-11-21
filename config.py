@@ -17,10 +17,10 @@ STATUS_PUBLISH = True
 
 # ── Gemini API ───────────────────────────────────────────────
 
-DEFAULT_MODEL       = "gemini-4-hydrogen"
+DEFAULT_MODEL       = "gemini-3.6-flash"
 FALLBACK_MODEL      = "gemini-3.5-flash-lite"# 503
 RATE_LIMIT_MODEL    = "gemini-3.5-flash-lite"# 429
-RATE_LIMIT_MODEL_   = "gemini-3.6-flash"     # 429 on RATE_LIMIT_MODEL
+RATE_LIMIT_MODEL_   = "gemini-4-hydrogen"    # 429 on RATE_LIMIT_MODEL
 LITE_MODEL          = "gemini-3.5-flash-lite"
 LIVE_MODEL          = "gemini-3.1-flash-live-preview"
 DEFAULT_TEMPERATURE = 1.0

@@ -8297,7 +8297,7 @@ async def _handle_message_impl(message, user_input=None, attachments=None, reply
         + f"User: {message.author.display_name}\n"
         + (f"Author type: bot/app\n" if message.author.bot else "")
         + (f"Attachment URLs: {', '.join(f'`{att.url}`' for att in attachments)}\n" if attachments else "")
-        + f"Current model: {model_name}\n"
+        #+ f"Current model: {model_name}\n" too lazy to edit it after model fallback so nah
         + f"{_affection_block}\n\n"
         + (_registry_block + "\n" if _registry_block else "")
         + (_todo_block + "\n" if _todo_block else "")
