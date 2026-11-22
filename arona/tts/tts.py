@@ -60,6 +60,26 @@ def strip_emotion_tags(text: str) -> str:
     return _EMO_TAG_RE.sub(lambda m: m.group(0) if _norm_tag(m.group(1)) in _RESERVED_TAGS else "", text).strip()
 
 
+# ---- Tag <tts>...</tts>: model doi khi viet sai (`<tts>...[/tts]`, `[tts]...[/tts]`, `<TTS>`, `< /tts >`...) -> chuan hoa ve `<tts>...</tts>` TRUOC khi parse ----
+# (ngoac nhon / vuong / full-width deu duoc nhan, khong phan biet hoa thuong; tag [emotion] ben trong KHONG bi dung toi)
+_TTS_OPEN_RE = re.compile(r"[<\[［【]\s*tts\s*[>\]］】]", re.IGNORECASE)
+_TTS_CLOSE_RE = re.compile(r"[<\[［【]\s*/\s*tts\s*[>\]］】]", re.IGNORECASE)
+
+
+def normalize_tts_tags(text: str) -> str:
+    """Moi bien the cua tag mo / dong TTS -> dang chuan `<tts>` / `</tts>`."""
+    if not text:
+        return text
+    return _TTS_CLOSE_RE.sub("</tts>", _TTS_OPEN_RE.sub("<tts>", text))
+
+
+def strip_tts_tags(text: str) -> str:
+    """Bo han tag mo / dong TTS (ke ca ban viet sai), giu nguyen noi dung ben trong."""
+    if not text:
+        return text
+    return _TTS_CLOSE_RE.sub("", _TTS_OPEN_RE.sub("", text)).strip()
+
+
 def _pick_ref(emotion: str | None):
     refs = TTS_REFS.get((emotion or TTS_DEFAULT_EMOTION).lower()) or TTS_REFS.get(TTS_DEFAULT_EMOTION)
     return random.choice(refs) if refs else TTS_REF

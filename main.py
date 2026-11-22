@@ -177,7 +177,7 @@ from utils.discord_ui import AskUserModal, MalformedRetryView, AskUserView
 from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_board_message, restore_board_views
 from utils.text_utils import split_message, time_utc, is_japanese
 from dotenv import load_dotenv
-from arona.tts.tts import text_to_speech, strip_emotion_tags
+from arona.tts.tts import text_to_speech, strip_emotion_tags, normalize_tts_tags, strip_tts_tags
 from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts, describe_soundfonts, preset_search_text, ensure_soundfonts
 import arona.tts.synth as _synth_mod
 from arona.tts.synth_media import render_media, media_kind, MEDIA_MAX_MB
@@ -7199,6 +7199,10 @@ async def send_content_or_file(channel, content, message=None, is_reply=False, r
   tts_text = ""
   synth_txt = ""
   synth_text = []
+  _tts_fixed = normalize_tts_tags(new_content)
+  if _tts_fixed != new_content:
+    console.log("TTS: model viet sai tag (vd [/tts]) -> da tu chuan hoa ve <tts>...</tts>", "WARN")
+    new_content = _tts_fixed
   tts_txt = re.findall(r"<tts>(.*?)</tts>", new_content, re.DOTALL)
 
   if tts_txt:
@@ -8070,6 +8074,7 @@ async def _handle_message_impl(message, user_input=None, attachments=None, reply
             tts_text = msg.content
             if tts_text.startswith("-# "):
               tts_text = tts_text[3:]
+            tts_text = strip_tts_tags(tts_text)   # voice cu co the con sot tag sai (vd [/tts]) -> history gan lai CHI dang chuan <tts>...</tts>, khong day model viet sai
             return {"role": "model", "parts": [], "_is_tts": True, "_tts_text": tts_text.strip()}
 
           attachment_parts = []
