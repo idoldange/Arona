@@ -1214,7 +1214,7 @@ async def _join_voice_channel_locked(user: discord.Member, text_channel: discord
         history_messages = []
         async for msg in text_channel.history(limit=50, oldest_first=True):
             if not msg.author.bot:
-                content = msg.content or ""
+                content = (msg.content or "") + (" (edited)" if msg.edited_at and msg.content else "")
                 if msg.attachments:
                     att_info = ", ".join([f"[{att.filename}]" for att in msg.attachments])
                     content += f" {att_info}"
@@ -2114,7 +2114,7 @@ async def summarize_channel_messages(
             if embed.description:
                 content += f" {embed.description[:300]}"
 
-        line = f"[{ts}] {author}: {content}"
+        line = f"[{ts}] {author}: {content}" + (" (edited)" if msg.edited_at and msg.author.id != client.user.id else "")
 
         # Deep mode: download images and PDFs as inline_data for Gemini
         if deep and msg.attachments:
@@ -2167,6 +2167,13 @@ async def summarize_channel_messages(
     if not result or not result.strip():
         return "Summary could not be generated."
     return result
+
+
+def _edited_tag(msg, role="user") -> str:
+  """Return " (edited)" for user messages that were edited, like the Discord client."""
+  if role == "user" and getattr(msg, "edited_at", None):
+    return " (edited)"
+  return ""
 
 
 async def load_channel_history(channel, limit: int, current_message_id: int) -> list:
@@ -2236,7 +2243,7 @@ async def load_channel_history(channel, limit: int, current_message_id: int) -> 
               pass
         return None
       else:
-        text_parts.append(header + rep + msg.content)
+        text_parts.append(header + rep + msg.content + _edited_tag(msg, role))
     elif not msg.attachments and not msg.embeds:
       return None
     # Only flatten embeds for messages NOT authored by Arona herself. Embeds on the
@@ -8053,7 +8060,7 @@ async def _handle_message_impl(message, user_input=None, attachments=None, reply
                     pass
               return None  # no attachment or fetch failed → skip entirely
             else:
-              text_parts.append(header + rep + msg.content)
+              text_parts.append(header + rep + msg.content + _edited_tag(msg, role))
           elif not msg.attachments and not msg.embeds:
             return None
           

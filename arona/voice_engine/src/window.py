@@ -709,6 +709,39 @@ def _md_layout(text: str, tw: int) -> List[_MdLine]:
     return lines
 
 
+def _md_edited(lines: List["_MdLine"], tw: int) -> List["_MdLine"]:
+    """Discord-style "(edited)": small, muted, inline after the last text line (own line if it won't fit)."""
+    label, size = "(edited)", 13
+    f = _tfont(label, size)
+    w = f.getlength(label)
+    last = lines[-1] if lines else None
+    if last is not None and last.parts and not last.bg:
+        end = max(px + pw for px, _t, _f, _c, _fl, pw, _yo in last.parts)
+        if end + 6 + w <= tw:
+            _px, _t, lf, _c, _fl, _pw, lyo = last.parts[-1]
+            yo = lyo + max(0.0, lf.getmetrics()[0] - f.getmetrics()[0])      # share the baseline with the text
+            last.parts.append((end + 6, label, f, MUTED, 0, w, yo))
+            return lines
+    return lines + [_MdLine(18, [(0, label, f, MUTED, 0, w, 2)])]
+
+
+COL_REPLY = (112, 117, 126)
+
+
+@lru_cache(maxsize=8)
+def _reply_spine(wl: int, hl: int, r: int, color: tuple):
+    """Discord-style reply connector (antialiased): short stem going up from the avatar, rounded 90-degree
+    bend, then a line to the right toward the quoted text. Stroke is 2 logical px; sprite is wl x hl logical px."""
+    f = 4 * S
+    big = Image.new("RGBA", (max(1, int(round(wl * f))), max(1, int(round(hl * f)))), color + (0,))
+    g = ImageDraw.Draw(big)
+    col, t, e = color + (255,), max(1, int(round(2 * f))), int(round((2 * r + 2) * f))
+    g.arc((0, 0, e, e), 180, 270, fill=col, width=t)
+    g.line((f, (r + 0.5) * f, f, hl * f), fill=col, width=t)
+    g.line(((r + 0.5) * f, f, wl * f, f), fill=col, width=t)
+    return big.resize((max(1, int(round(wl * S))), max(1, int(round(hl * S)))), Image.LANCZOS)
+
+
 def _ellipsize(font, text: str, maxw: int) -> str:
     if font.getlength(text) <= maxw:
         return text
@@ -738,7 +771,7 @@ def _num(v, default=None):
 
 
 class _Entry:
-    __slots__ = ("num", "id", "author_id", "name", "color", "time", "text", "reply", "items", "system")
+    __slots__ = ("num", "id", "author_id", "name", "color", "time", "text", "reply", "items", "system", "edited")
 
 
 # ───────────────────────── media player ─────────────────────────
@@ -1020,6 +1053,7 @@ class VirtualDiscordWindow:
         for st in getattr(m, "stickers", []) or []:
             text += ("\n" if text else "") + f"[sticker: {st.name}]"
         e.text = text
+        e.edited = bool(getattr(m, "edited_at", None)) and m.author.id != self.bot_id
         e.reply = None
         res = m.reference.resolved if m.reference else None
         if isinstance(res, discord.Message):
@@ -1068,6 +1102,8 @@ class VirtualDiscordWindow:
         text = self._message_text(m)
         if text != e.text:
             e.text, self.dirty = text, True
+        if getattr(m, "edited_at", None) and m.author.id != self.bot_id and not e.edited:
+            e.edited, self.dirty = True, True
 
     def remove_message(self, message_id: int) -> None:
         num = self._by_id.pop(message_id, None)
@@ -1080,7 +1116,7 @@ class VirtualDiscordWindow:
         e = _Entry()
         e.num, e.id, e.author_id = 0, 0, member.id
         e.name = getattr(member, "display_name", None) or member.name
-        e.color, e.reply, e.items, e.system = None, None, [], kind
+        e.color, e.reply, e.items, e.system, e.edited = None, None, [], kind, False
         e.time = time.strftime("%H:%M")
         e.text = text or ("joined the voice channel" if kind == "join" else "left the voice channel")
         self._users[member.id] = member
@@ -1635,6 +1671,8 @@ class VirtualDiscordWindow:
             lines = _md_layout(e.text, tw) if e.text else []
             if len(lines) > MAX_LINES:
                 lines = lines[:MAX_LINES - 1] + [_md_note("[truncated]")]
+            if e.edited:
+                lines = _md_edited(lines, tw)
             h = self._block_height(e, lines)
             blocks.append((e, y, h, lines, f))
             y += h
@@ -1669,7 +1707,10 @@ class VirtualDiscordWindow:
         cy = by
         if e.reply:
             rf = _tfont(e.reply, 15)
-            vd.text((tx, cy), "re " + _ellipsize(rf, e.reply, tw - 30), font=rf, fill=MUTED)
+            vd.text((tx, cy), _ellipsize(rf, e.reply, tw), font=rf, fill=MUTED)
+            ox, oy, r = PAD + AV // 2 - 1, cy + 9, 7          # stem x = avatar centre, bend level = middle of the quote line
+            sp = _reply_spine(tx - 5 - ox, cy + 21 - oy, r, COL_REPLY)
+            view.paste(sp, _P(ox, oy), sp)
             cy += 22
         av = self._avatar(e.author_id, AV)
         if av:
