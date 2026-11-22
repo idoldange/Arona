@@ -742,6 +742,84 @@ def _reply_spine(wl: int, hl: int, r: int, color: tuple):
     return big.resize((max(1, int(round(wl * S))), max(1, int(round(hl * S)))), Image.LANCZOS)
 
 
+def _author_style(user):
+    """(role colours, is_bot, is_verified_bot) of a message author. Colours: [primary] for a plain role colour,
+    [primary, secondary(, tertiary)] for a gradient / holographic role, None when the member has no coloured role."""
+    colors = None
+    try:
+        for role in reversed(getattr(user, "roles", None) or []):      # highest role first, like Member.colour
+            if role.is_default() or not role.colour.value:
+                continue
+            colors = [role.colour.to_rgb()]
+            for c in (getattr(role, "secondary_colour", None), getattr(role, "tertiary_colour", None)):
+                if c is not None:
+                    colors.append(c.to_rgb())
+            break
+    except Exception:
+        colors = None
+    flags = getattr(user, "public_flags", None)
+    return colors, bool(getattr(user, "bot", False)), bool(getattr(flags, "verified_bot", False))
+
+
+def _lerp_stops(stops, t: float) -> tuple:
+    n = len(stops) - 1
+    t = min(1.0, max(0.0, t)) * n
+    i = min(int(t), n - 1)
+    f = t - i
+    a, b = stops[i], stops[i + 1]
+    return tuple(int(round(a[k] + (b[k] - a[k]) * f)) for k in range(3))
+
+
+def _draw_name(view, vd, x: float, y: float, text: str, font, colors, default) -> None:
+    """Draws a display name in its role colour; gradient roles get a left-to-right gradient across the text."""
+    if not colors or len(colors) < 2:
+        vd.text((x, y), text, font=font, fill=(colors[0] if colors else default))
+        return
+    asc, desc = font.getmetrics()
+    w, pad = font.getlength(text), 3
+    lw, lh = int(w) + 1 + 2 * pad, int(asc + desc) + 2 * pad + 2
+    layer = Image.new("RGBA", (int(round(lw * S)), int(round(lh * S))), (255, 255, 255, 0))
+    _Draw(layer).text((pad, pad), text, font=font, fill=(255, 255, 255, 255))
+    x0, span = pad * S, max(1.0, w * S)
+    row = Image.new("RGB", (layer.width, 1))
+    row.putdata([_lerp_stops(colors, (px - x0) / span) for px in range(layer.width)])
+    view.paste(row.resize(layer.size), _P(x - pad, y - pad), layer.getchannel("A"))
+
+
+def _draw_app_tag(view, vd, x: float, y: float, verified: bool, small: bool = False) -> float:
+    """Discord's blurple APP badge (with a check mark for verified bots). Returns its width."""
+    h, fs = (14, 10) if small else (16, 11)
+    f = _font(fs, True)
+    u = h / 16.0
+    ck = 11 * u if verified else 0
+    bw = 8 + ck + f.getlength("APP")
+    vd.rounded_rectangle((x, y, x + bw, y + h), 3, fill=BLURPLE)
+    if verified:
+        vd.line([(x + 4, y + 8.5 * u), (x + 4 + 2.5 * u, y + 11 * u), (x + 4 + 7 * u, y + 5 * u)],
+                fill=(255, 255, 255), width=1 if small else 2, joint="curve")
+    asc, desc = f.getmetrics()
+    vd.text((x + 4 + ck, y + (h - asc - desc) / 2 - 0.5), "APP", font=f, fill=(255, 255, 255))
+    return bw
+
+
+def _draw_reply_text(view, vd, e, x: float, y: float, maxw: float) -> None:
+    """The quoted line above a reply: [APP] coloured name + muted text (falls back to the plain string)."""
+    meta = e.rmeta
+    if not meta:
+        rf = _tfont(e.reply, 15)
+        vd.text((x, y), _ellipsize(rf, e.reply, maxw), font=rf, fill=MUTED)
+        return
+    x0 = x
+    if meta["bot"]:
+        x += _draw_app_tag(view, vd, x, y + 1, meta["verified"], True) + 5
+    nf = _tfont(meta["name"], 15)
+    name = _ellipsize(nf, meta["name"], max(40, (maxw - (x - x0)) // 2))
+    _draw_name(view, vd, x, y, name, nf, meta["colors"], MUTED)
+    x += nf.getlength(name) + 6
+    tf = _tfont(meta["text"], 15)
+    vd.text((x, y), _ellipsize(tf, meta["text"], maxw - (x - x0)), font=tf, fill=MUTED)
+
+
 def _ellipsize(font, text: str, maxw: int) -> str:
     if font.getlength(text) <= maxw:
         return text
@@ -771,7 +849,7 @@ def _num(v, default=None):
 
 
 class _Entry:
-    __slots__ = ("num", "id", "author_id", "name", "color", "time", "text", "reply", "items", "system", "edited")
+    __slots__ = ("num", "id", "author_id", "name", "color", "time", "text", "reply", "items", "system", "edited", "colors", "bot", "verified", "rmeta")
 
 
 # ───────────────────────── media player ─────────────────────────
@@ -1041,8 +1119,9 @@ class VirtualDiscordWindow:
         e = _Entry()
         e.num, e.id, e.author_id = self._counter, m.id, m.author.id
         e.name = (getattr(m.author, "display_name", None) or m.author.name) + (" (you)" if m.author.id == self.bot_id else "")
-        col = getattr(m.author, "color", None)
-        e.color = col.to_rgb() if col is not None and col.value else None
+        e.colors, e.bot, e.verified = _author_style(m.author)
+        e.color = e.colors[0] if e.colors else None
+        e.rmeta = None
         e.time = m.created_at.astimezone().strftime("%H:%M")
         text = m.clean_content or ""
         for emb in m.embeds:
@@ -1058,6 +1137,9 @@ class VirtualDiscordWindow:
         res = m.reference.resolved if m.reference else None
         if isinstance(res, discord.Message):
             e.reply = f"{res.author.display_name}: {(res.clean_content or '[attachment]')[:60]}"
+            rc, rb, rv = _author_style(res.author)
+            e.rmeta = {"name": res.author.display_name, "colors": rc, "bot": rb, "verified": rv,
+                       "text": " ".join((res.clean_content or "[attachment]")[:80].split())}
         e.items = []
         e.system = None
         for k, a in enumerate(m.attachments, 1):
@@ -1117,6 +1199,7 @@ class VirtualDiscordWindow:
         e.num, e.id, e.author_id = 0, 0, member.id
         e.name = getattr(member, "display_name", None) or member.name
         e.color, e.reply, e.items, e.system, e.edited = None, None, [], kind, False
+        e.colors, e.bot, e.verified, e.rmeta = None, False, False, None
         e.time = time.strftime("%H:%M")
         e.text = text or ("joined the voice channel" if kind == "join" else "left the voice channel")
         self._users[member.id] = member
@@ -1706,8 +1789,7 @@ class VirtualDiscordWindow:
             return
         cy = by
         if e.reply:
-            rf = _tfont(e.reply, 15)
-            vd.text((tx, cy), _ellipsize(rf, e.reply, tw), font=rf, fill=MUTED)
+            _draw_reply_text(view, vd, e, tx, cy, tw)
             ox, oy, r = PAD + AV // 2 - 1, cy + 9, 7          # stem x = avatar centre, bend level = middle of the quote line
             sp = _reply_spine(tx - 5 - ox, cy + 21 - oy, r, COL_REPLY)
             view.paste(sp, _P(ox, oy), sp)
@@ -1718,8 +1800,10 @@ class VirtualDiscordWindow:
         else:
             vd.ellipse((PAD, cy + 2, PAD + AV, cy + 2 + AV), fill=BLURPLE)
         nf = _tfont(e.name, 19, True)
-        vd.text((tx, cy), e.name, font=nf, fill=e.color or TEXT)
+        _draw_name(view, vd, tx, cy, e.name, nf, e.colors or ([e.color] if e.color else None), TEXT)
         nx = tx + nf.getlength(e.name) + 10
+        if e.bot:
+            nx += _draw_app_tag(view, vd, nx, cy + 3, e.verified) + 6
         meta = f"{e.time}   #{e.num}"
         vd.text((nx, cy + 3), meta, font=_font(15), fill=MUTED)
         cy += 26
