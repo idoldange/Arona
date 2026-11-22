@@ -48,6 +48,8 @@
             padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
             justify-content: center;
         }
+        /* Thanh tren cung: chi hien tren dien thoai doc (xem media query o cuoi) */
+        #topbar { display: none; }
         .board-side { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
         .player-bar {
             display: flex;
@@ -592,6 +594,24 @@
                 gap: 8px;
                 padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
             }
+            /* Discord mobile ve thanh dieu khien (nut thu gon + "Roi khoi") DE len dinh activity -> chua san 1 thanh o tren cung, noi dung + nut Options nam ngay duoi no */
+            :root { --topbar-h: calc(44px + env(safe-area-inset-top, 0px)); }
+            #topbar {
+                display: block;
+                position: fixed; top: 0; left: 0; right: 0;
+                height: var(--topbar-h);
+                z-index: 40;
+                pointer-events: none;
+                background: var(--panel-dark);
+                border-bottom: 1px solid var(--line);
+            }
+            html[data-theme^="ba"] #topbar {
+                background: rgba(14, 38, 86, .88);              /* navy giong nen dong ho / chip trong UI */
+                border-bottom: 3px solid var(--ba-title);       /* vien hong giong tieu de panel */
+                box-shadow: 0 4px 14px rgba(0, 20, 60, .35);
+            }
+            .layout { padding-top: calc(var(--topbar-h) + 8px); }
+            #options-btn { top: calc(var(--topbar-h) + 10px); }
             .board-side { width: 100%; }
             /* kich thuoc ro rang theo vw (khong dung % + aspect-ratio: WebView mobile co the cho ra 0 -> mat ban co) */
             .board-wrap { width: min(calc(100vw - 20px), 640px); height: min(calc(100vw - 20px), 640px); flex: none; }
@@ -638,6 +658,7 @@
 </head>
 <body>
 <div id="root">
+    <div id="topbar" aria-hidden="true"></div>
     <div class="layout">
         <div class="board-side">
             <div class="player-bar" id="bar-top">
