@@ -8,6 +8,7 @@ function calls (scroll / zoom / media control) and can see who is speaking
 
 Chat text still goes through realtime text as usual (see GeminiWebSocket.send_realtime_text).
 """
+import aiohttp
 import asyncio
 import io
 import os
@@ -17,6 +18,7 @@ import shutil
 import time
 import zlib
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import discord
 from PIL import Image, ImageDraw, ImageFont
@@ -602,18 +604,248 @@ def _md_inline(text: str) -> list:
     return out
 
 
+COL_MENTION_BG, COL_MENTION_FG, COL_TIME_BG = (60, 66, 112), (201, 205, 251), (64, 66, 72)
+# Discord markup that is NOT neutralised for the model (the text path stays raw); it is only drawn nicely here.
+_DTOK = re.compile(r"<a?:\w{2,32}:\d{15,22}>|<@[!&]?\d{15,22}>|<#\d{15,22}>|<t:-?\d{1,13}(?::[tTdDfFsSR])?>|(?<![\w@])@(?:everyone|here)\b")
+_EMOJI_RE = re.compile(r"<(a?):(\w{2,32}):(\d{15,22})>")
+_PH0 = 0x10F000                                   # tokens are swapped for single private-use chars while markdown is parsed
+_PH_RE = re.compile("[\U0010F000-\U0010FFFD]")
+_PH_SPLIT = re.compile("([\U0010F000-\U0010FFFD])")
+_EMOJI_SRC: Dict[int, Optional[Image.Image]] = {}  # custom emoji id -> RGBA original (None = download failed)
+_EMOJI_SPR: Dict[tuple, Image.Image] = {}
+_EMOJI_PENDING: set = set()
+
+
+async def _http_get(url: str, limit: int = MAX_IMG_BYTES) -> bytes:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as sess:
+        async with sess.get(url) as r:
+            r.raise_for_status()
+            data = await r.read()
+    if len(data) > limit:
+        raise ValueError("file too large")
+    return data
+
+
+class _UrlAsset:
+    """Stands in for a discord.Attachment (url / filename / size / read / save) for images that only have a URL."""
+    content_type = "image/png"
+    size = 0
+
+    def __init__(self, urls, filename: str):
+        self.urls = [u for u in ([urls] if isinstance(urls, str) else list(urls)) if u]
+        self.url, self.filename = self.urls[0], filename
+
+    async def read(self) -> bytes:
+        err = None
+        for u in self.urls:
+            try:
+                return await _http_get(u)
+            except Exception as ex:
+                err = ex
+        raise err or RuntimeError("no url")
+
+    async def save(self, path) -> None:
+        with open(path, "wb") as fh:
+            fh.write(await self.read())
+
+
+def _plain(t: str) -> str:
+    """One-line preview text: custom emoji tokens become :name:."""
+    return " ".join(_EMOJI_RE.sub(r":\2:", t or "").split())
+
+
+def _is_lottie(st) -> bool:
+    try:
+        return getattr(st, "format", None) == discord.StickerFormatType.lottie
+    except Exception:
+        return False
+
+
+def _embed_image_urls(emb) -> list:
+    """[proxy_url, url] of the picture Discord draws for an embed (gif / image link, big image of a rich embed)."""
+    t = getattr(emb, "type", None)
+    if t in ("gifv", "image"):
+        order = (emb.thumbnail, emb.image)          # gifv: static preview of the gif
+    elif t in ("rich", "article", "link"):
+        order = (emb.image,)
+    else:
+        return []
+    for pr in order:
+        us = [u for u in (getattr(pr, "proxy_url", None), getattr(pr, "url", None)) if u]
+        if us:
+            return us
+    return []
+
+
+def _emoji_sprite(eid: int, sz: int):
+    src = _EMOJI_SRC.get(eid)
+    if src is None:
+        return None
+    key = (eid, sz, S)
+    spr = _EMOJI_SPR.get(key)
+    if spr is None:
+        if len(_EMOJI_SPR) > 600:
+            _EMOJI_SPR.clear()
+        px = max(1, int(round(sz * S)))
+        spr = _EMOJI_SPR[key] = src.resize((px, px), Image.LANCZOS)
+    return spr
+
+
+def _chan_kind(c) -> str:
+    n = getattr(getattr(c, "type", None), "name", "")
+    if n in ("voice", "stage_voice"):
+        return "voice"
+    if n == "news":
+        return "news"
+    if n in ("forum", "media"):
+        return "forum"
+    if n in ("public_thread", "private_thread", "news_thread"):
+        return "thread"
+    return "text"
+
+
+@lru_cache(maxsize=32)
+def _chan_icon(kind: str, color: tuple):
+    """16x16 logical-px channel icon (# text / announcements / forum / thread / voice), antialiased."""
+    k = 4 * S
+    n = int(round(16 * k))
+    im = Image.new("RGBA", (n, n), color + (0,))
+    g = ImageDraw.Draw(im)
+    c = color + (255,)
+    lw = max(1, int(round(1.7 * k)))
+
+    def P(*pts):
+        return [(x * k, y * k) for x, y in pts]
+    if kind == "voice":
+        g.polygon(P((2, 6), (5.2, 6), (9, 2.8), (9, 13.2), (5.2, 10), (2, 10)), fill=c)
+        g.arc(P((5.6, 5), (11.4, 11)), 305, 55, fill=c, width=lw)
+        g.arc(P((3.8, 3.2), (13.2, 12.8)), 305, 55, fill=c, width=lw)
+    elif kind == "news":
+        g.polygon(P((2.2, 6), (6.5, 6), (13.8, 2.6), (13.8, 13.4), (6.5, 10), (2.2, 10)), fill=c)
+        g.polygon(P((3.6, 10.2), (6.2, 10.2), (7.2, 14.2), (4.6, 14.2)), fill=c)
+    elif kind == "forum":
+        g.rounded_rectangle(P((1.5, 2), (10.5, 9)), radius=2 * k, outline=c, width=lw)
+        g.rounded_rectangle(P((5.5, 6), (14.5, 13)), radius=2 * k, fill=c)
+        g.polygon(P((11, 12), (13.5, 12), (13.5, 15)), fill=c)
+    elif kind == "thread":
+        g.ellipse(P((2, 2.4), (14, 11.6)), fill=c)
+        g.polygon(P((3.6, 10), (3.6, 14.4), (8.2, 11)), fill=c)
+    else:                                              # text channel: #
+        g.line(P((5.8, 2.5), (4.4, 13.5)), fill=c, width=lw)
+        g.line(P((11.2, 2.5), (9.8, 13.5)), fill=c, width=lw)
+        g.line(P((2.6, 5.9), (13.6, 5.9)), fill=c, width=lw)
+        g.line(P((2.2, 10.1), (13.2, 10.1)), fill=c, width=lw)
+    px = max(1, int(round(16 * S)))
+    return im.resize((px, px), Image.LANCZOS)
+
+
+def _fmt_ts(tok: str) -> str:
+    m = re.match(r"<t:(-?\d+)(?::([tTdDfFsSR]))?>", tok)
+    if not m:
+        return tok
+    try:
+        ts, st = int(m.group(1)), m.group(2) or "f"
+        if st == "R":
+            d = ts - time.time()
+            n = abs(d)
+            for lim, unit, sec in ((60, "second", 1), (3600, "minute", 60), (86400, "hour", 3600),
+                                   (2592000, "day", 86400), (31536000, "month", 2592000), (1e18, "year", 31536000)):
+                if n < lim:
+                    v = max(1, int(n // sec))
+                    u = unit + ("" if v == 1 else "s")
+                    return f"in {v} {u}" if d > 0 else f"{v} {u} ago"
+        fm = {"t": "%H:%M", "T": "%H:%M:%S", "d": "%d/%m/%Y", "D": "%d %B %Y", "f": "%d %B %Y %H:%M",
+              "F": "%A, %d %B %Y %H:%M", "s": "%d/%m/%Y, %H:%M", "S": "%d/%m/%Y, %H:%M:%S"}
+        return time.strftime(fm[st], time.localtime(ts))
+    except Exception:
+        return tok
+
+
+def _token_spec(tok: str, refs: Optional[dict]) -> Optional[dict]:
+    """What to draw for a Discord markup token (user / role / channel mention, custom emoji, timestamp)."""
+    r = (refs or {}).get(tok) or {}
+    if tok.startswith("<:") or tok.startswith("<a:"):
+        m = _EMOJI_RE.match(tok)
+        return {"k": "emoji", "id": int(m.group(3)), "name": m.group(2)} if m else None
+    if tok.startswith("<t:"):
+        return {"k": "pill", "text": _fmt_ts(tok), "fg": TEXT, "bg": COL_TIME_BG, "icon": None}
+    if tok in ("@everyone", "@here"):
+        return {"k": "pill", "text": tok, "fg": COL_MENTION_FG, "bg": COL_MENTION_BG, "icon": None}
+    if tok.startswith("<@&"):
+        c = r.get("color")
+        if c:
+            bg = tuple(int(c[i] * 0.2 + COL_MAIN[i] * 0.8) for i in range(3))
+            return {"k": "pill", "text": "@" + r.get("name", "unknown-role"), "fg": tuple(c), "bg": bg, "icon": None}
+        return {"k": "pill", "text": "@" + r.get("name", "unknown-role"), "fg": COL_MENTION_FG, "bg": COL_MENTION_BG, "icon": None}
+    if tok.startswith("<@"):
+        return {"k": "pill", "text": "@" + r.get("name", "unknown"), "fg": COL_MENTION_FG, "bg": COL_MENTION_BG, "icon": None}
+    if tok.startswith("<#"):
+        return {"k": "pill", "text": r.get("name", "unknown"), "fg": COL_MENTION_FG, "bg": COL_MENTION_BG,
+                "icon": r.get("ctype", "text")}
+    return None
+
+
+def _obj_layout(spec: dict, size: int, jumbo: bool, maxw: float, yo: int, lh: int):
+    """-> (width, parts, deco) for an inline object, positions relative to its left edge."""
+    if spec["k"] == "emoji":
+        sz = 44 if jumbo else int(round(size * 1.22))
+        eid = spec["id"]
+        spr = _emoji_sprite(eid, sz)
+        iy = (lh - sz) // 2
+        if spr is not None:
+            return sz + 3, [], [("img", 1, iy, spr)]
+        if eid in _EMOJI_SRC:                          # download failed: fall back to :name:
+            t = f":{spec['name']}:"
+            f = _tfont(t, size)
+            w = f.getlength(t)
+            return w, [(0, t, f, MUTED, 0, w, yo)], []
+        return sz + 3, [], [("ph", 1, iy, sz)]         # still loading
+    text, fg, bg, icon = spec["text"], spec["fg"], spec["bg"], spec["icon"]
+    f = _tfont(text, size)
+    pad, iw = 4, (19 if icon else 0)
+    avail = maxw - 2 * pad - iw
+    if f.getlength(text) > avail:
+        text = _ellipsize(f, text, max(24, avail))
+    tw_ = f.getlength(text)
+    w = 2 * pad + iw + tw_
+    deco = [("pill", 0, w, bg)]
+    if icon:
+        deco.append(("img", pad, (lh - 16) // 2, _chan_icon(icon, tuple(fg))))
+    return w, [(pad + iw, text, f, fg, 0, tw_, yo)], deco
+
+
 class _MdLine:
-    """One laid-out chat line: parts = [(x, text, font, color, flags, width, y_off)]."""
-    __slots__ = ("h", "parts", "bg", "bar")
+    """One laid-out chat line: parts = [(x, text, font, color, flags, width, y_off)]; deco = inline pills / images."""
+    __slots__ = ("h", "parts", "bg", "bar", "deco")
 
-    def __init__(self, h, parts=None, bg=None, bar=False):
-        self.h, self.parts, self.bg, self.bar = h, parts or [], bg, bar
+    def __init__(self, h, parts=None, bg=None, bar=False, deco=None):
+        self.h, self.parts, self.bg, self.bar, self.deco = h, parts or [], bg, bar, deco or []
 
-    def draw(self, vd, x, y, tw) -> None:
+    def extent(self) -> float:
+        e = 0.0
+        for px, _t, _f, _c, _fl, pw, _yo in self.parts:
+            e = max(e, px + pw)
+        for d in self.deco:
+            if d[0] == "pill":
+                e = max(e, d[1] + d[2])
+            elif d[0] == "img":
+                e = max(e, d[1] + d[3].width / S)
+            elif d[0] == "ph":
+                e = max(e, d[1] + d[3])
+        return e
+
+    def draw(self, vd, x, y, tw, view=None) -> None:
         if self.bg:
             vd.rectangle((x - 6, y, x + tw, y + self.h), fill=self.bg)
         if self.bar:
             vd.rectangle((x, y + 1, x + 3, y + self.h - 1), fill=COL_QUOTE)
+        for d in self.deco:
+            if d[0] == "pill":
+                vd.rounded_rectangle((x + d[1], y + 1, x + d[1] + d[2], y + self.h - 3), 4, fill=d[3])
+            elif d[0] == "img" and view is not None:
+                view.paste(d[3], _P(x + d[1], y + d[2]), d[3])
+            elif d[0] == "ph":
+                vd.rounded_rectangle((x + d[1], y + d[2], x + d[1] + d[3], y + d[2] + d[3]), 4, fill=(62, 64, 70))
         for px, t, f, col, fl, w, yo in self.parts:
             if fl & _FL_CODE:
                 vd.rounded_rectangle((x + px - 2, y, x + px + w + 2, y + self.h - 2), 3, fill=COL_CODE_BG)
@@ -631,15 +863,30 @@ def _md_note(text: str) -> _MdLine:
     return _MdLine(20, [(0, text, f, MUTED, 0, f.getlength(text), 2)])
 
 
-def _md_layout(text: str, tw: int) -> List[_MdLine]:
+def _md_layout(text: str, tw: int, refs: Optional[dict] = None) -> List[_MdLine]:
     lines: List[_MdLine] = []
+    toks: List[str] = []
+
+    def _swap(m):
+        if len(toks) >= 4000:
+            return m.group(0)
+        toks.append(m.group(0))
+        return chr(_PH0 + len(toks) - 1)
+
+    def _unph(t: str) -> str:
+        return _PH_RE.sub(lambda m: toks[ord(m.group()) - _PH0] if ord(m.group()) - _PH0 < len(toks) else m.group(), t)
+
+    text = _DTOK.sub(_swap, text or "")
+    jumbo = bool(toks) and len(toks) <= 27 and not _PH_RE.sub("", text).strip() \
+        and all(t.startswith("<:") or t.startswith("<a:") for t in toks)
     in_code = False
-    for raw in (text or "").split("\n"):
+    for raw in text.split("\n"):
         s = raw.rstrip("\r")
         if s.strip().startswith("```"):
             in_code = not in_code
             continue
         if in_code:                                           # fenced code block: monospace, hard-wrapped
+            s = _unph(s)
             f, rest = _tfont("m" + s, 16, False, "m"), s
             while True:
                 n = len(rest)
@@ -665,46 +912,73 @@ def _md_layout(text: str, tw: int) -> List[_MdLine]:
                 bar, indent, s = True, 14, m.group(1)
             m = re.match(r"^(\s*)[-*+]\s+(.*)$", s)
             if m:
-                prefix, indent, s = "\u2022", indent + 20, m.group(2)
+                prefix, indent, s = "•", indent + 20, m.group(2)
             else:
                 m = re.match(r"^(\s*)(\d{1,3}[.)])\s+(.*)$", s)
                 if m:
                     prefix, indent, s = m.group(2), indent + 26, m.group(3)
         lh = size * 4 // 3
         yo = max(0, (lh - size * 4 // 3) // 2)
-        maxw, row, x, first = tw - indent, [], 0.0, True
+        if jumbo:
+            lh = 52
+        maxw, row, deco, x, first = tw - indent, [], [], 0.0, True
 
         def flush():
-            nonlocal row, x, first
+            nonlocal row, deco, x, first
             parts = row
             if first and prefix:
                 pf = _tfont(prefix, size)
                 parts = [(indent - pf.getlength(prefix) - 6, prefix, pf, color, 0, pf.getlength(prefix), yo)] + parts
-            lines.append(_MdLine(lh, parts, bar=bar))
-            row, x, first = [], 0.0, False
+            lines.append(_MdLine(lh, parts, bar=bar, deco=deco))
+            row, deco, x, first = [], [], 0.0, False
+
+        def place(spec):
+            nonlocal x
+            w, oparts, odeco = _obj_layout(spec, size, jumbo, maxw, yo, lh)
+            if x + w > maxw and (row or deco):
+                flush()
+            bx = indent + x
+            for px, t_, f_, c_, fl_, pw_, yo_ in oparts:
+                row.append((bx + px, t_, f_, c_, fl_, pw_, yo_))
+            for d in odeco:
+                deco.append((d[0], bx + d[1]) + tuple(d[2:]))
+            x += w
+
         for t, b, it, un, stk, code, link, sp in _md_inline(s):
             fsz = 16 if code else size
             sty = "m" if code else ("i" if it else "")
             col = COL_LINK if link else (color if not sp else (120, 124, 132))
             fl = (_FL_UNDER if (un or link) else 0) | (_FL_STRIKE if stk else 0) | (_FL_CODE if code else 0) | (_FL_SPOILER if sp else 0)
-            for tok in re.findall(r"\S+\s*|\s+", t):
-                f = _tfont(tok, fsz, bold or b, sty)
-                w = f.getlength(tok)
-                if x + w > maxw and row:
-                    flush()
-                    if not tok.strip():
+            if code:
+                t = _unph(t)
+            for piece in ([t] if code else _PH_SPLIT.split(t)):
+                if not piece:
+                    continue
+                if not code and len(piece) == 1 and 0 <= ord(piece) - _PH0 < len(toks):
+                    tok = toks[ord(piece) - _PH0]
+                    spec = _token_spec(tok, refs)
+                    if spec:
+                        place(spec)
                         continue
-                while w > maxw and len(tok) > 1:              # a single word wider than the line
-                    n = len(tok)
-                    while n > 1 and f.getlength(tok[:n]) > maxw:
-                        n -= 1
-                    row.append((indent + x, tok[:n], f, col, fl, f.getlength(tok[:n]), yo))
-                    flush()
-                    tok = tok[n:]
+                    piece = tok
+                for tok in re.findall(r"\S+\s*|\s+", piece):
+                    f = _tfont(tok, fsz, bold or b, sty)
                     w = f.getlength(tok)
-                row.append((indent + x, tok, f, col, fl, w, yo))
-                x += w
-        if row or first:
+                    if x + w > maxw and (row or deco):
+                        flush()
+                        if not tok.strip():
+                            continue
+                    while w > maxw and len(tok) > 1:              # a single word wider than the line
+                        n = len(tok)
+                        while n > 1 and f.getlength(tok[:n]) > maxw:
+                            n -= 1
+                        row.append((indent + x, tok[:n], f, col, fl, f.getlength(tok[:n]), yo))
+                        flush()
+                        tok = tok[n:]
+                        w = f.getlength(tok)
+                    row.append((indent + x, tok, f, col, fl, w, yo))
+                    x += w
+        if row or deco or first:
             flush()
     return lines
 
@@ -715,11 +989,14 @@ def _md_edited(lines: List["_MdLine"], tw: int) -> List["_MdLine"]:
     f = _tfont(label, size)
     w = f.getlength(label)
     last = lines[-1] if lines else None
-    if last is not None and last.parts and not last.bg:
-        end = max(px + pw for px, _t, _f, _c, _fl, pw, _yo in last.parts)
+    if last is not None and (last.parts or last.deco) and not last.bg and last.h <= 40:
+        end = last.extent()
         if end + 6 + w <= tw:
-            _px, _t, lf, _c, _fl, _pw, lyo = last.parts[-1]
-            yo = lyo + max(0.0, lf.getmetrics()[0] - f.getmetrics()[0])      # share the baseline with the text
+            if last.parts:
+                _px, _t, lf, _c, _fl, _pw, lyo = last.parts[-1]
+                yo = lyo + max(0.0, lf.getmetrics()[0] - f.getmetrics()[0])      # share the baseline with the text
+            else:
+                yo = max(0.0, (last.h - 18) / 2)
             last.parts.append((end + 6, label, f, MUTED, 0, w, yo))
             return lines
     return lines + [_MdLine(18, [(0, label, f, MUTED, 0, w, 2)])]
@@ -849,7 +1126,7 @@ def _num(v, default=None):
 
 
 class _Entry:
-    __slots__ = ("num", "id", "author_id", "name", "color", "time", "text", "reply", "items", "system", "edited", "colors", "bot", "verified", "rmeta")
+    __slots__ = ("num", "id", "author_id", "name", "color", "time", "text", "reply", "items", "system", "edited", "colors", "bot", "verified", "rmeta", "refs")
 
 
 # ───────────────────────── media player ─────────────────────────
@@ -1123,40 +1400,26 @@ class VirtualDiscordWindow:
         e.color = e.colors[0] if e.colors else None
         e.rmeta = None
         e.time = m.created_at.astimezone().strftime("%H:%M")
-        text = m.clean_content or ""
-        for emb in m.embeds:
-            bits = [emb.title or "", (emb.description or "")[:200]]
-            bits = " ".join(b for b in bits if b)
-            if bits:
-                text += ("\n" if text else "") + "| " + bits
-        for st in getattr(m, "stickers", []) or []:
-            text += ("\n" if text else "") + f"[sticker: {st.name}]"
-        e.text = text
+        self._users[m.author.id] = m.author
+        e.text, e.refs = self._compose(m)
+        self._queue_emojis(e.text)
         e.edited = bool(getattr(m, "edited_at", None)) and m.author.id != self.bot_id
         e.reply = None
         res = m.reference.resolved if m.reference else None
         if isinstance(res, discord.Message):
-            e.reply = f"{res.author.display_name}: {(res.clean_content or '[attachment]')[:60]}"
+            rt = _plain(res.clean_content or "[attachment]")
+            e.reply = f"{res.author.display_name}: {rt[:60]}"
             rc, rb, rv = _author_style(res.author)
-            e.rmeta = {"name": res.author.display_name, "colors": rc, "bot": rb, "verified": rv,
-                       "text": " ".join((res.clean_content or "[attachment]")[:80].split())}
+            e.rmeta = {"name": res.author.display_name, "colors": rc, "bot": rb, "verified": rv, "text": rt[:80]}
         e.items = []
         e.system = None
-        for k, a in enumerate(m.attachments, 1):
-            ct, ext = (a.content_type or "").lower(), os.path.splitext(a.filename)[1].lower()
-            if ct.startswith("image/") or ext in IMG_EXT:
-                kind = "image"
-            elif ct.startswith("video/") or ext in VID_EXT:
-                kind = "video"
-            elif ct.startswith("audio/") or ext in AUD_EXT:
-                kind = "audio"
-            else:
-                kind = "file"
-            item = {"idx": k, "name": a.filename, "kind": kind, "att": a, "img": None, "thumb": None, "fail": False}
-            e.items.append(item)
-            if kind == "image" and a.size <= MAX_IMG_BYTES:
-                asyncio.create_task(self._load_image(item))
-        self._users[m.author.id] = m.author
+        snaps = list(getattr(m, "message_snapshots", None) or [])
+        for a in list(m.attachments) + [a for sn in snaps for a in (getattr(sn, "attachments", None) or [])]:
+            self._add_item(e, a)
+        for st in list(getattr(m, "stickers", None) or []) + [st for sn in snaps for st in (getattr(sn, "stickers", None) or [])]:
+            if not _is_lottie(st):
+                self._add_item(e, _UrlAsset(st.url, f"{st.name}.png"), src=f"sticker:{st.id}")
+        self._sync_embed_items(e, m)
         self._ensure_avatar(m.author)
         self.entries.append(e)
         if len(self.entries) > MAX_MSGS:
@@ -1164,26 +1427,143 @@ class VirtualDiscordWindow:
         self.dirty = True
         return e.num
 
-    @staticmethod
-    def _message_text(m) -> str:
-        text = m.clean_content or ""
-        for emb in m.embeds:
-            bits = " ".join(b for b in [emb.title or "", (emb.description or "")[:200]] if b)
-            if bits:
-                text += ("\n" if text else "") + "| " + bits
-        for st in getattr(m, "stickers", []) or []:
-            text += ("\n" if text else "") + f"[sticker: {st.name}]"
-        return text
+    def _add_item(self, e: _Entry, a, src: Optional[str] = None) -> None:
+        ct, ext = (getattr(a, "content_type", None) or "").lower(), os.path.splitext(a.filename)[1].lower()
+        if ct.startswith("image/") or ext in IMG_EXT:
+            kind = "image"
+        elif ct.startswith("video/") or ext in VID_EXT:
+            kind = "video"
+        elif ct.startswith("audio/") or ext in AUD_EXT:
+            kind = "audio"
+        else:
+            kind = "file"
+        item = {"idx": len(e.items) + 1, "name": a.filename, "kind": kind, "att": a, "img": None, "thumb": None,
+                "fail": False, "src": src}
+        e.items.append(item)
+        if kind == "image" and (getattr(a, "size", 0) or 0) <= MAX_IMG_BYTES:
+            asyncio.create_task(self._load_image(item))
+
+    def _sync_embed_items(self, e: _Entry, m) -> None:
+        """Pictures Discord draws for gif / image links and rich embeds. Embeds usually arrive after the message
+        (as an edit event), so this also runs from update_message."""
+        snaps = list(getattr(m, "message_snapshots", None) or [])
+        want: Dict[str, Any] = {}
+        for emb in list(getattr(m, "embeds", None) or []) + [x for sn in snaps for x in (getattr(sn, "embeds", None) or [])]:
+            urls = _embed_image_urls(emb)
+            if urls:
+                want[urls[0]] = (urls, getattr(emb, "type", None))
+        kept = [it for it in e.items if not str(it.get("src") or "").startswith("http") or it["src"] in want]
+        if len(kept) != len(e.items):
+            e.items = kept
+            for i, it in enumerate(e.items, 1):
+                it["idx"] = i
+        have = {it.get("src") for it in e.items}
+        for key, (urls, typ) in want.items():
+            if key not in have:
+                name = "gif" if typ == "gifv" else (os.path.basename(urlparse(urls[0]).path) or "image")
+                self._add_item(e, _UrlAsset(urls, name), src=key)
+
+    def _compose(self, m):
+        """-> (text, refs). Raw Discord markup (mentions, custom emoji) stays in the text and is drawn at render
+        time; refs resolves ids to names/colours. Nothing here is sent to the model."""
+        snaps = list(getattr(m, "message_snapshots", None) or [])
+        text = m.content or ""
+        embeds = list(getattr(m, "embeds", None) or [])
+        if any(getattr(emb, "type", None) in ("gifv", "image") for emb in embeds) and re.fullmatch(r"<?https?://\S+>?", text.strip()):
+            text = ""                                        # a lone gif / image link: Discord shows only the picture
+
+        def emb_text(emb) -> str:
+            if getattr(emb, "type", None) in ("gifv", "image"):
+                return ""
+            return " ".join(b for b in [emb.title or "", (emb.description or "")[:200]] if b)
+        for emb in embeds:
+            b = emb_text(emb)
+            if b:
+                text += ("\n" if text else "") + "| " + b
+        for st in getattr(m, "stickers", None) or []:
+            if _is_lottie(st):
+                text += ("\n" if text else "") + f"[sticker: {st.name}]"
+        for sn in snaps:                                     # forwarded message: small header + quoted body
+            body = getattr(sn, "content", "") or ""
+            for emb in getattr(sn, "embeds", None) or []:
+                b = emb_text(emb)
+                if b:
+                    body += ("\n" if body else "") + "| " + b
+            quoted = "\n".join("> " + ln for ln in body.split("\n")) if body else ""
+            text += ("\n" if text else "") + "-# ↪ Forwarded" + ("\n" + quoted if quoted else "")
+        return text, self._build_refs(m, text)
+
+    def _build_refs(self, m, text: str) -> dict:
+        refs: dict = {}
+        guild = getattr(m, "guild", None)
+        pool = {u.id: u for u in (getattr(m, "mentions", None) or [])}
+        chans = {c.id: c for c in (getattr(m, "channel_mentions", None) or [])}
+        for tok in set(_DTOK.findall(text or "")):
+            try:
+                if tok.startswith("<@&"):
+                    r = guild.get_role(int(tok[3:-1])) if guild else None
+                    if r is not None:
+                        refs[tok] = {"name": r.name, "color": r.colour.to_rgb() if r.colour.value else None}
+                elif tok.startswith("<@"):
+                    uid = int(tok[2:-1].lstrip("!"))
+                    u = (guild.get_member(uid) if guild else None) or pool.get(uid) or self._users.get(uid)
+                    if u is not None:
+                        refs[tok] = {"name": getattr(u, "display_name", None) or u.name}
+                elif tok.startswith("<#"):
+                    cid = int(tok[2:-1])
+                    c = (guild.get_channel_or_thread(cid) if guild else None) or chans.get(cid)
+                    if c is not None:
+                        refs[tok] = {"name": c.name, "ctype": _chan_kind(c)}
+            except Exception:
+                pass
+        return refs
+
+    def _queue_emojis(self, text: str) -> None:
+        for mm in _EMOJI_RE.finditer(text or ""):
+            eid = int(mm.group(3))
+            if eid in _EMOJI_SRC or eid in _EMOJI_PENDING:
+                continue
+            _EMOJI_PENDING.add(eid)
+            asyncio.create_task(self._load_emoji(eid))
+
+    async def _load_emoji(self, eid: int) -> None:
+        im = None
+        try:
+            raw = None
+            for ext in ("png", "gif"):
+                try:
+                    raw = await _http_get(f"https://cdn.discordapp.com/emojis/{eid}.{ext}?size=96&quality=lossless")
+                    break
+                except Exception:
+                    continue
+            if raw is None:
+                raise RuntimeError("download failed")
+
+            def _dec():
+                x = Image.open(io.BytesIO(raw))
+                x.seek(0)
+                return x.convert("RGBA")
+            im = await asyncio.to_thread(_dec)
+        except Exception as ex:
+            console.log(f"[Window] Emoji {eid} load failed: {ex}", "WARN")
+        _EMOJI_SRC[eid] = im
+        _EMOJI_PENDING.discard(eid)
+        self.dirty = True
 
     def update_message(self, m) -> None:
-        """Message was edited (the bot streams replies by editing)."""
+        """Message was edited (the bot streams replies by editing) or Discord attached embeds to it."""
         num = self._by_id.get(m.id)
         e = next((x for x in self.entries if x.num == num), None) if num else None
         if e is None:
             return
-        text = self._message_text(m)
-        if text != e.text:
-            e.text, self.dirty = text, True
+        text, refs = self._compose(m)
+        if text != e.text or refs != e.refs:
+            e.text, e.refs, self.dirty = text, refs, True
+            self._queue_emojis(text)
+        n = len(e.items)
+        self._sync_embed_items(e, m)
+        if len(e.items) != n:
+            self.dirty = True
         if getattr(m, "edited_at", None) and m.author.id != self.bot_id and not e.edited:
             e.edited, self.dirty = True, True
 
@@ -1200,6 +1580,7 @@ class VirtualDiscordWindow:
         e.name = getattr(member, "display_name", None) or member.name
         e.color, e.reply, e.items, e.system, e.edited = None, None, [], kind, False
         e.colors, e.bot, e.verified, e.rmeta = None, False, False, None
+        e.refs = None
         e.time = time.strftime("%H:%M")
         e.text = text or ("joined the voice channel" if kind == "join" else "left the voice channel")
         self._users[member.id] = member
@@ -1751,7 +2132,7 @@ class VirtualDiscordWindow:
                 blocks.append((e, y, 34, [], f))
                 y += 34
                 continue
-            lines = _md_layout(e.text, tw) if e.text else []
+            lines = _md_layout(e.text, tw, e.refs) if e.text else []
             if len(lines) > MAX_LINES:
                 lines = lines[:MAX_LINES - 1] + [_md_note("[truncated]")]
             if e.edited:
@@ -1808,7 +2189,7 @@ class VirtualDiscordWindow:
         vd.text((nx, cy + 3), meta, font=_font(15), fill=MUTED)
         cy += 26
         for ln in lines:
-            ln.draw(vd, tx, cy, tw)
+            ln.draw(vd, tx, cy, tw, view)
             cy += ln.h
         for it in e.items:
             if it["kind"] == "image":
