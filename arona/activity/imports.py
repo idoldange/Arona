@@ -53,6 +53,9 @@ def project_to_json(name: str, proj, overrides: dict | None = None, resolve=None
             "bank": int(bank),
             "sf": str(sf or ""),
             "drums": bool(t.drums),
+            "volume_db": float(getattr(t, "volume_db", 0.0) or 0.0),
+            "pan": float(getattr(t, "pan", 0.0) or 0.0),
+            "vol_curve": [[int(x), float(y)] for x, y in sorted(getattr(t, "vol_curve", None) or [])[:4000]],
             "notes": [_note_json(n) for n in t.notes[:MAX_NOTES_PER_TRACK]],
         })
     return {"name": os.path.splitext(os.path.basename(name))[0] or "project",
