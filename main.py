@@ -9975,7 +9975,6 @@ async def _status_notice(text: str) -> None:
 
 
 async def graceful_shutdown(exit_code=0):
-  await _status_notice("🔴 Arona is going offline.")
   if desktop_manager:
     await desktop_manager.close_all()
   console.log("\033[31m[SHUTDOWN] Shutting down bot...\033[0m", "INFO")
@@ -10124,6 +10123,7 @@ async def cmd_help(cmd: str = None):
 async def cmd_stop():
   """Shutdown bot
   Usage: stop"""
+  await _status_notice("🔴 Arona is going offline.")  # send right away, before waiting for in-flight messages
   await _wait_for_inflight_messages()
   console.log("\033[31m[STOP] Shutting down...\033[0m", "INFO")
   if browser:
