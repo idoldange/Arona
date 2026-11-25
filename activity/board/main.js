@@ -409,6 +409,17 @@ function syncEloRow() {
     const slider = $("elo-slider")
     let eloTimer = 0
     let lastUIClick = 0
+    let dragging = false
+    const setFromX = (x) => {
+        const r = slider.getBoundingClientRect()
+        const t = Math.max(0, Math.min(1, (x - r.left) / (r.width || 1)))
+        slider.value = String(Math.round((ELO_MIN + t * (ELO_MAX - ELO_MIN)) / 10) * 10)
+        slider.dispatchEvent(new Event("input", { bubbles: true }))
+    }
+    slider.style.touchAction = "none"
+    slider.addEventListener("pointerdown", (ev) => { dragging = true; try { slider.setPointerCapture(ev.pointerId) } catch (e) {} setFromX(ev.clientX); ev.preventDefault() })
+    slider.addEventListener("pointermove", (ev) => { if (dragging) setFromX(ev.clientX) })
+    for (const t of ["pointerup", "pointercancel", "lostpointercapture"]) slider.addEventListener(t, () => { dragging = false })
     slider.addEventListener("input", (ev) => {
         // Chi phat am 1 lan luc nhan chuot xuong (listener pointerdown toan cuc), keo thanh truot thi im lang.
         eloShown = Math.max(ELO_MIN, Math.min(ELO_MAX, Number(ev.target.value) || 1500))
@@ -591,7 +602,7 @@ function setLevel(ch, value) {
 
 (function initOptions() {
     const btn = $("options-btn")
-    if (btn) { btn.addEventListener("click", openOptions) }
+    if (btn) { btn.addEventListener("click", openOptions); const pn = $("panel"); if (pn) pn.appendChild(btn) }
     $("opt-close").addEventListener("click", closeOptions)
     $("opt-scrim").addEventListener("click", closeOptions)
     $("tab-volume").addEventListener("click", () => showOptPage("volume"))
@@ -1181,8 +1192,10 @@ function renderPanel(map) {
     if (state.you.role === "spectator" && isPvp) return
     if (state.mode === "engine") {
         // No take-backs in timed games (the server refuses them too).
-        const undoBtn = (state.turn === myColor() && !busy && !state.clock) ? actionBtn("↩ Undo", "secondary", apiUndo) : null
-        const hintBtn = (state.turn === myColor() && !busy) ? actionBtn("💡 Hint", "secondary", apiHint) : null
+        const undoBtn = actionBtn("↩ Undo", "secondary", apiUndo)
+        const hintBtn = actionBtn("💡 Hint", "secondary", apiHint)
+        undoBtn.disabled = !(state.turn === myColor() && !state.clock)
+        hintBtn.disabled = state.turn !== myColor()
         for (const b of (isBA() ? [hintBtn, undoBtn] : [undoBtn, hintBtn])) { if (b) actions.appendChild(b) }
     }
     actions.appendChild(actionBtn("🚩 Resign", "secondary", apiResign))
@@ -1193,7 +1206,7 @@ function actionBtn(label, style, handler) {
     btn.className = "btn"
     btn.textContent = isBA() ? label.replace(/^[^\p{L}\p{N}]+/u, "") : label      // BA: nut chu thuong (Hint / Undo / Resign), khong emoji
     if (style === "danger") btn.style.background = "var(--danger)"
-    btn.addEventListener("click", () => { handler(btn) })
+    btn.addEventListener("click", () => { if (btn.disabled || busy) return; handler(btn) })
     return btn
 }
 
