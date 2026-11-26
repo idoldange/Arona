@@ -1,3 +1,5 @@
+// iPad (incl. iPadOS reporting as Mac): Discord sidebar overlays the right edge, so reserve room
+if (/iPad/.test(navigator.userAgent) || (/Mac/.test(navigator.platform) && navigator.maxTouchPoints > 1)) document.documentElement.classList.add("ipad")
 // Interactive chess board inside the Arona Discord Activity.
 // The Discord side (utils/discord_ui_chess.py) starts the game; this page renders
 // the same board in a chess.com-style layout, plays moves back through the bot's
@@ -602,7 +604,7 @@ function setLevel(ch, value) {
 
 (function initOptions() {
     const btn = $("options-btn")
-    if (btn) { btn.addEventListener("click", openOptions); const pn = $("panel"); if (pn) pn.appendChild(btn) }
+    if (btn) { btn.addEventListener("click", openOptions) }
     $("opt-close").addEventListener("click", closeOptions)
     $("opt-scrim").addEventListener("click", closeOptions)
     $("tab-volume").addEventListener("click", () => showOptPage("volume"))
