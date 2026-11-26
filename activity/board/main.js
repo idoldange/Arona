@@ -1,5 +1,5 @@
-// iPad (incl. iPadOS reporting as Mac): Discord sidebar overlays the right edge, so reserve room
-if (/iPad/.test(navigator.userAgent) || (/Mac/.test(navigator.platform) && navigator.maxTouchPoints > 1)) document.documentElement.classList.add("ipad")
+// Tablets (iPad incl. iPadOS-as-Mac, Android tablets): Discord sidebar overlays the right edge, so reserve a white strip
+if (/iPad/.test(navigator.userAgent) || (/Mac/.test(navigator.platform) && navigator.maxTouchPoints > 1) || (/Android/.test(navigator.userAgent) && Math.min(screen.width, screen.height) >= 600)) document.documentElement.classList.add("sbar")
 // Interactive chess board inside the Arona Discord Activity.
 // The Discord side (utils/discord_ui_chess.py) starts the game; this page renders
 // the same board in a chess.com-style layout, plays moves back through the bot's
