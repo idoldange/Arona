@@ -6,37 +6,16 @@ import os
 import asyncio
 
 async def cmd_reload():
-  """Reload bot code (for development)
+  """Hot reload bot code without restart (patches live functions/classes, keeps state)
   Usage: reload"""
-  console.log("\033[33m[RELOAD] Reloading bot...\033[0m", "INFO")
+  from . import hotreload
   try:
-    import importlib
-    import sys
-
-    # List of local modules to be reloaded.
-    # Main should be last as it depends on many others.
-    # NOTE: affection modules are NOT reloaded to preserve cache state
-    modules_to_reload = [
-      "config",
-      "debug",
-      "arona.prompt",
-      "console.command",
-    ]
-
-    for module_name in modules_to_reload:
-      try:
-        if module_name in sys.modules:
-          importlib.reload(sys.modules[module_name])
-          console.log(f"Successfully reloaded: {module_name}", "INFO")
-        else:
-          importlib.import_module(module_name)
-          console.log(f"Successfully imported: {module_name}", "INFO")
-      except Exception as e:
-        console.log(f"Failed to reload/import '{module_name}': {e}", "ERROR")
-
-    console.log("\033[32m[RELOAD] All specified modules have been processed.\033[0m", "INFO")
+    summary, notes = hotreload.reload_all()
+    console.log(f"[32m[RELOAD] {summary}[0m", "INFO")
+    for n in notes:
+      console.log(f"[33m[RELOAD] {n}[0m", "WARN")
   except Exception as e:
-    console.log(f"\033[31m[RELOAD] A critical error occurred during the reload process: {e}\033[0m", "ERROR")
+    console.log(f"[31m[RELOAD] critical error: {e}[0m", "ERROR")
 
 async def cmd_debug_start(client=None):
   """Enable debug mode.
