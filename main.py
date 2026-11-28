@@ -177,7 +177,7 @@ from utils.discord_ui import AskUserModal, MalformedRetryView, AskUserView
 from utils.discord_ui_chess import ChessBoardView, ChessChallengeView, remember_board_message, restore_board_views
 from utils.text_utils import split_message, time_utc, is_japanese
 from dotenv import load_dotenv
-from arona.tts.tts import text_to_speech, strip_emotion_tags, normalize_tts_tags, strip_tts_tags
+from arona.tts.tts import text_to_speech, strip_emotion_tags, normalize_tts_tags, strip_tts_tags, find_invalid_lang_tags, TTS_LANGS
 from arona.tts.synth import synth_song, synth_multiple_tracks, synth_lock, list_soundfonts, describe_soundfonts, preset_search_text, ensure_soundfonts
 import arona.tts.synth as _synth_mod
 from arona.tts.synth_media import render_media, media_kind, MEDIA_MAX_MB
@@ -8819,7 +8819,7 @@ async def on_message(message):
       "- `!arona affection`: Show your bond rank and Arona's current mood\n"
       "- `!arona chess start [elo] [white|black]` / `!arona chess challenge @user [white|black]`: Play chess vs the engine or PvP — `!arona chess move <move>` to play, or `!arona chess board` for a click-to-move button board\n"
       "- `!arona voice join/leave`: Force Arona to join your voice channel (or the voice channel whose chat you're typing in) / kick her out if she hangs (you must be in the same voice channel to make her leave)\n"
-      "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese only (no language filtering is applied)\n"
+      "- `!arona tts <text>`: Have Arona speak the text out loud as an audio file — pitch control via `↑` / `↓` (e.g. `そ↑う` to raise the pitch, `あ↓あ` to lower it), Japanese by default — use `[lang=en]`, `[lang=ko]`... to switch language mid-text (see `!arona tts` for the list)\n"
       "- `!arona synth` (+ attach a `.ust`, `.ustx` or `.mid` file): Arona sings a UTAU/OpenUtau project and/or plays MIDI/instrument tracks with soundfonts, optionally with images/videos/audio attached to make an mp4 (send it with no file to open the setup panel; `!arona synth help` = all options; `!arona synth list <instrument>` to browse; can take several minutes)\n"
       "\n"
       "**Usage**:\n"
@@ -9411,8 +9411,17 @@ async def on_message(message):
         "(e.g. `そ↑う`, `あ↓あ`).\n"
         f"Emotion tags: put `[emotion]` before the part that should change voice, e.g. `[happy]こんにちは[shy]えっと…`. "
         f"Available: {', '.join('`[' + k + ']`' for k in _TTS_REFS_LIST)}, `[default]` (= neutral).\n"
-        "Note: only Japanese is supported — no language filtering is applied, so other "
-        "languages are sent to the model as-is and will sound inaccurate."
+        f"Language tags: Japanese is the default; put `[lang=xx]` before the part that should be read in another language, e.g. `[lang=en]Hello[lang=ja]こんにちは`. "
+        f"Supported (GPT-SoVITS): {', '.join('`' + k + '`' for k in TTS_LANGS)}. The language stays until the next `[lang=]` tag. "
+        "The model is trained on Japanese, so other languages may sound less accurate."
+      )
+      return
+    _bad_langs = find_invalid_lang_tags(tts_input)
+    if _bad_langs:
+      await send_with_retry(
+        message.channel,
+        f"Unsupported language: {', '.join('`' + b + '`' for b in dict.fromkeys(_bad_langs))}. "
+        f"Supported: {', '.join('`' + k + '`' for k in TTS_LANGS)}."
       )
       return
     if len(tts_input) > 1500:

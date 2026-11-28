@@ -80,6 +80,49 @@ def strip_tts_tags(text: str) -> str:
     return _TTS_CLOSE_RE.sub("", _TTS_OPEN_RE.sub("", text)).strip()
 
 
+# ---- Tag [lang=xx]: doi ngon ngu doc cho phan text phia sau (giu den khi gap tag [lang=] khac) ----
+# Danh sach = GPT-SoVITS v2 (TTS_infer_pack/TTS.py: v2_languages). Chap nhan them alias (jp, english, korean...).
+TTS_LANGS = ["auto", "auto_yue", "en", "zh", "ja", "yue", "ko", "all_zh", "all_ja", "all_yue", "all_ko"]
+_LANG_ALIASES = {
+    "jp": "ja", "jpn": "ja", "japanese": "ja", "eng": "en", "english": "en",
+    "cn": "zh", "chinese": "zh", "kr": "ko", "kor": "ko", "korean": "ko",
+    "cantonese": "yue", "all_jp": "all_ja", "all_cn": "all_zh", "all_kr": "all_ko",
+}
+_LANG_TAG_RE = re.compile(r"[\[［【<]\s*lang\s*[=:＝]\s*([A-Za-z_]{1,12})\s*[\]］】>]", re.IGNORECASE)
+
+
+def normalize_lang(raw: str | None) -> str | None:
+    """'EN' / 'english' -> 'en'. Khong ho tro -> None."""
+    v = (raw or "").strip().lower()
+    v = _LANG_ALIASES.get(v, v)
+    return v if v in TTS_LANGS else None
+
+
+def find_invalid_lang_tags(text: str) -> list[str]:
+    """Cac gia tri [lang=...] khong duoc GPT-SoVITS ho tro."""
+    return [m.group(1) for m in _LANG_TAG_RE.finditer(text) if normalize_lang(m.group(1)) is None]
+
+
+def split_lang(text: str, default: str = "ja"):
+    """'[lang=en]hi[lang=ko]annyeong' -> ([('en', 'hi'), ('ko', 'annyeong')], 'ko'). Tra ve (segs, lang cuoi) de truyen sang chunk sau.
+    Tag sai gia tri -> giu lang hien tai."""
+    segs, pos, cur = [], 0, default
+    for m in _LANG_TAG_RE.finditer(text):
+        chunk = text[pos:m.start()].strip()
+        if chunk:
+            segs.append((cur, chunk))
+        new = normalize_lang(m.group(1))
+        if new is None:
+            console.log(f"TTS: [lang={m.group(1)}] khong duoc ho tro -> giu lang {cur}", "WARN")
+        else:
+            cur = new
+        pos = m.end()
+    chunk = text[pos:].strip()
+    if chunk:
+        segs.append((cur, chunk))
+    return segs, cur
+
+
 def _pick_ref(emotion: str | None):
     refs = TTS_REFS.get((emotion or TTS_DEFAULT_EMOTION).lower()) or TTS_REFS.get(TTS_DEFAULT_EMOTION)
     return random.choice(refs) if refs else TTS_REF
@@ -222,6 +265,8 @@ def split_vietnamese(text: str, lang: str):
 
 
 async def _text_to_speech_one(text: str, lang: str = "ja", emotion: str | None = None) -> str:
+    if lang not in ("ja", "all_ja"):  # chuyen chu Viet -> yue chi ap dung cho text ja; lang khac gui thang len model
+        return await _tts_single(text, lang, emotion)
     segs = split_vietnamese(text, lang)
     if len(segs) == 1 and segs[0][1] == lang and segs[0][0] == text.strip():
         _vi_words = [m.group(0) for m in _VI_DIACRITIC_RE.finditer(text)]
@@ -246,15 +291,19 @@ async def _text_to_speech_one(text: str, lang: str = "ja", emotion: str | None =
 
 async def text_to_speech(text: str, lang: str = "ja") -> str:
     """Ho tro tag [emotion] (ten trong config.TTS_REFS, [default] = neutral): moi doan doc bang ref cua emotion do."""
-    segs = split_emotion(text)
-    if not segs:
+    cur_lang = normalize_lang(lang) or "ja"
+    items = []  # [(emotion, lang, text)] - lang tag giu nguyen xuyen qua cac tag emotion
+    for emo, chunk in split_emotion(text):
+        lsegs, cur_lang = split_lang(chunk, cur_lang)
+        items += [(emo, l, c) for l, c in lsegs]
+    if not items:
         return ""
-    if len(segs) == 1:
-        return await _text_to_speech_one(segs[0][1], lang, segs[0][0])
-    console.log(f"TTS emotion segments: {[(e, t[:20]) for e, t in segs]}", "INFO")
+    if len(items) == 1:
+        return await _text_to_speech_one(items[0][2], items[0][1], items[0][0])
+    console.log(f"TTS segments: {[(e, l, t[:20]) for e, l, t in items]}", "INFO")
     parts = []
-    for emo, chunk in segs:
-        audio = await _text_to_speech_one(chunk, lang, emo)
+    for emo, seg_lang, chunk in items:
+        audio = await _text_to_speech_one(chunk, seg_lang, emo)
         if not audio:
             return ""
         parts.append(AudioSegment.from_file(BytesIO(audio)))
