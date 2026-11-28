@@ -4152,6 +4152,103 @@ def _strip_largest_history_part(history: list, stripped_ids: set) -> str | None:
   stripped_ids.add(id(part))
   return f"text part in history turn {t_idx} ({size} chars)"
 
+_ATT_TAG_RE = re.compile(r"\[Attachment: (.*?) \| URL: (\S+?)\]")
+
+def _estimate_part_tokens(part: dict) -> int:
+  """Rough token estimate per part; only used to rank strip candidates / calibrate."""
+  try:
+    inl = part.get("inline_data") or part.get("inlineData")
+    if isinstance(inl, dict):
+      b64 = inl.get("data", "") or ""
+      mime = (inl.get("mime_type") or inl.get("mimeType") or "").lower()
+      n = len(b64) * 3 // 4
+      if mime == "application/pdf":
+        pages = 0
+        try:
+          pages = len(re.findall(rb"/Type\s*/Page(?![A-Za-z])", base64.b64decode(b64)))
+        except Exception:
+          pass
+        return pages * 258 if pages else n // 300  # ~258 tokens/page
+      if mime.startswith("image/"): return 1100
+      if mime.startswith("audio/"): return n // 500
+      if mime.startswith("video/"): return n // 1000
+      return n // 3 if mime.startswith("text/") else n // 4
+    if "functionResponse" in part or "function_response" in part:
+      r = (part.get("functionResponse") or part.get("function_response") or {}).get("response", {})
+      return len(json.dumps(r, ensure_ascii=False, default=str)) // 3
+    if isinstance(part.get("text"), str):
+      return len(part["text"]) // 3
+  except Exception:
+    pass
+  return 0
+
+def _estimate_history_tokens(history: list) -> int:
+  return sum(_estimate_part_tokens(p) for t in history if isinstance(t.get("parts"), list) for p in t["parts"] if isinstance(p, dict))
+
+def _strip_largest_part_by_tokens(history: list, stripped_ids: set):
+  """Shrink the part with the most ESTIMATED TOKENS (attachments, tool output, text compete
+  in one ranking). Inline attachments become a notice with name+URL so the model can fetch
+  and chunk the file via run_code. Returns (desc, est_tokens_removed) or None."""
+  best = None
+  for ti, turn in enumerate(history):
+    tp = turn.get("parts", [])
+    if not isinstance(tp, list):
+      continue
+    for pi, part in enumerate(tp):
+      if not isinstance(part, dict) or id(part) in stripped_ids:
+        continue
+      if "inline_data" in part or "inlineData" in part:
+        pass
+      elif "functionResponse" in part or "function_response" in part:
+        if _ctx_part_size(part) <= _CTX_STRIP_KEEP_CHARS: continue
+      elif isinstance(part.get("text"), str):
+        if len(part["text"]) <= _CTX_STRIP_KEEP_CHARS * 2: continue
+      else:
+        continue
+      tok = _estimate_part_tokens(part)
+      if tok > 0 and (best is None or tok > best[0]):
+        best = (tok, ti, pi, part)
+  if best is None:
+    return None
+  tok, ti, pi, part = best
+  if "inline_data" in part or "inlineData" in part:
+    inl = part.get("inline_data") or part.get("inlineData") or {}
+    mime = inl.get("mime_type") or inl.get("mimeType") or "unknown"
+    name = url = None
+    if pi > 0:
+      prev = history[ti]["parts"][pi - 1]
+      m = _ATT_TAG_RE.search(prev["text"]) if isinstance(prev, dict) and isinstance(prev.get("text"), str) else None
+      if m:
+        name, url = m.group(1), m.group(2)
+    if url:
+      msg = (f"[Attachment removed: too large for the context window (~{tok:,} tokens, {mime}).\n"
+             f"File: {name} | URL: {url}\n"
+             "Do NOT load the whole file again. Use run_code to download it from that URL (requests/curl) and "
+             "process it in the sandbox: for a PDF, extract text only for the pages you need (pdftotext -f/-l, PyMuPDF), "
+             "split into page ranges, or summarize chunk by chunk, then read only that small result.]")
+    else:
+      msg = (f"[Attachment removed: too large for the context window (~{tok:,} tokens, {mime}). "
+             "It came from the run_code workspace — extract/split the relevant part inside run_code and view only that.]")
+    history[ti]["parts"][pi] = {"text": msg}
+    return (f"inline {mime} {name or ''} in turn {ti} (~{tok:,} tok)", tok)
+  if "functionResponse" in part or "function_response" in part:
+    key = "functionResponse" if "functionResponse" in part else "function_response"
+    resp = part[key].get("response", {})
+    done = False
+    for rk, rv in list(resp.items()):
+      if isinstance(rv, str) and len(rv) > _CTX_STRIP_KEEP_CHARS:
+        resp[rk] = rv[:_CTX_STRIP_KEEP_CHARS] + _CTX_STRIP_MARKER
+        done = True
+        break
+    if not done:
+      part[key]["response"] = {"result": "[tool output truncated to fit context]"}
+    stripped_ids.add(id(part))
+    return (f"functionResponse in turn {ti} (~{tok:,} tok)", tok)
+  t = part["text"]
+  part["text"] = t[:150] + _CTX_STRIP_MARKER + t[-150:]
+  stripped_ids.add(id(part))
+  return (f"text in turn {ti} (~{tok:,} tok)", tok)
+
 def _patch_missing_function_responses(history: list) -> str | None:
   """
   Gemini requires every functionCall part to be immediately followed by a matching
@@ -4886,6 +4983,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       num_own_keys = len(own_keys)
   history = msg_history if isinstance(msg_history, list) else []
   _initial_ctx_len = len(history)  # track original context window for load_more_context
+  _turn1_entry = None  # turn-1 user entry; reused (not re-appended from pristine attachments) on same-turn retries
   current_text = text
   current_attachments = attachments
   original_text = text  
@@ -4989,7 +5087,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
     
       # Build parts
       parts = []
-      if current_attachments and turn_count == 1:
+      _reuse_turn1 = (turn_count == 1 and _turn1_entry is not None and any(h is _turn1_entry for h in history))
+      if current_attachments and turn_count == 1 and not _reuse_turn1:
           for att in current_attachments:
               if isinstance(att, list):
                   parts.extend(att)
@@ -5007,7 +5106,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                   except:
                       pass
                   
-      if current_text:
+      if current_text and not _reuse_turn1:
         parts.append({"text": current_text})
     
     
@@ -5024,6 +5123,8 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       if parts:
         contents.append({"role": "user", "parts": parts})
         history.append({"role": "user", "parts": parts})
+        if turn_count == 1:
+          _turn1_entry = history[-1]
     
       # Build payload
       payload = {
@@ -5137,6 +5238,7 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
       _trailing_model_patch_attempts = 0  # cap patch retries so a genuinely unfixable payload doesn't loop forever
       _view_patched = False  # set when a 400 INVALID_ARGUMENT view attachment is stripped mid-retry
       _view_patch_attempts = 0  # cap attachment-strip retries so a genuinely bad payload doesn't loop forever
+      _token_overflow_attempts = 0  # cap strip-and-retry rounds for 400 'input token count exceeds the maximum'
       _consecutive_503_count = 0  # tracks consecutive 503s (across keys/rounds) to trigger the unstick decoy request
       _consecutive_503_streak = 0  # persistent 503 streak (NOT reset by the decoy) — aborts the request when it exceeds MAX_CONSECUTIVE_503_ROUNDS
       # 503s seen while on DEFAULT_MODEL — only fall back to FALLBACK_MODEL after
@@ -5503,6 +5605,38 @@ async def _ask_gemini_with_functions(model_name: str, text: str, attachments, te
                 key_pos += 1 
                 _same_key_503_retries = 0
                 continue
+
+              # Hard context-window overflow: all keys share the limit, so never rotate keys.
+              # Strip the biggest parts by estimated tokens (a huge PDF -> notice + URL for
+              # run_code) until the overflow reported by Google is covered, then retry.
+              if ("input token count exceeds" in _body_lower_400
+                  or "exceeds the maximum number of tokens" in _body_lower_400):
+                if _token_overflow_attempts < 6:
+                  _mt = re.search(r"input token count:\s*(\d+)", body_text)
+                  _mm = re.search(r"allowed \((\d+)\)", body_text)
+                  _tt = int(_mt.group(1)) if _mt else 0
+                  _mx = int(_mm.group(1)) if _mm else 0
+                  _need, _scale = 1, 1.0
+                  if _tt > _mx > 0:
+                    _need = (_tt - _mx) + int(_mx * 0.02)
+                    _est = _estimate_history_tokens(history)
+                    _scale = min(max(_tt / _est, 0.3), 5.0) if _est else 1.0
+                  _removed, _descs = 0.0, []
+                  for _ in range(40):
+                    _r = _strip_largest_part_by_tokens(history, _ctx_stripped_ids)
+                    if not _r:
+                      break
+                    _descs.append(_r[0])
+                    _removed += _r[1] * _scale
+                    if _removed >= _need:
+                      break
+                  if _descs:
+                    _token_overflow_attempts += 1
+                    console.log(f"[400-CTX] {_tt} > {_mx} tokens — stripped {len(_descs)} part(s), est. -{int(_removed):,}: {'; '.join(_descs)}", "WARN")
+                    _context_stripped = True
+                    break  # break key loop; round loop checks _context_stripped below
+                console.log("[400-CTX] Input exceeds model token limit, nothing (more) to strip — giving up", "ERROR")
+                return {"error": "context_too_large", "details": last_error_detail}
 
               # Bare INVALID_ARGUMENT often means a VIEW_DIR attachment was rejected
               # (e.g. the file's content didn't match its extension/mime). Drop the
